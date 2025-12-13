@@ -39,14 +39,6 @@ class JQuantsClient:
         """Lightweight console logger for debugging."""
         print(f"[JQuantsClient] {message}")
 
-    @staticmethod
-    def _normalize_token(value: Optional[str]) -> Optional[str]:
-        """Return a stripped token string or None if empty."""
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned if cleaned else None
-
     def _request(self, method: str, path: str, **kwargs) -> Dict:
         url = f"{self.base_url}{path}"
         json_payload = kwargs.get("json")
@@ -116,11 +108,7 @@ class JQuantsClient:
             self._debug("no refresh token configured; generating via auth_user")
             refresh_token = self.create_refresh_token()
         else:
-            preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
-            self._debug(
-                "using provided refresh token for auth_refresh "
-                f"length={len(refresh_token)} preview={preview}"
-            )
+            self._debug("using provided refresh token for auth_refresh")
 
         # The refresh endpoint expects a lower-case "refreshtoken" field as documented
         # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
