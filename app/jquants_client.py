@@ -13,9 +13,11 @@ class JQuantsClient:
         refresh_token: Optional[str] = None,
         base_url: Optional[str] = None,
         mailaddress: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         self.refresh_token = refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
         self.mailaddress = mailaddress or os.getenv("MAILADDRESS")
+        self.password = password or os.getenv("PASSWORD")
         self.base_url = (base_url or os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")).rstrip("/")
         self._id_token: Optional[str] = None
         self._access_token: Optional[str] = None
@@ -32,23 +34,28 @@ class JQuantsClient:
 
     def authenticate(self) -> str:
         """Obtain and cache an access token using the refresh token."""
-        if not self.refresh_token:
-            raise ValueError("JQUANTS_REFRESH_TOKEN is not set.")
-
         if not self.mailaddress:
             raise ValueError("MAILADDRESS is not set.")
 
         if self._access_token:
             return self._access_token
 
-        auth_payload = {"mailaddress": self.mailaddress, "refreshToken": self.refresh_token}
-        auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
-        self._id_token = auth_data.get("idToken")
-        if not self._id_token:
-            raise ValueError("idToken was not returned from J-Quants auth_user endpoint.")
+        refresh_token = self.refresh_token
+        if not refresh_token:
+            if not self.password:
+                raise ValueError("PASSWORD is not set.")
 
-        refresh_payload = {"idToken": self._id_token}
+            auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
+            auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
+            refresh_token = auth_data.get("refreshToken")
+            if not refresh_token:
+                raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
+
+            self.refresh_token = refresh_token
+
+        refresh_payload = {"refreshToken": refresh_token}
         refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
+        self._id_token = refresh_data.get("idToken")
         self._access_token = refresh_data.get("accessToken")
         if not self._access_token:
             raise ValueError("accessToken was not returned from J-Quants auth_refresh endpoint.")
