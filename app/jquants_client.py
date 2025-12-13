@@ -1,5 +1,6 @@
 import os
-from typing import Dict, Optional
+from datetime import datetime, timezone
+from typing import Dict, Optional, Union
 
 import pandas as pd
 import requests
@@ -80,6 +81,20 @@ class JQuantsClient:
         # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
         refresh_payload = {"refreshtoken": refresh_token}
         refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
+        new_refresh_token = refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
+        if new_refresh_token:
+            self.refresh_token = new_refresh_token
+
+        expiry_keys = (
+            "refreshTokenExpiresAt",
+            "refreshTokenExpiration",
+            "refreshTokenExpires",
+            "refreshTokenExpiresIn",
+        )
+        self.refresh_token_expires_at = next(
+            (refresh_data.get(key) for key in expiry_keys if refresh_data.get(key) is not None),
+            self.refresh_token_expires_at,
+        )
         self._id_token = refresh_data.get("idToken")
         self._access_token = refresh_data.get("accessToken")
         if not self._access_token:
