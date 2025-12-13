@@ -35,35 +35,6 @@ class JQuantsClient:
         except ValueError as exc:  # pragma: no cover - defensive
             raise ValueError("Failed to parse J-Quants API response as JSON") from exc
 
-    def _parse_refresh_expiry(self, value: Optional[Union[str, int, float]]) -> Optional[datetime]:
-        """Best-effort parsing for refresh token expiration timestamps."""
-
-        if value is None:
-            return None
-
-        try:
-            # Numeric epoch seconds (can arrive as int/float or numeric string)
-            if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().replace(".", "", 1).isdigit()):
-                return datetime.fromtimestamp(float(value), tz=timezone.utc)
-
-            # ISO-8601 strings; "Z" suffix is normalized to UTC
-            normalized = value.strip().replace("Z", "+00:00")
-            return datetime.fromisoformat(normalized)
-        except Exception:
-            return None
-
-    def _refresh_token_is_valid(self) -> bool:
-        """Check whether the cached refresh token is present and unexpired."""
-
-        if not self.refresh_token:
-            return False
-
-        expiry = self._parse_refresh_expiry(self.refresh_token_expires_at)
-        if expiry is None:
-            return True
-
-        return datetime.now(timezone.utc) < expiry
-
     def create_refresh_token(self) -> str:
         """Generate and store a refresh token along with its expiration."""
 
@@ -103,7 +74,7 @@ class JQuantsClient:
             return self._access_token
 
         refresh_token = self.refresh_token
-        if not self._refresh_token_is_valid():
+        if not refresh_token:
             refresh_token = self.create_refresh_token()
 
         # The refresh endpoint expects a lower-case "refreshtoken" field as documented
