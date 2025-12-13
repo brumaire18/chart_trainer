@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.log
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# PyCharm
+.idea/
+
+# Streamlit
+.streamlit/
+
+# データ系（J-Quantsなどの生データは通常コミットしない）
+data/db/
+data/price_csv/*.csv
