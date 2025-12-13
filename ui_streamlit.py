@@ -1,8 +1,14 @@
-import streamlit as st
-import plotly.graph_objects as go
+from datetime import date, timedelta
 
-from app.data_loader import get_available_symbols, load_price_csv
+import plotly.graph_objects as go
+import streamlit as st
+
 from app.config import DEFAULT_LOOKBACK_BARS
+from app.data_loader import (
+    fetch_and_save_price_csv,
+    get_available_symbols,
+    load_price_csv,
+)
 
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
@@ -11,10 +17,37 @@ def main():
     # --- サイドバー ---
     st.sidebar.header("設定")
 
+    st.sidebar.subheader("J-Quants からデータ取得")
+    available_symbols = get_available_symbols()
+    default_symbol = available_symbols[0] if available_symbols else ""
+
+    download_symbol = st.sidebar.text_input(
+        "銘柄コード (例: 7203)", value=default_symbol
+    )
+    default_start = date.today() - timedelta(days=365)
+    default_end = date.today()
+    start_date = st.sidebar.date_input("開始日", value=default_start)
+    end_date = st.sidebar.date_input("終了日", value=default_end)
+
+    if st.sidebar.button("J-Quantsからダウンロード"):
+        try:
+            if start_date > end_date:
+                raise ValueError("終了日は開始日以降にしてください。")
+
+            fetch_and_save_price_csv(
+                download_symbol.strip(),
+                start_date.isoformat(),
+                end_date.isoformat(),
+            )
+            st.sidebar.success("ダウンロードに成功しました。")
+            st.experimental_rerun()
+        except Exception as exc:  # broad catch for user feedback
+            st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
+
     symbols = get_available_symbols()
     if not symbols:
         st.sidebar.warning("data/price_csv にCSVファイルがありません。")
-        st.info("先に data/price_csv に株価CSVを置いてください。")
+        st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
     selected_symbol = st.sidebar.selectbox("銘柄", symbols)

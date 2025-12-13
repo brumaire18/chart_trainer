@@ -1,6 +1,10 @@
-import pandas as pd
+from pathlib import Path
 from typing import List
-from .config import PRICE_CSV_DIR
+
+import pandas as pd
+
+from .config import JQUANTS_BASE_URL, JQUANTS_REFRESH_TOKEN, PRICE_CSV_DIR
+from .jquants_client import JQuantsClient
 
 
 def get_available_symbols() -> List[str]:
@@ -89,3 +93,24 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
         "サポートしていないCSV形式です。"
         "date/open/... または J-Quants daily_quotes のフォーマットにしてください。"
     )
+
+
+def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Path:
+    """
+    J-Quantsから株価データを取得し、PRICE_CSV_DIRに保存する。
+    start_date/end_dateはYYYY-MM-DD形式の文字列。
+    """
+    if not symbol:
+        raise ValueError("銘柄コードが指定されていません。")
+
+    client = JQuantsClient(
+        refresh_token=JQUANTS_REFRESH_TOKEN,
+        base_url=JQUANTS_BASE_URL,
+    )
+    df_raw = client.fetch_daily_quotes(symbol, start_date, end_date)
+    df_normalized = _normalize_from_jquants(df_raw)
+
+    PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
+    csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
+    df_normalized.to_csv(csv_path, index=False)
+    return csv_path
