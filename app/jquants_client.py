@@ -11,11 +11,13 @@ class JQuantsClient:
     def __init__(
         self,
         refresh_token: Optional[str] = None,
+        refresh_token_expires_at: Optional[str] = None,
         base_url: Optional[str] = None,
         mailaddress: Optional[str] = None,
         password: Optional[str] = None,
     ):
         self.refresh_token = refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
+        self.refresh_token_expires_at = refresh_token_expires_at
         self.mailaddress = mailaddress or os.getenv("MAILADDRESS")
         self.password = password or os.getenv("PASSWORD")
         self.base_url = (base_url or os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")).rstrip("/")
@@ -32,6 +34,36 @@ class JQuantsClient:
         except ValueError as exc:  # pragma: no cover - defensive
             raise ValueError("Failed to parse J-Quants API response as JSON") from exc
 
+    def create_refresh_token(self) -> str:
+        """Generate and store a refresh token along with its expiration."""
+
+        if not self.mailaddress:
+            raise ValueError("MAILADDRESS is not set.")
+        if not self.password:
+            raise ValueError("PASSWORD is not set.")
+
+        auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
+        auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
+
+        refresh_token = auth_data.get("refreshToken")
+        if not refresh_token:
+            raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
+
+        self.refresh_token = refresh_token
+
+        expiry_keys = (
+            "refreshTokenExpiresAt",
+            "refreshTokenExpiration",
+            "refreshTokenExpires",
+            "refreshTokenExpiresIn",
+        )
+        self.refresh_token_expires_at = next(
+            (auth_data.get(key) for key in expiry_keys if auth_data.get(key) is not None),
+            None,
+        )
+
+        return refresh_token
+
     def authenticate(self) -> str:
         """Obtain and cache an access token using the refresh token."""
         if not self.mailaddress:
@@ -42,16 +74,7 @@ class JQuantsClient:
 
         refresh_token = self.refresh_token
         if not refresh_token:
-            if not self.password:
-                raise ValueError("PASSWORD is not set.")
-
-            auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
-            auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
-            refresh_token = auth_data.get("refreshToken")
-            if not refresh_token:
-                raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
-
-            self.refresh_token = refresh_token
+            refresh_token = self.create_refresh_token()
 
         refresh_payload = {"refreshToken": refresh_token}
         refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
