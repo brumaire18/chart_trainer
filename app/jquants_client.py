@@ -76,7 +76,9 @@ class JQuantsClient:
         if not refresh_token:
             refresh_token = self.create_refresh_token()
 
-        refresh_payload = {"refreshToken": refresh_token}
+        # The refresh endpoint expects a lower-case "refreshtoken" field as documented
+        # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
+        refresh_payload = {"refreshtoken": refresh_token}
         refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
         self._id_token = refresh_data.get("idToken")
         self._access_token = refresh_data.get("accessToken")
