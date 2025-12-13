@@ -3,7 +3,7 @@ from typing import List
 
 import pandas as pd
 
-from .config import JQUANTS_BASE_URL, JQUANTS_REFRESH_TOKEN, PRICE_CSV_DIR
+from .config import JQUANTS_BASE_URL, JQUANTS_MAILADDRESS, JQUANTS_REFRESH_TOKEN, PRICE_CSV_DIR
 from .jquants_client import JQuantsClient
 
 
@@ -106,6 +106,7 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
     client = JQuantsClient(
         refresh_token=JQUANTS_REFRESH_TOKEN,
         base_url=JQUANTS_BASE_URL,
+        mailaddress=JQUANTS_MAILADDRESS,
     )
     df_raw = client.fetch_daily_quotes(symbol, start_date, end_date)
     df_normalized = _normalize_from_jquants(df_raw)

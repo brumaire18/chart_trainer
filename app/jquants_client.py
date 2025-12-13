@@ -8,8 +8,14 @@ import requests
 class JQuantsClient:
     """Simple client for fetching J-Quants daily quotes."""
 
-    def __init__(self, refresh_token: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(
+        self,
+        refresh_token: Optional[str] = None,
+        base_url: Optional[str] = None,
+        mailaddress: Optional[str] = None,
+    ):
         self.refresh_token = refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
+        self.mailaddress = mailaddress or os.getenv("MAILADDRESS")
         self.base_url = (base_url or os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")).rstrip("/")
         self._id_token: Optional[str] = None
         self._access_token: Optional[str] = None
@@ -29,10 +35,13 @@ class JQuantsClient:
         if not self.refresh_token:
             raise ValueError("JQUANTS_REFRESH_TOKEN is not set.")
 
+        if not self.mailaddress:
+            raise ValueError("MAILADDRESS is not set.")
+
         if self._access_token:
             return self._access_token
 
-        auth_payload = {"refreshToken": self.refresh_token}
+        auth_payload = {"mailaddress": self.mailaddress, "refreshToken": self.refresh_token}
         auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
         self._id_token = auth_data.get("idToken")
         if not self._id_token:

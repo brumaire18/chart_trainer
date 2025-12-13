@@ -8,7 +8,7 @@
    ```bash
    pip install -r requirements.txt
    ```
-2. `.env` を作成し、J-QuantsのリフレッシュトークンとベースURLを設定します（ベースURLは未指定ならデフォルトを使用）。
+2. `.env` を作成し、J-Quantsのリフレッシュトークン・メールアドレス・ベースURLを設定します（ベースURLは未指定ならデフォルトを使用）。
    ```bash
    cp .env.example .env
    # .env を開いて値を設定してください
@@ -18,6 +18,7 @@
 
 - `JQUANTS_REFRESH_TOKEN`: J-Quantsから取得したリフレッシュトークン。
 - `JQUANTS_BASE_URL`: J-Quants APIのベースURL（省略時 `https://api.jquants.com`）。
+- `MAILADDRESS`: J-Quantsアカウントのメールアドレス。
 
 `app/config.py` で `data/db` と `data/price_csv` ディレクトリが自動で作成されます。
 
