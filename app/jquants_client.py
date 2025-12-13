@@ -1,5 +1,4 @@
 import os
-from datetime import datetime, timezone
 from typing import Dict, Optional, Union
 
 import pandas as pd
@@ -25,11 +24,35 @@ class JQuantsClient:
         self._id_token: Optional[str] = None
         self._access_token: Optional[str] = None
 
+        self._debug(
+            "initialized client "
+            f"base_url={self.base_url} "
+            f"has_mailaddress={bool(self.mailaddress)} "
+            f"has_password={bool(self.password)} "
+            f"has_refresh_token={bool(self.refresh_token)}"
+        )
+
+    @staticmethod
+    def _debug(message: str) -> None:
+        """Lightweight console logger for debugging."""
+        print(f"[JQuantsClient] {message}")
+
     def _request(self, method: str, path: str, **kwargs) -> Dict:
         url = f"{self.base_url}{path}"
+        json_payload = kwargs.get("json")
+        json_keys = list(json_payload.keys()) if isinstance(json_payload, dict) else None
+        params = kwargs.get("params")
+        self._debug(
+            "sending request "
+            f"method={method} path={path} params={params} json_keys={json_keys}"
+        )
         response = requests.request(method, url, timeout=10, **kwargs)
         if not response.ok:
+            self._debug(
+                f"request failed status={response.status_code} body={response.text}"
+            )
             raise ValueError(f"J-Quants API request failed: {response.status_code} {response.text}")
+        self._debug(f"request succeeded status={response.status_code}")
         try:
             return response.json()
         except ValueError as exc:  # pragma: no cover - defensive
@@ -43,6 +66,9 @@ class JQuantsClient:
         if not self.password:
             raise ValueError("PASSWORD is not set.")
 
+        self._debug(
+            "creating refresh token using configured mailaddress/password"
+        )
         auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
         auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
 
@@ -51,6 +77,7 @@ class JQuantsClient:
             raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
 
         self.refresh_token = refresh_token
+        self._debug("received refresh token from auth_user")
 
         expiry_keys = (
             "refreshTokenExpiresAt",
@@ -71,11 +98,15 @@ class JQuantsClient:
             raise ValueError("MAILADDRESS is not set.")
 
         if self._access_token:
+            self._debug("using cached access token")
             return self._access_token
 
         refresh_token = self.refresh_token
         if not refresh_token:
+            self._debug("no refresh token configured; generating via auth_user")
             refresh_token = self.create_refresh_token()
+        else:
+            self._debug("using provided refresh token for auth_refresh")
 
         # The refresh endpoint expects a lower-case "refreshtoken" field as documented
         # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
@@ -99,6 +130,8 @@ class JQuantsClient:
         self._access_token = refresh_data.get("accessToken")
         if not self._access_token:
             raise ValueError("accessToken was not returned from J-Quants auth_refresh endpoint.")
+
+        self._debug("successfully obtained access token")
 
         return self._access_token
 
