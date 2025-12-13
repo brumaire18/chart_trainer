@@ -1,14 +1,5 @@
 import os
-from typing import Dict, Optional
-
-
-def _normalize_token(value: Optional[str]) -> Optional[str]:
-    """Return a stripped token string or None if empty."""
-
-    if value is None:
-        return None
-    cleaned = value.strip()
-    return cleaned if cleaned else None
+from typing import Dict, Optional, Union
 
 import pandas as pd
 import requests
@@ -25,7 +16,7 @@ class JQuantsClient:
         mailaddress: Optional[str] = None,
         password: Optional[str] = None,
     ):
-        self.refresh_token = _normalize_token(
+        self.refresh_token = self._normalize_token(
             refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
         )
         self.refresh_token_expires_at = refresh_token_expires_at
@@ -83,7 +74,7 @@ class JQuantsClient:
         auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
         auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
 
-        refresh_token = _normalize_token(auth_data.get("refreshToken"))
+        refresh_token = self._normalize_token(auth_data.get("refreshToken"))
         if not refresh_token:
             raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
 
@@ -117,19 +108,13 @@ class JQuantsClient:
             self._debug("no refresh token configured; generating via auth_user")
             refresh_token = self.create_refresh_token()
         else:
-            preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
-            self._debug(
-                "using provided refresh token for auth_refresh "
-                f"length={len(refresh_token)} preview={preview}"
-            )
+            self._debug("using provided refresh token for auth_refresh")
 
-        # The refresh endpoint expects a lower-case "refreshtoken" query parameter as
-        # documented at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
-        refresh_params = {"refreshtoken": refresh_token}
-        refresh_data = self._request(
-            "POST", "/v1/token/auth_refresh", params=refresh_params
-        )
-        new_refresh_token = _normalize_token(
+        # The refresh endpoint expects a lower-case "refreshtoken" field as documented
+        # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
+        refresh_payload = {"refreshtoken": refresh_token}
+        refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
+        new_refresh_token = self._normalize_token(
             refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
         )
         if new_refresh_token:
