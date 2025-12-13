@@ -16,7 +16,9 @@ class JQuantsClient:
         mailaddress: Optional[str] = None,
         password: Optional[str] = None,
     ):
-        self.refresh_token = refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
+        self.refresh_token = self._normalize_token(
+            refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
+        )
         self.refresh_token_expires_at = refresh_token_expires_at
         self.mailaddress = mailaddress or os.getenv("MAILADDRESS")
         self.password = password or os.getenv("PASSWORD")
@@ -72,7 +74,7 @@ class JQuantsClient:
         auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
         auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
 
-        refresh_token = auth_data.get("refreshToken")
+        refresh_token = self._normalize_token(auth_data.get("refreshToken"))
         if not refresh_token:
             raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
 
@@ -112,7 +114,9 @@ class JQuantsClient:
         # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
         refresh_payload = {"refreshtoken": refresh_token}
         refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
-        new_refresh_token = refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
+        new_refresh_token = self._normalize_token(
+            refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
+        )
         if new_refresh_token:
             self.refresh_token = new_refresh_token
 
