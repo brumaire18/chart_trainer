@@ -13,6 +13,7 @@ from app.data_loader import (
     get_available_symbols,
     load_price_csv,
 )
+from app.jquants_fetcher import build_universe, get_credential_status, update_universe
 
 
 FREE_PLAN_WEEKS = 12
@@ -152,6 +153,34 @@ def main():
         "※ フリー版では過去12週間より前のデータは取得できません。"
         "指定にかかわらず取得可能な最大範囲（過去12週間）に自動調整します。"
     )
+
+    with st.sidebar.expander("プライム + スタンダードを一括更新"):
+        creds = get_credential_status()
+        st.write("認証情報の検知状況:")
+        st.write(
+            f"- MAILADDRESS: {'✅' if creds['MAILADDRESS'] else '❌'}"
+            f"  / PASSWORD: {'✅' if creds['PASSWORD'] else '❌'}"
+        )
+        st.write(f"- JQUANTS_REFRESH_TOKEN: {'✅' if creds['JQUANTS_REFRESH_TOKEN'] else '❌'}")
+
+        include_custom = st.checkbox(
+            "custom_symbols.txt も含める", value=False, key="include_custom_universe"
+        )
+        full_refresh = st.checkbox(
+            "フルリフレッシュ（取得可能な2年分を再取得）",
+            value=False,
+            key="full_refresh_universe",
+        )
+        if st.button("ユニバースを更新", key="update_universe_button"):
+            try:
+                with st.spinner("ユニバースを更新しています..."):
+                    target_codes = build_universe(include_custom=include_custom)
+                    update_universe(codes=target_codes, full_refresh=full_refresh)
+                st.success("一括更新が完了しました。")
+                st.experimental_rerun()
+            except Exception as exc:  # ユーザー向けに簡易表示
+                st.error(f"一括更新に失敗しました: {exc}")
+
     start_date = st.sidebar.date_input("開始日", value=default_start)
     end_date = st.sidebar.date_input("終了日", value=default_end)
 

@@ -18,7 +18,14 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import requests
 
-from .config import JQUANTS_BASE_URL, JQUANTS_REFRESH_TOKEN, META_DIR, PRICE_CSV_DIR
+from .config import (
+    JQUANTS_BASE_URL,
+    JQUANTS_MAILADDRESS,
+    JQUANTS_PASSWORD,
+    JQUANTS_REFRESH_TOKEN,
+    META_DIR,
+    PRICE_CSV_DIR,
+)
 from .jquants_client import JQuantsClient
 
 logger = logging.getLogger(__name__)
@@ -45,8 +52,14 @@ def _get_client() -> JQuantsClient:
     # 可能であれば実行時の環境変数を優先的に利用する
     runtime_refresh = os.getenv("JQUANTS_REFRESH_TOKEN")
     runtime_base_url = os.getenv("JQUANTS_BASE_URL")
-    runtime_mail = os.getenv("MAILADDRESS")
-    runtime_password = os.getenv("PASSWORD")
+    runtime_mail = os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS
+    runtime_password = os.getenv("PASSWORD") or JQUANTS_PASSWORD
+
+    snapshot = {
+        "MAILADDRESS": bool(runtime_mail),
+        "PASSWORD": bool(runtime_password),
+        "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh or JQUANTS_REFRESH_TOKEN),
+    }
 
     client = JQuantsClient(
         base_url=runtime_base_url or JQUANTS_BASE_URL,
@@ -56,13 +69,21 @@ def _get_client() -> JQuantsClient:
     )
 
     if not client.refresh_token and not client.mailaddress:
-        env_snapshot = {
-            "MAILADDRESS": bool(runtime_mail),
-            "PASSWORD": bool(runtime_password),
-            "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh or JQUANTS_REFRESH_TOKEN),
-        }
-        logger.error("必要な認証情報が見つかりませんでした: %s", env_snapshot)
+        logger.error("必要な認証情報が見つかりませんでした: %s", snapshot)
     return client
+
+
+def get_credential_status() -> Dict[str, bool]:
+    """利用可能な認証情報の有無を返す。"""
+
+    runtime_refresh = os.getenv("JQUANTS_REFRESH_TOKEN") or JQUANTS_REFRESH_TOKEN
+    runtime_mail = os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS
+    runtime_password = os.getenv("PASSWORD") or JQUANTS_PASSWORD
+    return {
+        "MAILADDRESS": bool(runtime_mail),
+        "PASSWORD": bool(runtime_password),
+        "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh),
+    }
 
 
 def _get_id_token(client: JQuantsClient) -> str:
