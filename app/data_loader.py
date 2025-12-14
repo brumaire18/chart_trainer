@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -74,7 +74,7 @@ def enforce_free_plan_window(
 
 
 def _normalize_from_jquants(
-    df_raw: pd.DataFrame, symbol: str | None = None, market: str | None = None
+    df_raw: pd.DataFrame, symbol: Optional[str] = None, market: Optional[str] = None
 ) -> pd.DataFrame:
     """
     J-Quantsのdaily_quotes形式
