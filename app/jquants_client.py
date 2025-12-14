@@ -110,14 +110,13 @@ class JQuantsClient:
 
     def authenticate(self) -> str:
         """Obtain and cache an id token using the refresh token."""
-        if not self.mailaddress:
-            raise ValueError("MAILADDRESS is not set.")
-
         if self._id_token:
             self._debug("using cached id token")
             return self._id_token
 
         refresh_token = self.refresh_token
+        if not self.mailaddress and not refresh_token:
+            raise ValueError("MAILADDRESS or JQUANTS_REFRESH_TOKEN must be set.")
         if not refresh_token:
             self._debug("no refresh token configured; generating via auth_user")
             refresh_token = self.create_refresh_token()
