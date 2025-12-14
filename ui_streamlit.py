@@ -13,6 +13,12 @@ from app.data_loader import (
     get_available_symbols,
     load_price_csv,
 )
+from app.jquants_fetcher import (
+    build_universe,
+    get_credential_status,
+    load_listed_master,
+    update_universe,
+)
 
 
 FREE_PLAN_WEEKS = 12
@@ -52,6 +58,11 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     high14 = df_ind["high"].rolling(14).max()
     df_ind["stoch_k"] = (df_ind["close"] - low14) / (high14 - low14) * 100
     df_ind["stoch_d"] = df_ind["stoch_k"].rolling(3).mean()
+
+    # オンバランスボリューム (OBV)
+    price_diff = df_ind["close"].diff().fillna(0)
+    direction = price_diff.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0)
+    df_ind["obv"] = (direction * df_ind["volume"].fillna(0)).cumsum()
 
     return df_ind
 
@@ -152,6 +163,34 @@ def main():
         "※ フリー版では過去12週間より前のデータは取得できません。"
         "指定にかかわらず取得可能な最大範囲（過去12週間）に自動調整します。"
     )
+
+    with st.sidebar.expander("プライム + スタンダードを一括更新"):
+        creds = get_credential_status()
+        st.write("認証情報の検知状況:")
+        st.write(
+            f"- MAILADDRESS: {'✅' if creds['MAILADDRESS'] else '❌'}"
+            f"  / PASSWORD: {'✅' if creds['PASSWORD'] else '❌'}"
+        )
+        st.write(f"- JQUANTS_REFRESH_TOKEN: {'✅' if creds['JQUANTS_REFRESH_TOKEN'] else '❌'}")
+
+        include_custom = st.checkbox(
+            "custom_symbols.txt も含める", value=False, key="include_custom_universe"
+        )
+        full_refresh = st.checkbox(
+            "フルリフレッシュ（取得可能な2年分を再取得）",
+            value=False,
+            key="full_refresh_universe",
+        )
+        if st.button("ユニバースを更新", key="update_universe_button"):
+            try:
+                with st.spinner("ユニバースを更新しています..."):
+                    target_codes = build_universe(include_custom=include_custom)
+                    update_universe(codes=target_codes, full_refresh=full_refresh)
+                st.success("一括更新が完了しました。")
+                st.rerun()
+            except Exception as exc:  # ユーザー向けに簡易表示
+                st.error(f"一括更新に失敗しました: {exc}")
+
     start_date = st.sidebar.date_input("開始日", value=default_start)
     end_date = st.sidebar.date_input("終了日", value=default_end)
 
@@ -181,17 +220,30 @@ def main():
                 request_end,
             )
             st.sidebar.success("ダウンロードに成功しました。")
-            st.experimental_rerun()
+            st.rerun()
         except Exception as exc:  # broad catch for user feedback
             st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
 
     symbols = get_available_symbols()
+    try:
+        listed_df = load_listed_master()
+    except Exception as exc:  # master が無い場合でも動作継続
+        st.sidebar.warning(f"銘柄マスタの読み込みに失敗しました: {exc}")
+        listed_df = pd.DataFrame(columns=["code", "name", "market"])
+
+    name_map = {
+        str(row.code).zfill(4): str(row.name)
+        for row in listed_df.itertuples(index=False)
+        if getattr(row, "name", None) is not None
+    }
     if not symbols:
         st.sidebar.warning("data/price_csv にCSVファイルがありません。")
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
-    selected_symbol = st.sidebar.selectbox("銘柄", symbols)
+    selected_symbol = st.sidebar.selectbox(
+        "銘柄", symbols, format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})"
+    )
 
     lookback = st.sidebar.number_input(
         "過去本数 (N)",
@@ -229,6 +281,7 @@ def main():
     show_rsi = st.sidebar.checkbox("RSI (14)", value=True)
     show_macd = st.sidebar.checkbox("MACD (12,26,9)", value=True)
     show_stoch = st.sidebar.checkbox("ストキャスティクス (14,3)", value=False)
+    show_obv = st.sidebar.checkbox("オンバランスボリューム", value=False)
 
     # --- メイン処理 ---
     df_daily = load_price_csv(selected_symbol)
@@ -257,7 +310,9 @@ def main():
     df_problem = _compute_indicators(df_problem)
     df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
 
-    st.subheader(f"チャート（{selected_symbol}）")
+    title_name = name_map.get(selected_symbol, "")
+    title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
+    st.subheader(title)
 
     volume_applicable = chart_type != "pnf"
     if chart_type != "pnf":
@@ -450,6 +505,16 @@ def main():
                 y=df_problem["macd_signal"],
                 name="Signal",
                 line=dict(color="#9467bd", dash="dash"),
+            ),
+            secondary_y=True,
+        )
+    if show_obv:
+        osc_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date_str"],
+                y=df_problem["obv"],
+                name="OBV",
+                line=dict(color="#8c564b"),
             ),
             secondary_y=True,
         )
