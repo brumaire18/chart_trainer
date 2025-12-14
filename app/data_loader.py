@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -73,7 +73,9 @@ def enforce_free_plan_window(
     return start_ts.date().isoformat(), end_ts.date().isoformat(), adjusted
 
 
-def _normalize_from_jquants(df_raw: pd.DataFrame) -> pd.DataFrame:
+def _normalize_from_jquants(
+    df_raw: pd.DataFrame, symbol: Optional[str] = None, market: Optional[str] = None
+) -> pd.DataFrame:
     """
     J-Quantsのdaily_quotes形式
     (Date, Code, Open, High, Low, Close, ..., AdjustmentOpen, ...) から、
@@ -108,6 +110,8 @@ def _normalize_from_jquants(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(
         {
             "date": df_raw["date"],
+            "code": str(symbol).zfill(4) if symbol is not None else df_raw.get("code"),
+            "market": market or df_raw.get("market"),
             "open": df_raw[open_col],
             "high": df_raw[high_col],
             "low": df_raw[low_col],
@@ -116,6 +120,8 @@ def _normalize_from_jquants(df_raw: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
+    df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+    df["date"] = df["date"].dt.date
     df = df.sort_values("date").reset_index(drop=True)
     return df
 
@@ -132,16 +138,26 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
     csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
     df_raw = pd.read_csv(csv_path)
 
-    # パターン1: すでに整形済み (date, open, high, low, close, volume)
-    if all(col in df_raw.columns for col in ["date", "open", "high", "low", "close", "volume"]):
+    # パターン1: すでに整形済み
+    normalized_cols = ["date", "open", "high", "low", "close", "volume"]
+    if all(col in df_raw.columns for col in normalized_cols):
         df_raw["date"] = pd.to_datetime(df_raw["date"])
-        df = df_raw[["date", "open", "high", "low", "close", "volume"]].copy()
+        ordered_cols = []
+        for col in ["date", "code", "market", "open", "high", "low", "close", "volume"]:
+            if col in df_raw.columns and col not in ordered_cols:
+                ordered_cols.append(col)
+        df = df_raw[ordered_cols].copy()
         df = df.sort_values("date").reset_index(drop=True)
+        if "code" not in df.columns:
+            df["code"] = symbol
+        if "market" not in df.columns:
+            df["market"] = None
+        df["date"] = df["date"].dt.date
         return df
 
     # パターン2: J-Quants daily_quotes 形式
     if "Date" in df_raw.columns:
-        return _normalize_from_jquants(df_raw)
+        return _normalize_from_jquants(df_raw, symbol=symbol)
 
     # どちらでもない場合はエラー
     raise ValueError(
@@ -167,7 +183,7 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
         password=JQUANTS_PASSWORD,
     )
     df_raw = client.fetch_daily_quotes(symbol, adjusted_start, adjusted_end)
-    df_normalized = _normalize_from_jquants(df_raw)
+    df_normalized = _normalize_from_jquants(df_raw, symbol=symbol)
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
