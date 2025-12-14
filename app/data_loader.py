@@ -1,5 +1,6 @@
+from datetime import date, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import pandas as pd
 
@@ -22,6 +23,38 @@ def get_available_symbols() -> List[str]:
     for path in PRICE_CSV_DIR.glob("*.csv"):
         symbols.append(path.stem)
     return sorted(symbols)
+
+
+def enforce_free_plan_window(
+    start_date: str, end_date: str, max_weeks: int = 12
+) -> Tuple[str, str, bool]:
+    """
+    J-Quants フリー版が取得できる期間 (既定: 過去12週間) を超えないように
+    取得期間を補正する。
+
+    Returns:
+        (adjusted_start, adjusted_end, adjusted_flag)
+
+    Raises:
+        ValueError: 終了日が開始日よりも前になる場合。
+    """
+
+    start_ts = pd.to_datetime(start_date).normalize()
+    end_ts = pd.to_datetime(end_date).normalize()
+
+    earliest_allowed = pd.Timestamp(date.today() - timedelta(weeks=max_weeks))
+    adjusted = False
+
+    if start_ts < earliest_allowed:
+        start_ts = earliest_allowed
+        adjusted = True
+
+    if end_ts < start_ts:
+        raise ValueError(
+            "終了日は開始日以降にしてください。(フリー版は過去12週間まで取得可能です)"
+        )
+
+    return start_ts.date().isoformat(), end_ts.date().isoformat(), adjusted
 
 
 def _normalize_from_jquants(df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -109,13 +142,15 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
     if not symbol:
         raise ValueError("銘柄コードが指定されていません。")
 
+    adjusted_start, adjusted_end, _ = enforce_free_plan_window(start_date, end_date)
+
     client = JQuantsClient(
         refresh_token=JQUANTS_REFRESH_TOKEN,
         base_url=JQUANTS_BASE_URL,
         mailaddress=JQUANTS_MAILADDRESS,
         password=JQUANTS_PASSWORD,
     )
-    df_raw = client.fetch_daily_quotes(symbol, start_date, end_date)
+    df_raw = client.fetch_daily_quotes(symbol, adjusted_start, adjusted_end)
     df_normalized = _normalize_from_jquants(df_raw)
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
