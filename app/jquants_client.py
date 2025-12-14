@@ -38,7 +38,20 @@ class JQuantsClient:
         self.password = password or os.getenv("PASSWORD")
         self.base_url = (base_url or os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")).rstrip("/")
         self._id_token: Optional[str] = None
-        self._access_token: Optional[str] = None
+        self._access_token: Optional[str] = None  # Backward-compat alias for id token
+
+        self._debug(
+            "initialized client "
+            f"base_url={self.base_url} "
+            f"has_mailaddress={bool(self.mailaddress)} "
+            f"has_password={bool(self.password)} "
+            f"has_refresh_token={bool(self.refresh_token)}"
+        )
+
+    @staticmethod
+    def _debug(message: str) -> None:
+        """Lightweight console logger for debugging."""
+        print(f"[JQuantsClient] {message}")
 
         self._debug(
             "initialized client "
@@ -109,13 +122,13 @@ class JQuantsClient:
         return refresh_token
 
     def authenticate(self) -> str:
-        """Obtain and cache an access token using the refresh token."""
+        """Obtain and cache an id token using the refresh token."""
         if not self.mailaddress:
             raise ValueError("MAILADDRESS is not set.")
 
-        if self._access_token:
-            self._debug("using cached access token")
-            return self._access_token
+        if self._id_token:
+            self._debug("using cached id token")
+            return self._id_token
 
         refresh_token = self.refresh_token
         if not refresh_token:
@@ -150,19 +163,22 @@ class JQuantsClient:
             (refresh_data.get(key) for key in expiry_keys if refresh_data.get(key) is not None),
             self.refresh_token_expires_at,
         )
-        self._id_token = refresh_data.get("idToken")
-        self._access_token = refresh_data.get("accessToken")
-        if not self._access_token:
-            raise ValueError("accessToken was not returned from J-Quants auth_refresh endpoint.")
+        self._id_token = _normalize_token(refresh_data.get("idToken"))
+        if not self._id_token:
+            raise ValueError("idToken was not returned from J-Quants auth_refresh endpoint.")
 
-        self._debug("successfully obtained access token")
+        # Keep setting _access_token for callers that still reference it, even though
+        # the API returns only an idToken for authentication.
+        self._access_token = self._id_token
 
-        return self._access_token
+        self._debug("successfully obtained id token")
+
+        return self._id_token
 
     def fetch_daily_quotes(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Retrieve OHLCV daily quotes for the specified code and date range."""
-        access_token = self.authenticate()
-        headers = {"Authorization": f"Bearer {access_token}"}
+        id_token = self.authenticate()
+        headers = {"Authorization": f"Bearer {id_token}"}
         params = {"code": code, "from": start_date, "to": end_date}
 
         data = self._request("GET", "/v1/prices/daily_quotes", headers=headers, params=params)
