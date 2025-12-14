@@ -54,6 +54,81 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     return df_ind
 
+
+def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    """日足を週足・月足にリサンプリングする。"""
+
+    if timeframe == "daily":
+        return df.copy()
+
+    rule = {"weekly": "W", "monthly": "M"}.get(timeframe)
+    if not rule:
+        return df.copy()
+
+    df_idx = df.set_index("date")
+    resampled = (
+        df_idx.resample(rule)
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+        .reset_index()
+    )
+    return resampled
+
+
+def _point_and_figure(df: pd.DataFrame, box_size: float | None = None, reversal: int = 3) -> pd.DataFrame:
+    """
+    クローズ価格からシンプルなポイント・アンド・フィギュア用の箱データを生成する。
+    box_size が未指定のときは終値の中央値の1%を自動設定する。
+    """
+
+    closes = df["close"].tolist()
+    if not closes:
+        return pd.DataFrame()
+
+    if box_size is None:
+        median_price = pd.Series(closes).median()
+        box_size = max(median_price * 0.01, 1e-6)
+
+    def _to_box_level(price: float) -> int:
+        return int(round(price / box_size))
+
+    columns = []
+    curr_col = {"type": "X", "levels": []}
+
+    curr_level = _to_box_level(closes[0])
+    curr_col["levels"].append(curr_level)
+
+    for price in closes[1:]:
+        level = _to_box_level(price)
+        if curr_col["type"] == "X":
+            if level > curr_level:
+                curr_col["levels"].extend(range(curr_level + 1, level + 1))
+                curr_level = level
+            elif curr_level - level >= reversal:
+                columns.append(curr_col)
+                curr_col = {"type": "O", "levels": list(range(curr_level - 1, level - 1, -1))}
+                curr_level = level
+        else:
+            if level < curr_level:
+                curr_col["levels"].extend(range(curr_level - 1, level - 1, -1))
+                curr_level = level
+            elif level - curr_level >= reversal:
+                columns.append(curr_col)
+                curr_col = {"type": "X", "levels": list(range(curr_level + 1, level + 1))}
+                curr_level = level
+
+    if columns and columns[-1] is not curr_col:
+        columns.append(curr_col)
+    elif not columns:
+        columns.append(curr_col)
+
+    rows = []
+    for idx, col in enumerate(columns):
+        for lvl in col["levels"]:
+            rows.append({"col": idx, "price": lvl * box_size, "type": col["type"]})
+
+    return pd.DataFrame(rows)
+
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
     st.title("Chart Trainer - フェーズ1（ラインチャート版）")
@@ -115,6 +190,22 @@ def main():
         step=5,
     )
 
+    timeframe = st.sidebar.radio(
+        "足種別",
+        options=["daily", "weekly", "monthly"],
+        format_func=lambda x: {"daily": "日足", "weekly": "週足", "monthly": "月足"}[x],
+        index=0,
+    )
+
+    chart_type = st.sidebar.radio(
+        "チャートタイプ",
+        options=["line", "candlestick", "pnf"],
+        format_func=lambda x: {
+            "line": "ライン", "candlestick": "ローソク足", "pnf": "ポイント・アンド・フィギュア"
+        }[x],
+        index=0,
+    )
+
     st.sidebar.markdown("---")
     st.sidebar.write("テクニカル表示")
     show_sma20 = st.sidebar.checkbox("SMA 20", value=True)
@@ -127,66 +218,103 @@ def main():
     show_stoch = st.sidebar.checkbox("ストキャスティクス (14,3)", value=False)
 
     # --- メイン処理 ---
-    df = load_price_csv(selected_symbol)
+    df_daily = load_price_csv(selected_symbol)
 
-    if len(df) < lookback:
+    df_resampled = _resample_ohlc(df_daily, timeframe)
+
+    if len(df_resampled) < lookback:
         st.warning("過去本数に対してデータが不足しています。")
         return
 
-    df_problem = df.iloc[-lookback:].copy()
+    df_problem = df_resampled.iloc[-lookback:].copy()
     df_problem = _compute_indicators(df_problem)
 
     st.subheader(f"チャート（{selected_symbol}）")
 
     price_fig = go.Figure()
-    price_fig.add_trace(
-        go.Scatter(
-            x=df_problem["date"],
-            y=df_problem["close"],
-            name="Close",
-        )
-    )
-    if show_sma20:
+
+    if chart_type == "candlestick":
         price_fig.add_trace(
-            go.Scatter(
+            go.Candlestick(
                 x=df_problem["date"],
-                y=df_problem["sma20"],
-                name="SMA 20",
-                line=dict(dash="dash"),
+                open=df_problem["open"],
+                high=df_problem["high"],
+                low=df_problem["low"],
+                close=df_problem["close"],
+                name="ローソク足",
             )
         )
-    if show_sma50:
-        price_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date"],
-                y=df_problem["sma50"],
-                name="SMA 50",
-                line=dict(dash="dot"),
+    elif chart_type == "pnf":
+        pnf_df = _point_and_figure(df_problem)
+        if pnf_df.empty:
+            st.warning("ポイント・アンド・フィギュアを描画するデータが不足しています。")
+        else:
+            price_fig.add_trace(
+                go.Scatter(
+                    x=pnf_df["col"],
+                    y=pnf_df["price"],
+                    mode="markers",
+                    name="ポイント・アンド・フィギュア",
+                    marker=dict(
+                        size=14,
+                        symbol="square",
+                        color=pnf_df["type"].map({"X": "#d62728", "O": "#1f77b4"}),
+                        line=dict(width=1, color="#333333"),
+                    ),
+                )
             )
-        )
-    if show_bbands:
+            price_fig.update_layout(xaxis_title="列", yaxis_title="価格")
+    else:
         price_fig.add_trace(
             go.Scatter(
                 x=df_problem["date"],
-                y=df_problem["bb_upper"],
-                name="BB Upper",
-                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-            )
-        )
-        price_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date"],
-                y=df_problem["bb_lower"],
-                name="BB Lower",
-                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-                fill="tonexty",
-                fillcolor="rgba(180,180,180,0.1)",
+                y=df_problem["close"],
+                name="Close",
             )
         )
 
+    if chart_type != "pnf":
+        if show_sma20:
+            price_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date"],
+                    y=df_problem["sma20"],
+                    name="SMA 20",
+                    line=dict(dash="dash"),
+                )
+            )
+        if show_sma50:
+            price_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date"],
+                    y=df_problem["sma50"],
+                    name="SMA 50",
+                    line=dict(dash="dot"),
+                )
+            )
+        if show_bbands:
+            price_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date"],
+                    y=df_problem["bb_upper"],
+                    name="BB Upper",
+                    line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+                )
+            )
+            price_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date"],
+                    y=df_problem["bb_lower"],
+                    name="BB Lower",
+                    line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+                    fill="tonexty",
+                    fillcolor="rgba(180,180,180,0.1)",
+                )
+            )
+
     price_fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Price",
+        xaxis_title=price_fig.layout.xaxis.title.text or "Date",
+        yaxis_title=price_fig.layout.yaxis.title.text or "Price",
         margin=dict(l=10, r=10, t=40, b=10),
     )
 
@@ -251,6 +379,25 @@ def main():
                 line=dict(color="#9467bd", dash="dash"),
             ),
             secondary_y=True,
+        )
+    if show_bbands:
+        price_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date"],
+                y=df_problem["bb_upper"],
+                name="BB Upper",
+                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+            )
+        )
+        price_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date"],
+                y=df_problem["bb_lower"],
+                name="BB Lower",
+                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+                fill="tonexty",
+                fillcolor="rgba(180,180,180,0.1)",
+            )
         )
 
     osc_fig.update_layout(
