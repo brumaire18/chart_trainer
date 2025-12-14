@@ -53,6 +53,19 @@ class JQuantsClient:
         """Lightweight console logger for debugging."""
         print(f"[JQuantsClient] {message}")
 
+        self._debug(
+            "initialized client "
+            f"base_url={self.base_url} "
+            f"has_mailaddress={bool(self.mailaddress)} "
+            f"has_password={bool(self.password)} "
+            f"has_refresh_token={bool(self.refresh_token)}"
+        )
+
+    @staticmethod
+    def _debug(message: str) -> None:
+        """Lightweight console logger for debugging."""
+        print(f"[JQuantsClient] {message}")
+
     def _request(self, method: str, path: str, **kwargs) -> Dict:
         url = f"{self.base_url}{path}"
         json_payload = kwargs.get("json")
