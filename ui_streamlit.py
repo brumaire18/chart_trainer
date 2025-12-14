@@ -13,7 +13,12 @@ from app.data_loader import (
     get_available_symbols,
     load_price_csv,
 )
-from app.jquants_fetcher import build_universe, get_credential_status, update_universe
+from app.jquants_fetcher import (
+    build_universe,
+    get_credential_status,
+    load_listed_master,
+    update_universe,
+)
 
 
 FREE_PLAN_WEEKS = 12
@@ -215,12 +220,25 @@ def main():
             st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
 
     symbols = get_available_symbols()
+    try:
+        listed_df = load_listed_master()
+    except Exception as exc:  # master が無い場合でも動作継続
+        st.sidebar.warning(f"銘柄マスタの読み込みに失敗しました: {exc}")
+        listed_df = pd.DataFrame(columns=["code", "name", "market"])
+
+    name_map = {
+        str(row.code).zfill(4): str(row.name)
+        for row in listed_df.itertuples(index=False)
+        if getattr(row, "name", None) is not None
+    }
     if not symbols:
         st.sidebar.warning("data/price_csv にCSVファイルがありません。")
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
-    selected_symbol = st.sidebar.selectbox("銘柄", symbols)
+    selected_symbol = st.sidebar.selectbox(
+        "銘柄", symbols, format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})"
+    )
 
     lookback = st.sidebar.number_input(
         "過去本数 (N)",
@@ -286,7 +304,9 @@ def main():
     df_problem = _compute_indicators(df_problem)
     df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
 
-    st.subheader(f"チャート（{selected_symbol}）")
+    title_name = name_map.get(selected_symbol, "")
+    title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
+    st.subheader(title)
 
     volume_applicable = chart_type != "pnf"
     if chart_type != "pnf":

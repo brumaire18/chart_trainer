@@ -182,6 +182,7 @@ def fetch_listed_master() -> pd.DataFrame:
 
     col_map = {
         "Code": "code",
+        "LocalCode": "code",
         "Name": "name",
         "Market": "market",
         "Sector17Code": "sector17",
@@ -190,6 +191,34 @@ def fetch_listed_master() -> pd.DataFrame:
     for src, dest in col_map.items():
         if src in df.columns:
             df[dest] = df[src]
+
+    # 別名・大小文字の揺れに対応
+    name_candidates = [
+        "name",
+        "Name",
+        "CompanyName",
+        "CompanyNameJp",
+        "CompanyNameJapanese",
+    ]
+    market_candidates = [
+        "market",
+        "Market",
+        "MarketCodeName",
+        "MarketName",
+        "MarketCode",
+    ]
+
+    if "name" not in df.columns:
+        for cand in name_candidates:
+            if cand in df.columns:
+                df["name"] = df[cand]
+                break
+
+    if "market" not in df.columns:
+        for cand in market_candidates:
+            if cand in df.columns:
+                df["market"] = df[cand]
+                break
 
     required_cols = ["code", "name", "market"]
     missing = [col for col in required_cols if col not in df.columns]
