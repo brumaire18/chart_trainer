@@ -149,7 +149,8 @@ def main():
     default_start = date.today() - timedelta(weeks=FREE_PLAN_WEEKS)
     default_end = date.today()
     st.sidebar.caption(
-        "※ フリー版では過去12週間より前のデータは取得できません。古い日付を指定した場合は自動で切り上げます。"
+        "※ フリー版では過去12週間より前のデータは取得できません。"
+        "指定にかかわらず取得可能な最大範囲（過去12週間）に自動調整します。"
     )
     start_date = st.sidebar.date_input("開始日", value=default_start)
     end_date = st.sidebar.date_input("終了日", value=default_end)
@@ -209,6 +210,8 @@ def main():
         index=0,
     )
 
+    show_volume = st.sidebar.checkbox("出来高", value=True)
+
     st.sidebar.markdown("---")
     st.sidebar.write("テクニカル表示")
     show_sma20 = st.sidebar.checkbox("SMA 20", value=True)
@@ -223,18 +226,43 @@ def main():
     # --- メイン処理 ---
     df_daily = load_price_csv(selected_symbol)
 
-    df_resampled = _resample_ohlc(df_daily, timeframe)
+    df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
+    removed_rows = len(df_daily) - len(df_daily_trading)
+    if removed_rows > 0:
+        st.sidebar.info(
+            f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
+        )
 
-    if len(df_resampled) < lookback:
-        st.warning("過去本数に対してデータが不足しています。")
+    df_resampled = _resample_ohlc(df_daily_trading, timeframe)
+
+    if df_resampled.empty:
+        st.warning("表示できるデータがありません。先にデータを取得してください。")
         return
 
-    df_problem = df_resampled.iloc[-lookback:].copy()
+    if len(df_resampled) < lookback:
+        st.warning(
+            f"過去本数 {lookback} 本に対してデータが不足しています。"
+            f" 利用可能な {len(df_resampled)} 本のみ表示します。"
+        )
+
+    lookback_window = min(lookback, len(df_resampled))
+    df_problem = df_resampled.tail(lookback_window).copy()
     df_problem = _compute_indicators(df_problem)
 
     st.subheader(f"チャート（{selected_symbol}）")
 
-    price_fig = go.Figure()
+    volume_applicable = chart_type != "pnf"
+    if chart_type != "pnf":
+        rows = 2 if show_volume else 1
+        price_fig = make_subplots(
+            rows=rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05 if show_volume else 0.08,
+            row_heights=[0.7, 0.3] if show_volume else [1.0],
+        )
+    else:
+        price_fig = go.Figure()
 
     if chart_type == "candlestick":
         price_fig.add_trace(
@@ -245,13 +273,17 @@ def main():
                 low=df_problem["low"],
                 close=df_problem["close"],
                 name="ローソク足",
-            )
+            ),
+            row=1,
+            col=1,
         )
     elif chart_type == "pnf":
         pnf_df = _point_and_figure(df_problem)
         if pnf_df.empty:
             st.warning("ポイント・アンド・フィギュアを描画するデータが不足しています。")
         else:
+            if show_volume:
+                st.info("ポイント・アンド・フィギュア選択時は出来高表示を省略します。")
             price_fig.add_trace(
                 go.Scatter(
                     x=pnf_df["col"],
@@ -273,7 +305,9 @@ def main():
                 x=df_problem["date"],
                 y=df_problem["close"],
                 name="Close",
-            )
+            ),
+            row=1,
+            col=1,
         )
 
     if chart_type != "pnf":
@@ -284,7 +318,9 @@ def main():
                     y=df_problem["sma20"],
                     name="SMA 20",
                     line=dict(dash="dash"),
-                )
+                ),
+                row=1,
+                col=1,
             )
         if show_sma50:
             price_fig.add_trace(
@@ -293,7 +329,9 @@ def main():
                     y=df_problem["sma50"],
                     name="SMA 50",
                     line=dict(dash="dot"),
-                )
+                ),
+                row=1,
+                col=1,
             )
         if show_bbands:
             price_fig.add_trace(
@@ -302,7 +340,9 @@ def main():
                     y=df_problem["bb_upper"],
                     name="BB Upper",
                     line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-                )
+                ),
+                row=1,
+                col=1,
             )
             price_fig.add_trace(
                 go.Scatter(
@@ -312,14 +352,35 @@ def main():
                     line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
                     fill="tonexty",
                     fillcolor="rgba(180,180,180,0.1)",
-                )
+                ),
+                row=1,
+                col=1,
             )
 
-    price_fig.update_layout(
-        xaxis_title=price_fig.layout.xaxis.title.text or "Date",
-        yaxis_title=price_fig.layout.yaxis.title.text or "Price",
-        margin=dict(l=10, r=10, t=40, b=10),
-    )
+        if show_volume:
+            price_fig.add_trace(
+                go.Bar(
+                    x=df_problem["date"],
+                    y=df_problem["volume"],
+                    name="出来高",
+                    marker_color="rgba(100,149,237,0.6)",
+                    opacity=0.7,
+                ),
+                row=2 if volume_applicable else 1,
+                col=1,
+            )
+
+        price_fig.update_yaxes(title_text="価格", row=1, col=1)
+        if show_volume:
+            price_fig.update_yaxes(title_text="出来高", row=2 if volume_applicable else 1, col=1)
+
+        price_fig.update_layout(
+            xaxis_title="Date",
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+
+    if chart_type == "pnf":
+        price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
 
     st.plotly_chart(price_fig, use_container_width=True)
 

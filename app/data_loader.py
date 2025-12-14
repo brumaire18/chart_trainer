@@ -26,11 +26,18 @@ def get_available_symbols() -> List[str]:
 
 
 def enforce_free_plan_window(
-    start_date: str, end_date: str, max_weeks: int = 12
+    start_date: str,
+    end_date: str,
+    max_weeks: int = 12,
+    expand_to_max_window: bool = True,
 ) -> Tuple[str, str, bool]:
     """
-    J-Quants フリー版が取得できる期間 (既定: 過去12週間) を超えないように
+    J-Quants フリー版が取得できる期間 (既定: 過去12週間) に合わせて
     取得期間を補正する。
+
+    - expand_to_max_window=True の場合は、指定日付が制限内でも
+      可能な限り過去 (max_weeks 分) まで自動的に広げる。
+    - False の場合は、指定期間が制限を超えないように切り上げるのみ。
 
     Returns:
         (adjusted_start, adjusted_end, adjusted_flag)
@@ -45,7 +52,10 @@ def enforce_free_plan_window(
     earliest_allowed = pd.Timestamp(date.today() - timedelta(weeks=max_weeks))
     adjusted = False
 
-    if start_ts < earliest_allowed:
+    if expand_to_max_window and start_ts > earliest_allowed:
+        start_ts = earliest_allowed
+        adjusted = True
+    elif start_ts < earliest_allowed:
         start_ts = earliest_allowed
         adjusted = True
 
