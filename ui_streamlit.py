@@ -59,6 +59,11 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df_ind["stoch_k"] = (df_ind["close"] - low14) / (high14 - low14) * 100
     df_ind["stoch_d"] = df_ind["stoch_k"].rolling(3).mean()
 
+    # オンバランスボリューム (OBV)
+    price_diff = df_ind["close"].diff().fillna(0)
+    direction = price_diff.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0)
+    df_ind["obv"] = (direction * df_ind["volume"].fillna(0)).cumsum()
+
     return df_ind
 
 
@@ -182,7 +187,7 @@ def main():
                     target_codes = build_universe(include_custom=include_custom)
                     update_universe(codes=target_codes, full_refresh=full_refresh)
                 st.success("一括更新が完了しました。")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
                 st.error(f"一括更新に失敗しました: {exc}")
 
@@ -215,7 +220,7 @@ def main():
                 request_end,
             )
             st.sidebar.success("ダウンロードに成功しました。")
-            st.experimental_rerun()
+            st.rerun()
         except Exception as exc:  # broad catch for user feedback
             st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
 
@@ -276,6 +281,7 @@ def main():
     show_rsi = st.sidebar.checkbox("RSI (14)", value=True)
     show_macd = st.sidebar.checkbox("MACD (12,26,9)", value=True)
     show_stoch = st.sidebar.checkbox("ストキャスティクス (14,3)", value=False)
+    show_obv = st.sidebar.checkbox("オンバランスボリューム", value=False)
 
     # --- メイン処理 ---
     df_daily = load_price_csv(selected_symbol)
@@ -499,6 +505,16 @@ def main():
                 y=df_problem["macd_signal"],
                 name="Signal",
                 line=dict(color="#9467bd", dash="dash"),
+            ),
+            secondary_y=True,
+        )
+    if show_obv:
+        osc_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date_str"],
+                y=df_problem["obv"],
+                name="OBV",
+                line=dict(color="#8c564b"),
             ),
             secondary_y=True,
         )
