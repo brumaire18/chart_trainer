@@ -13,6 +13,12 @@ from app.data_loader import (
     get_available_symbols,
     load_price_csv,
 )
+from app.jquants_fetcher import (
+    build_universe,
+    get_credential_status,
+    load_listed_master,
+    update_universe,
+)
 
 
 FREE_PLAN_WEEKS = 12
@@ -152,6 +158,34 @@ def main():
         "※ フリー版では過去12週間より前のデータは取得できません。"
         "指定にかかわらず取得可能な最大範囲（過去12週間）に自動調整します。"
     )
+
+    with st.sidebar.expander("プライム + スタンダードを一括更新"):
+        creds = get_credential_status()
+        st.write("認証情報の検知状況:")
+        st.write(
+            f"- MAILADDRESS: {'✅' if creds['MAILADDRESS'] else '❌'}"
+            f"  / PASSWORD: {'✅' if creds['PASSWORD'] else '❌'}"
+        )
+        st.write(f"- JQUANTS_REFRESH_TOKEN: {'✅' if creds['JQUANTS_REFRESH_TOKEN'] else '❌'}")
+
+        include_custom = st.checkbox(
+            "custom_symbols.txt も含める", value=False, key="include_custom_universe"
+        )
+        full_refresh = st.checkbox(
+            "フルリフレッシュ（取得可能な2年分を再取得）",
+            value=False,
+            key="full_refresh_universe",
+        )
+        if st.button("ユニバースを更新", key="update_universe_button"):
+            try:
+                with st.spinner("ユニバースを更新しています..."):
+                    target_codes = build_universe(include_custom=include_custom)
+                    update_universe(codes=target_codes, full_refresh=full_refresh)
+                st.success("一括更新が完了しました。")
+                st.experimental_rerun()
+            except Exception as exc:  # ユーザー向けに簡易表示
+                st.error(f"一括更新に失敗しました: {exc}")
+
     start_date = st.sidebar.date_input("開始日", value=default_start)
     end_date = st.sidebar.date_input("終了日", value=default_end)
 
@@ -186,12 +220,25 @@ def main():
             st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
 
     symbols = get_available_symbols()
+    try:
+        listed_df = load_listed_master()
+    except Exception as exc:  # master が無い場合でも動作継続
+        st.sidebar.warning(f"銘柄マスタの読み込みに失敗しました: {exc}")
+        listed_df = pd.DataFrame(columns=["code", "name", "market"])
+
+    name_map = {
+        str(row.code).zfill(4): str(row.name)
+        for row in listed_df.itertuples(index=False)
+        if getattr(row, "name", None) is not None
+    }
     if not symbols:
         st.sidebar.warning("data/price_csv にCSVファイルがありません。")
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
-    selected_symbol = st.sidebar.selectbox("銘柄", symbols)
+    selected_symbol = st.sidebar.selectbox(
+        "銘柄", symbols, format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})"
+    )
 
     lookback = st.sidebar.number_input(
         "過去本数 (N)",
@@ -257,7 +304,9 @@ def main():
     df_problem = _compute_indicators(df_problem)
     df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
 
-    st.subheader(f"チャート（{selected_symbol}）")
+    title_name = name_map.get(selected_symbol, "")
+    title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
+    st.subheader(title)
 
     volume_applicable = chart_type != "pnf"
     if chart_type != "pnf":
