@@ -142,7 +142,11 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
     normalized_cols = ["date", "open", "high", "low", "close", "volume"]
     if all(col in df_raw.columns for col in normalized_cols):
         df_raw["date"] = pd.to_datetime(df_raw["date"])
-        df = df_raw[[col for col in ["date", "code", "market"] + normalized_cols if col in df_raw.columns]].copy()
+        ordered_cols = []
+        for col in ["date", "code", "market", "open", "high", "low", "close", "volume"]:
+            if col in df_raw.columns and col not in ordered_cols:
+                ordered_cols.append(col)
+        df = df_raw[ordered_cols].copy()
         df = df.sort_values("date").reset_index(drop=True)
         if "code" not in df.columns:
             df["code"] = symbol
