@@ -7,6 +7,9 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 # CSV保存場所
 PRICE_CSV_DIR = BASE_DIR / "data" / "price_csv"
 
+# メタ情報保存場所
+META_DIR = BASE_DIR / "data" / "meta"
+
 # DBファイル（フェーズ1ではまだ使わなくてもOK）
 DB_DIR = BASE_DIR / "data" / "db"
 DB_PATH = DB_DIR / "trainer.sqlite"
@@ -24,3 +27,4 @@ DEFAULT_ANSWER_BARS = 40  # 答え本数
 # Ensure required directories exist
 PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
 DB_DIR.mkdir(parents=True, exist_ok=True)
+META_DIR.mkdir(parents=True, exist_ok=True)
