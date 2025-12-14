@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -17,12 +18,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import requests
 
-from .config import (
-    JQUANTS_BASE_URL,
-    JQUANTS_REFRESH_TOKEN,
-    META_DIR,
-    PRICE_CSV_DIR,
-)
+from .config import JQUANTS_BASE_URL, JQUANTS_REFRESH_TOKEN, META_DIR, PRICE_CSV_DIR
 from .jquants_client import JQuantsClient
 
 logger = logging.getLogger(__name__)
@@ -46,7 +42,27 @@ class FetchResult:
 
 
 def _get_client() -> JQuantsClient:
-    return JQuantsClient(base_url=JQUANTS_BASE_URL, refresh_token=JQUANTS_REFRESH_TOKEN)
+    # 可能であれば実行時の環境変数を優先的に利用する
+    runtime_refresh = os.getenv("JQUANTS_REFRESH_TOKEN")
+    runtime_base_url = os.getenv("JQUANTS_BASE_URL")
+    runtime_mail = os.getenv("MAILADDRESS")
+    runtime_password = os.getenv("PASSWORD")
+
+    client = JQuantsClient(
+        base_url=runtime_base_url or JQUANTS_BASE_URL,
+        refresh_token=runtime_refresh or JQUANTS_REFRESH_TOKEN,
+        mailaddress=runtime_mail,
+        password=runtime_password,
+    )
+
+    if not client.refresh_token and not client.mailaddress:
+        env_snapshot = {
+            "MAILADDRESS": bool(runtime_mail),
+            "PASSWORD": bool(runtime_password),
+            "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh or JQUANTS_REFRESH_TOKEN),
+        }
+        logger.error("必要な認証情報が見つかりませんでした: %s", env_snapshot)
+    return client
 
 
 def _get_id_token(client: JQuantsClient) -> str:
