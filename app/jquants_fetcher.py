@@ -243,23 +243,39 @@ def load_listed_master() -> pd.DataFrame:
     return pd.read_csv(path, dtype={"code": str})
 
 
+def get_all_listed_codes() -> List[str]:
+    """listed_master.csv に記載の全銘柄コードを返す。"""
+
+    df = load_listed_master()
+    return sorted(df["code"].astype(str).str.zfill(4).tolist())
+
+
 def get_default_universe() -> List[str]:
     df = load_listed_master()
     universe = df[df["market"].isin(["PRIME", "STANDARD"])]
     return sorted(universe["code"].astype(str).str.zfill(4).tolist())
 
 
-def build_universe(include_custom: bool = False, custom_path: Optional[Path] = None) -> List[str]:
-    """プライム + スタンダード銘柄を基本としたユニバースを返す。
+def build_universe(
+    include_custom: bool = False,
+    custom_path: Optional[Path] = None,
+    use_listed_master: bool = False,
+) -> List[str]:
+    """ユニバースを組み立てる。
 
     Args:
         include_custom: ``True`` の場合は ``custom_symbols.txt`` で定義した
             追加銘柄も含める。
         custom_path: カスタム銘柄リストのパス。未指定時は ``data/meta``
             配下の ``custom_symbols.txt`` を参照する。
+        use_listed_master: True の場合は listed_master.csv に記載の全銘柄
+            を対象にする（市場区分での絞り込みなし）。
     """
 
-    codes: List[str] = get_default_universe()
+    if use_listed_master:
+        codes: List[str] = get_all_listed_codes()
+    else:
+        codes = get_default_universe()
     if include_custom:
         codes += load_custom_symbols(path=custom_path)
     # zfill(4) 済みのため重複のみ除去
@@ -350,8 +366,12 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
     return merged
 
 
-def update_universe(codes: Optional[List[str]] = None, full_refresh: bool = False) -> None:
-    target_codes = codes or get_default_universe()
+def update_universe(
+    codes: Optional[List[str]] = None,
+    full_refresh: bool = False,
+    use_listed_master: bool = False,
+) -> None:
+    target_codes = codes or build_universe(use_listed_master=use_listed_master)
     for code in target_codes:
         try:
             update_symbol(code, full_refresh=full_refresh)
@@ -394,12 +414,25 @@ if __name__ == "__main__":
         type=Path,
         help="カスタム銘柄リストのパス（デフォルト: data/meta/custom_symbols.txt）",
     )
+    parser.add_argument(
+        "--use-listed-master",
+        action="store_true",
+        help="listed_master.csv に記載の全銘柄を一括更新する",
+    )
 
     args = parser.parse_args()
 
     if args.codes:
         codes = [str(c).zfill(4) for c in args.codes]
     else:
-        codes = build_universe(include_custom=args.include_custom, custom_path=args.custom_path)
+        codes = build_universe(
+            include_custom=args.include_custom,
+            custom_path=args.custom_path,
+            use_listed_master=args.use_listed_master,
+        )
 
-    update_universe(codes=codes, full_refresh=args.full_refresh)
+    update_universe(
+        codes=codes,
+        full_refresh=args.full_refresh,
+        use_listed_master=args.use_listed_master,
+    )

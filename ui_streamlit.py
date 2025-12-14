@@ -176,6 +176,13 @@ def main():
         include_custom = st.checkbox(
             "custom_symbols.txt も含める", value=False, key="include_custom_universe"
         )
+        universe_source = st.radio(
+            "更新対象",
+            options=["prime_standard", "listed_all"],
+            format_func=lambda v: "プライム+スタンダード" if v == "prime_standard" else "listed_masterにある全銘柄",
+            index=0,
+            key="universe_source",
+        )
         full_refresh = st.checkbox(
             "フルリフレッシュ（取得可能な2年分を再取得）",
             value=False,
@@ -184,8 +191,15 @@ def main():
         if st.button("ユニバースを更新", key="update_universe_button"):
             try:
                 with st.spinner("ユニバースを更新しています..."):
-                    target_codes = build_universe(include_custom=include_custom)
-                    update_universe(codes=target_codes, full_refresh=full_refresh)
+                    target_codes = build_universe(
+                        include_custom=include_custom,
+                        use_listed_master=universe_source == "listed_all",
+                    )
+                    update_universe(
+                        codes=target_codes,
+                        full_refresh=full_refresh,
+                        use_listed_master=universe_source == "listed_all",
+                    )
                 st.success("一括更新が完了しました。")
                 st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
