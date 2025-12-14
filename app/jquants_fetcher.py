@@ -183,6 +183,23 @@ def get_default_universe() -> List[str]:
     return sorted(universe["code"].astype(str).str.zfill(4).tolist())
 
 
+def build_universe(include_custom: bool = False, custom_path: Optional[Path] = None) -> List[str]:
+    """プライム + スタンダード銘柄を基本としたユニバースを返す。
+
+    Args:
+        include_custom: ``True`` の場合は ``custom_symbols.txt`` で定義した
+            追加銘柄も含める。
+        custom_path: カスタム銘柄リストのパス。未指定時は ``data/meta``
+            配下の ``custom_symbols.txt`` を参照する。
+    """
+
+    codes: List[str] = get_default_universe()
+    if include_custom:
+        codes += load_custom_symbols(path=custom_path)
+    # zfill(4) 済みのため重複のみ除去
+    return sorted(dict.fromkeys(codes).keys())
+
+
 def _load_meta(code: str) -> Dict[str, Any]:
     meta_path = META_DIR / f"{code}.json"
     if meta_path.exists():
@@ -286,6 +303,37 @@ def load_custom_symbols(path: Optional[Path] = None) -> List[str]:
 
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(level=logging.INFO)
-    # 例: プライム + スタンダードの銘柄をまとめて更新する
-    update_universe()
+
+    parser = argparse.ArgumentParser(description="J-Quants 株価の一括更新")
+    parser.add_argument(
+        "--codes",
+        nargs="*",
+        help="更新対象の銘柄コード（未指定時はプライム+スタンダード）",
+    )
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Free プランで取得可能な期間を全件取り直して上書き",
+    )
+    parser.add_argument(
+        "--include-custom",
+        action="store_true",
+        help="custom_symbols.txt に記載した銘柄も対象に含める",
+    )
+    parser.add_argument(
+        "--custom-path",
+        type=Path,
+        help="カスタム銘柄リストのパス（デフォルト: data/meta/custom_symbols.txt）",
+    )
+
+    args = parser.parse_args()
+
+    if args.codes:
+        codes = [str(c).zfill(4) for c in args.codes]
+    else:
+        codes = build_universe(include_custom=args.include_custom, custom_path=args.custom_path)
+
+    update_universe(codes=codes, full_refresh=args.full_refresh)
