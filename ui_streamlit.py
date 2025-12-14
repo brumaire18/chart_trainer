@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from typing import Optional
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -75,7 +76,9 @@ def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return resampled
 
 
-def _point_and_figure(df: pd.DataFrame, box_size: float | None = None, reversal: int = 3) -> pd.DataFrame:
+def _point_and_figure(
+    df: pd.DataFrame, box_size: Optional[float] = None, reversal: int = 3
+) -> pd.DataFrame:
     """
     クローズ価格からシンプルなポイント・アンド・フィギュア用の箱データを生成する。
     box_size が未指定のときは終値の中央値の1%を自動設定する。
@@ -379,25 +382,6 @@ def main():
                 line=dict(color="#9467bd", dash="dash"),
             ),
             secondary_y=True,
-        )
-    if show_bbands:
-        price_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date"],
-                y=df_problem["bb_upper"],
-                name="BB Upper",
-                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-            )
-        )
-        price_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date"],
-                y=df_problem["bb_lower"],
-                name="BB Lower",
-                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-                fill="tonexty",
-                fillcolor="rgba(180,180,180,0.1)",
-            )
         )
 
     osc_fig.update_layout(
