@@ -380,6 +380,25 @@ def main():
             ),
             secondary_y=True,
         )
+    if show_bbands:
+        price_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date"],
+                y=df_problem["bb_upper"],
+                name="BB Upper",
+                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+            )
+        )
+        price_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date"],
+                y=df_problem["bb_lower"],
+                name="BB Lower",
+                line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+                fill="tonexty",
+                fillcolor="rgba(180,180,180,0.1)",
+            )
+        )
 
     osc_fig.update_layout(
         xaxis_title="Date",
