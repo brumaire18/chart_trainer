@@ -49,6 +49,8 @@ def enforce_free_plan_window(
     start_ts = pd.to_datetime(start_date).normalize()
     end_ts = pd.to_datetime(end_date).normalize()
 
+    today = pd.Timestamp(date.today())
+
     earliest_allowed = pd.Timestamp(date.today() - timedelta(weeks=max_weeks))
     adjusted = False
 
@@ -57,6 +59,10 @@ def enforce_free_plan_window(
         adjusted = True
     elif start_ts < earliest_allowed:
         start_ts = earliest_allowed
+        adjusted = True
+
+    if end_ts > today:
+        end_ts = today
         adjusted = True
 
     if end_ts < start_ts:

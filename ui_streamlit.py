@@ -160,13 +160,20 @@ def main():
             if start_date > end_date:
                 raise ValueError("終了日は開始日以降にしてください。")
 
+            start_requested = start_date.isoformat()
+            end_requested = end_date.isoformat()
             request_start, request_end, adjusted = enforce_free_plan_window(
-                start_date.isoformat(), end_date.isoformat(), FREE_PLAN_WEEKS
+                start_requested, end_requested, FREE_PLAN_WEEKS
             )
             if adjusted:
-                st.sidebar.info(
-                    f"フリー版の制限に合わせて開始日を {request_start} に調整しました。"
-                )
+                if request_start != start_requested:
+                    st.sidebar.info(
+                        f"フリー版の制限に合わせて開始日を {request_start} に調整しました。"
+                    )
+                if request_end != end_requested:
+                    st.sidebar.info(
+                        f"取得可能な最新日付 {request_end} までに終了日を調整しました。"
+                    )
 
             fetch_and_save_price_csv(
                 download_symbol.strip(),
@@ -248,6 +255,7 @@ def main():
     lookback_window = min(lookback, len(df_resampled))
     df_problem = df_resampled.tail(lookback_window).copy()
     df_problem = _compute_indicators(df_problem)
+    df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
 
     st.subheader(f"チャート（{selected_symbol}）")
 
@@ -267,7 +275,7 @@ def main():
     if chart_type == "candlestick":
         price_fig.add_trace(
             go.Candlestick(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 open=df_problem["open"],
                 high=df_problem["high"],
                 low=df_problem["low"],
@@ -302,7 +310,7 @@ def main():
     else:
         price_fig.add_trace(
             go.Scatter(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["close"],
                 name="Close",
             ),
@@ -314,7 +322,7 @@ def main():
         if show_sma20:
             price_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date"],
+                    x=df_problem["date_str"],
                     y=df_problem["sma20"],
                     name="SMA 20",
                     line=dict(dash="dash"),
@@ -325,7 +333,7 @@ def main():
         if show_sma50:
             price_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date"],
+                    x=df_problem["date_str"],
                     y=df_problem["sma50"],
                     name="SMA 50",
                     line=dict(dash="dot"),
@@ -336,7 +344,7 @@ def main():
         if show_bbands:
             price_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date"],
+                    x=df_problem["date_str"],
                     y=df_problem["bb_upper"],
                     name="BB Upper",
                     line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
@@ -346,7 +354,7 @@ def main():
             )
             price_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date"],
+                    x=df_problem["date_str"],
                     y=df_problem["bb_lower"],
                     name="BB Lower",
                     line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
@@ -360,7 +368,7 @@ def main():
         if show_volume:
             price_fig.add_trace(
                 go.Bar(
-                    x=df_problem["date"],
+                    x=df_problem["date_str"],
                     y=df_problem["volume"],
                     name="出来高",
                     marker_color="rgba(100,149,237,0.6)",
@@ -378,6 +386,7 @@ def main():
             xaxis_title="Date",
             margin=dict(l=10, r=10, t=40, b=10),
         )
+        price_fig.update_xaxes(type="category")
 
     if chart_type == "pnf":
         price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
@@ -388,7 +397,7 @@ def main():
     if show_rsi:
         osc_fig.add_trace(
             go.Scatter(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["rsi14"],
                 name="RSI 14",
                 line=dict(color="#2ca02c"),
@@ -400,7 +409,7 @@ def main():
     if show_stoch:
         osc_fig.add_trace(
             go.Scatter(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["stoch_k"],
                 name="%K",
                 line=dict(color="#1f77b4"),
@@ -409,7 +418,7 @@ def main():
         )
         osc_fig.add_trace(
             go.Scatter(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["stoch_d"],
                 name="%D",
                 line=dict(color="#ff7f0e", dash="dot"),
@@ -419,7 +428,7 @@ def main():
     if show_macd:
         osc_fig.add_trace(
             go.Bar(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["macd_hist"],
                 name="MACD Hist",
                 marker_color="rgba(100,100,100,0.4)",
@@ -428,7 +437,7 @@ def main():
         )
         osc_fig.add_trace(
             go.Scatter(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["macd"],
                 name="MACD",
                 line=dict(color="#d62728"),
@@ -437,7 +446,7 @@ def main():
         )
         osc_fig.add_trace(
             go.Scatter(
-                x=df_problem["date"],
+                x=df_problem["date_str"],
                 y=df_problem["macd_signal"],
                 name="Signal",
                 line=dict(color="#9467bd", dash="dash"),
@@ -452,6 +461,7 @@ def main():
         legend=dict(orientation="h"),
     )
     osc_fig.update_yaxes(title_text="MACD", secondary_y=True)
+    osc_fig.update_xaxes(type="category")
 
     st.plotly_chart(osc_fig, use_container_width=True)
 
