@@ -121,7 +121,7 @@ def _normalize_from_jquants(
     )
 
     df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
-    df["date"] = df["date"].dt.date
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     df = df.sort_values("date").reset_index(drop=True)
     return df
 
@@ -152,7 +152,7 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
             df["code"] = symbol
         if "market" not in df.columns:
             df["market"] = None
-        df["date"] = df["date"].dt.date
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
         return df
 
     # パターン2: J-Quants daily_quotes 形式
