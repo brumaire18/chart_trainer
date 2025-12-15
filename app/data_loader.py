@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -25,14 +25,14 @@ def get_available_symbols() -> List[str]:
     return sorted(symbols)
 
 
-def enforce_free_plan_window(
+def enforce_light_plan_window(
     start_date: str,
     end_date: str,
-    max_weeks: int = 12,
+    max_years: int = 5,
     expand_to_max_window: bool = True,
 ) -> Tuple[str, str, bool]:
     """
-    J-Quants フリー版が取得できる期間 (既定: 過去12週間) に合わせて
+    J-Quants ライトプランが取得できる期間 (既定: 過去5年) に合わせて
     取得期間を補正する。
 
     - expand_to_max_window=True の場合は、指定日付が制限内でも
@@ -51,7 +51,7 @@ def enforce_free_plan_window(
 
     today = pd.Timestamp(date.today())
 
-    earliest_allowed = pd.Timestamp(date.today() - timedelta(weeks=max_weeks))
+    earliest_allowed = today - pd.DateOffset(years=max_years)
     adjusted = False
 
     if expand_to_max_window and start_ts > earliest_allowed:
@@ -67,7 +67,7 @@ def enforce_free_plan_window(
 
     if end_ts < start_ts:
         raise ValueError(
-            "終了日は開始日以降にしてください。(フリー版は過去12週間まで取得可能です)"
+            "終了日は開始日以降にしてください。(ライトプランは過去5年まで取得可能です)"
         )
 
     return start_ts.date().isoformat(), end_ts.date().isoformat(), adjusted
@@ -174,7 +174,7 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
     if not symbol:
         raise ValueError("銘柄コードが指定されていません。")
 
-    adjusted_start, adjusted_end, _ = enforce_free_plan_window(start_date, end_date)
+    adjusted_start, adjusted_end, _ = enforce_light_plan_window(start_date, end_date)
 
     client = JQuantsClient(
         refresh_token=JQUANTS_REFRESH_TOKEN,
