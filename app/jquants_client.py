@@ -3,12 +3,26 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, Union
 
+
+def _normalize_token(value: Optional[str]) -> Optional[str]:
+    """Return a stripped token string or None if empty."""
+
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned if cleaned else None
+
 import pandas as pd
 import requests
 
 
 class JQuantsClient:
     """Simple client for fetching J-Quants daily quotes."""
+
+    # Backward-compatible instance helper retained so callers expecting
+    # the old method name do not crash with an AttributeError.
+    def _normalize_token(self, value: Optional[str]) -> Optional[str]:
+        return _normalize_token(value)
 
     def __init__(
         self,
@@ -24,7 +38,20 @@ class JQuantsClient:
         self.password = password or os.getenv("PASSWORD")
         self.base_url = (base_url or os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")).rstrip("/")
         self._id_token: Optional[str] = None
-        self._access_token: Optional[str] = None
+        self._access_token: Optional[str] = None  # Backward-compat alias for id token
+
+        self._debug(
+            "initialized client "
+            f"base_url={self.base_url} "
+            f"has_mailaddress={bool(self.mailaddress)} "
+            f"has_password={bool(self.password)} "
+            f"has_refresh_token={bool(self.refresh_token)}"
+        )
+
+    @staticmethod
+    def _debug(message: str) -> None:
+        """Lightweight console logger for debugging."""
+        print(f"[JQuantsClient] {message}")
 
     def _request(self, method: str, path: str, **kwargs) -> Dict:
         url = f"{self.base_url}{path}"
@@ -115,13 +142,19 @@ class JQuantsClient:
 
         return refresh_token
 
-    def authenticate(self) -> str:
-        """Obtain and cache an access token using the refresh token."""
+    def create_refresh_token(self) -> str:
+        """Generate and store a refresh token along with its expiration."""
+
         if not self.mailaddress:
             raise ValueError("MAILADDRESS is not set.")
+        if not self.password:
+            raise ValueError("PASSWORD is not set.")
 
-        if self._access_token:
-            return self._access_token
+        self._debug(
+            "creating refresh token using configured mailaddress/password"
+        )
+        auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
+        auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
 
         refresh_token = self.refresh_token
         if not self._refresh_token_is_valid():
@@ -150,12 +183,57 @@ class JQuantsClient:
         if not self._access_token:
             raise ValueError("accessToken was not returned from J-Quants auth_refresh endpoint.")
 
-        return self._access_token
+        refresh_token = self.refresh_token
+        if not self.mailaddress and not refresh_token:
+            raise ValueError("MAILADDRESS or JQUANTS_REFRESH_TOKEN must be set.")
+        if not refresh_token:
+            self._debug("no refresh token configured; generating via auth_user")
+            refresh_token = self.create_refresh_token()
+        else:
+            preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
+            self._debug(
+                "using provided refresh token for auth_refresh "
+                f"length={len(refresh_token)} preview={preview}"
+            )
+
+        # The refresh endpoint expects a lower-case "refreshtoken" query parameter as
+        # documented at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
+        refresh_params = {"refreshtoken": refresh_token}
+        refresh_data = self._request(
+            "POST", "/v1/token/auth_refresh", params=refresh_params
+        )
+        new_refresh_token = _normalize_token(
+            refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
+        )
+        if new_refresh_token:
+            self.refresh_token = new_refresh_token
+
+        expiry_keys = (
+            "refreshTokenExpiresAt",
+            "refreshTokenExpiration",
+            "refreshTokenExpires",
+            "refreshTokenExpiresIn",
+        )
+        self.refresh_token_expires_at = next(
+            (refresh_data.get(key) for key in expiry_keys if refresh_data.get(key) is not None),
+            self.refresh_token_expires_at,
+        )
+        self._id_token = _normalize_token(refresh_data.get("idToken"))
+        if not self._id_token:
+            raise ValueError("idToken was not returned from J-Quants auth_refresh endpoint.")
+
+        # Keep setting _access_token for callers that still reference it, even though
+        # the API returns only an idToken for authentication.
+        self._access_token = self._id_token
+
+        self._debug("successfully obtained id token")
+
+        return self._id_token
 
     def fetch_daily_quotes(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Retrieve OHLCV daily quotes for the specified code and date range."""
-        access_token = self.authenticate()
-        headers = {"Authorization": f"Bearer {access_token}"}
+        id_token = self.authenticate()
+        headers = {"Authorization": f"Bearer {id_token}"}
         params = {"code": code, "from": start_date, "to": end_date}
 
         data = self._request("GET", "/v1/prices/daily_quotes", headers=headers, params=params)
