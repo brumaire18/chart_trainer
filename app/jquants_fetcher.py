@@ -125,11 +125,20 @@ def _extract_error_message(response: requests.Response) -> Optional[str]:
     return None
 
 
+def _describe_request(path: str, params: Optional[Dict[str, Any]]) -> str:
+    if not params:
+        return path
+
+    safe_params = {k: v for k, v in params.items() if k.lower() not in {"authorization", "token"}}
+    return f"{path} params={safe_params}"
+
+
 def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     token = _get_id_token(client)
     url = f"{client.base_url}{path}"
     headers = {"Authorization": f"Bearer {token}"}
 
+    request_context = _describe_request(path, params)
     retry = 0
     auth_retry = 0
     wait_seconds = RATE_LIMIT_INITIAL_WAIT
@@ -137,7 +146,7 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
         try:
             response = requests.get(url, headers=headers, params=params, timeout=30)
         except Exception as exc:  # pragma: no cover - thin wrapper
-            logger.exception("J-Quants API リクエスト送信に失敗しました: %s", path)
+            logger.exception("J-Quants API リクエスト送信に失敗しました: %s", request_context)
             raise JQuantsError(f"J-Quants API リクエスト送信に失敗しました: {path}") from exc
 
         if response.status_code in RATE_LIMIT_STATUS_CODES:
@@ -155,11 +164,12 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
             # ジッターを加えて衝突を避ける
             sleep_for = min(sleep_for + random.randint(5, 30), RATE_LIMIT_MAX_WAIT)
             logger.warning(
-                "レートリミットに達しました(status=%s)。%s 秒待機して再試行します (%s/%s)。",
+                "レートリミットに達しました(status=%s)。%s 秒待機して再試行します (%s/%s) [%s]",
                 response.status_code,
                 sleep_for,
                 retry,
                 RATE_LIMIT_MAX_RETRIES,
+                request_context,
             )
             time.sleep(sleep_for)
             wait_seconds = min(int(wait_seconds * RATE_LIMIT_BACKOFF), RATE_LIMIT_MAX_WAIT)
@@ -171,10 +181,11 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
                 credential_status = get_credential_status()
                 logger.error(
                     "提供されたトークンが無効または期限切れです。JQUANTS_REFRESH_TOKEN を再取得してください"
-                    " (status=%s, message=%s, credentials=%s)",
+                    " (status=%s, message=%s, credentials=%s, request=%s)",
                     response.status_code,
                     error_message,
                     credential_status,
+                    request_context,
                 )
                 raise JQuantsError(
                     "認証トークンが無効または期限切れです。JQUANTS_REFRESH_TOKEN を正しい値で再設定してください。"
@@ -183,19 +194,21 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
             auth_retry += 1
             if auth_retry > AUTH_ERROR_MAX_RETRIES:
                 logger.error(
-                    "認証エラーが繰り返されたためリトライを中断します (status=%s, retries=%s/%s)",
+                    "認証エラーが繰り返されたためリトライを中断します (status=%s, retries=%s/%s, request=%s)",
                     response.status_code,
                     auth_retry,
                     AUTH_ERROR_MAX_RETRIES,
+                    request_context,
                 )
                 raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}")
 
             logger.warning(
-                "認証エラーを検知したため %s 秒待機して再試行します (status=%s, %s/%s)",
+                "認証エラーを検知したため %s 秒待機して再試行します (status=%s, %s/%s) [%s]",
                 AUTH_ERROR_WAIT,
                 response.status_code,
                 auth_retry,
                 AUTH_ERROR_MAX_RETRIES,
+                request_context,
             )
             time.sleep(AUTH_ERROR_WAIT)
 
@@ -207,7 +220,7 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
             response.raise_for_status()
             return response.json()
         except Exception as exc:  # pragma: no cover - thin wrapper
-            logger.exception("J-Quants API リクエストに失敗しました: %s", path)
+            logger.exception("J-Quants API リクエストに失敗しました: %s", request_context)
             raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}") from exc
 
 
@@ -430,6 +443,7 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         fetch_from, fetch_to = from_light, to_light
 
     params = {"code": code, "from": fetch_from, "to": fetch_to}
+    logger.info("%s の株価を取得します (from=%s, to=%s)", code, fetch_from, fetch_to)
     data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
     raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
     if raw_quotes is None:
