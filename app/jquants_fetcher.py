@@ -36,13 +36,18 @@ class JQuantsError(RuntimeError):
     """J-Quants API 呼び出しに関する例外。"""
 
 
+class JQuantsRateLimitError(JQuantsError):
+    """J-Quants API のレートリミットに関する例外。"""
+
+
 LIGHT_PLAN_WINDOW_DAYS = 365 * 5  # 約5年
 LIGHT_PLAN_LAG_WEEKS = 0  # 直近データも取得可能
 RATE_LIMIT_STATUS_CODES = {429, 503}
-RATE_LIMIT_INITIAL_WAIT = 300  # 秒（5分）
-RATE_LIMIT_MAX_WAIT = 1800  # 秒（30分）
+RATE_LIMIT_INITIAL_WAIT = 3600  # 秒（1時間）
+RATE_LIMIT_MAX_WAIT = 21600  # 秒（6時間）
 RATE_LIMIT_BACKOFF = 2.0
 RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_MAX_RETRIES_PER_SYMBOL = 3
 
 
 @dataclass
@@ -116,7 +121,7 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
         if response.status_code in RATE_LIMIT_STATUS_CODES:
             retry += 1
             if retry > RATE_LIMIT_MAX_RETRIES:
-                raise JQuantsError("レートリミットを複数回超過したため中断しました。")
+                raise JQuantsRateLimitError("レートリミットを複数回超過したため中断しました。")
 
             retry_after_header = response.headers.get("Retry-After")
             try:
@@ -413,11 +418,32 @@ def update_universe(
 ) -> None:
     target_codes = codes or build_universe(use_listed_master=use_listed_master)
     for code in target_codes:
-        try:
-            update_symbol(code, full_refresh=full_refresh)
-        except Exception as exc:  # pragma: no cover - 継続実行
-            logger.exception("%s の更新中にエラーが発生しました", code)
-            continue
+        rate_limit_retry = 0
+        while True:
+            try:
+                update_symbol(code, full_refresh=full_refresh)
+                break
+            except JQuantsRateLimitError as exc:  # pragma: no cover - 継続実行
+                rate_limit_retry += 1
+                if rate_limit_retry > RATE_LIMIT_MAX_RETRIES_PER_SYMBOL:
+                    logger.exception(
+                        "%s の更新中にレートリミットを繰り返し超過したためスキップします",
+                        code,
+                    )
+                    break
+
+                wait_for = RATE_LIMIT_MAX_WAIT
+                logger.warning(
+                    "レートリミットを検知したため %s 秒待機して再試行します (%s/%s)",
+                    wait_for,
+                    rate_limit_retry,
+                    RATE_LIMIT_MAX_RETRIES_PER_SYMBOL,
+                )
+                time.sleep(wait_for)
+                continue
+            except Exception as exc:  # pragma: no cover - 継続実行
+                logger.exception("%s の更新中にエラーが発生しました", code)
+                break
         time.sleep(0.3)
 
 
