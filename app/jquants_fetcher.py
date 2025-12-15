@@ -1,6 +1,6 @@
 """J-Quants から株価・銘柄マスタを取得するユーティリティ。
 
-Free プランの「直近12週間を除く過去2年分」という制約を考慮し、
+ライトプランの「直近約5年分取得可能」という制約を考慮し、
 日足 CSV とメタ情報を整形・保存するための関数群を提供する。
 """
 
@@ -36,8 +36,8 @@ class JQuantsError(RuntimeError):
     """J-Quants API 呼び出しに関する例外。"""
 
 
-FREE_PLAN_WINDOW_DAYS = 365 * 2  # 2年
-FREE_PLAN_LAG_WEEKS = 12  # 直近12週間は取得不可
+LIGHT_PLAN_WINDOW_DAYS = 365 * 5  # 約5年
+LIGHT_PLAN_LAG_WEEKS = 0  # 直近データも取得可能
 RATE_LIMIT_STATUS_CODES = {429, 503}
 RATE_LIMIT_INITIAL_WAIT = 300  # 秒（5分）
 RATE_LIMIT_MAX_WAIT = 1800  # 秒（30分）
@@ -200,10 +200,10 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     return normalized
 
 
-def _free_plan_window() -> tuple[str, str]:
+def _light_plan_window() -> tuple[str, str]:
     today = date.today()
-    to_date = today - timedelta(weeks=FREE_PLAN_LAG_WEEKS)
-    from_date = to_date - timedelta(days=FREE_PLAN_WINDOW_DAYS)
+    to_date = today - timedelta(weeks=LIGHT_PLAN_LAG_WEEKS)
+    from_date = to_date - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
     return from_date.isoformat(), to_date.isoformat()
 
 
@@ -352,17 +352,17 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
     meta = _load_meta(code)
     existing_df = None if full_refresh else _load_existing_csv(code)
 
-    from_free, to_free = _free_plan_window()
+    from_light, to_light = _light_plan_window()
 
     if not full_refresh and meta.get("history_end") and existing_df is not None:
         from_date = (pd.to_datetime(meta["history_end"]) + pd.Timedelta(days=1)).date()
-        to_date = datetime.fromisoformat(to_free).date()
+        to_date = datetime.fromisoformat(to_light).date()
         if from_date > to_date:
             logger.info("%s は取得可能期間外のためスキップします", code)
             return existing_df
-        fetch_from, fetch_to = from_date.isoformat(), to_free
+        fetch_from, fetch_to = from_date.isoformat(), to_light
     else:
-        fetch_from, fetch_to = from_free, to_free
+        fetch_from, fetch_to = from_light, to_light
 
     params = {"code": code, "from": fetch_from, "to": fetch_to}
     data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
@@ -398,7 +398,7 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         "history_end": history_end,
         "last_fetch_to": fetch_to,
         "last_fetch_at": datetime.now().astimezone().isoformat(),
-        "plan": "FREE",
+        "plan": "LIGHT",
     }
     meta_path = _save_meta(code, meta_out)
 

@@ -8,7 +8,7 @@ import streamlit as st
 
 from app.config import DEFAULT_LOOKBACK_BARS
 from app.data_loader import (
-    enforce_free_plan_window,
+    enforce_light_plan_window,
     fetch_and_save_price_csv,
     get_available_symbols,
     load_price_csv,
@@ -21,7 +21,7 @@ from app.jquants_fetcher import (
 )
 
 
-FREE_PLAN_WEEKS = 12
+LIGHT_PLAN_YEARS = 5
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -177,11 +177,11 @@ def main():
     download_symbol = st.sidebar.text_input(
         "銘柄コード (例: 7203)", value=default_symbol
     )
-    default_start = date.today() - timedelta(weeks=FREE_PLAN_WEEKS)
+    default_start = date.today() - timedelta(days=365 * LIGHT_PLAN_YEARS)
     default_end = date.today()
     st.sidebar.caption(
-        "※ フリー版では過去12週間より前のデータは取得できません。"
-        "指定にかかわらず取得可能な最大範囲（過去12週間）に自動調整します。"
+        "※ ライトプランでは過去約5年分まで取得できます。"
+        "指定にかかわらず取得可能な最大範囲（過去5年）に自動調整します。"
     )
 
     with st.sidebar.expander("プライム + スタンダードを一括更新"):
@@ -204,7 +204,7 @@ def main():
             key="universe_source",
         )
         full_refresh = st.checkbox(
-            "フルリフレッシュ（取得可能な2年分を再取得）",
+            "フルリフレッシュ（取得可能な5年分を再取得）",
             value=False,
             key="full_refresh_universe",
         )
@@ -235,13 +235,13 @@ def main():
 
             start_requested = start_date.isoformat()
             end_requested = end_date.isoformat()
-            request_start, request_end, adjusted = enforce_free_plan_window(
-                start_requested, end_requested, FREE_PLAN_WEEKS
+            request_start, request_end, adjusted = enforce_light_plan_window(
+                start_requested, end_requested, LIGHT_PLAN_YEARS
             )
             if adjusted:
                 if request_start != start_requested:
                     st.sidebar.info(
-                        f"フリー版の制限に合わせて開始日を {request_start} に調整しました。"
+                        f"ライトプランの制限に合わせて開始日を {request_start} に調整しました。"
                     )
                 if request_end != end_requested:
                     st.sidebar.info(
