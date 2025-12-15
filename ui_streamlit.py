@@ -143,6 +143,26 @@ def _point_and_figure(
 
     return pd.DataFrame(rows)
 
+
+def _has_macd_golden_cross(df: pd.DataFrame) -> bool:
+    """
+    直近足で MACD がシグナルを上抜けていれば True。
+
+    ヒストグラムが正の方向へ転じていることも確認する。
+    """
+
+    if len(df) < 2:
+        return False
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    return bool(
+        latest["macd"] > latest["macd_signal"]
+        and prev["macd"] <= prev["macd_signal"]
+        and latest["macd_hist"] > 0
+    )
+
+
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
     st.title("Chart Trainer - フェーズ1（ラインチャート版）")
@@ -297,27 +317,24 @@ def main():
     show_stoch = st.sidebar.checkbox("ストキャスティクス (14,3)", value=False)
     show_obv = st.sidebar.checkbox("オンバランスボリューム", value=False)
 
-    # --- メイン処理 ---
-    df_daily = load_price_csv(selected_symbol)
+    tab_chart, tab_screen = st.tabs(["チャート表示", "スクリーナー"])
 
-    df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
-    removed_rows = len(df_daily) - len(df_daily_trading)
-    if removed_rows > 0:
-        st.sidebar.info(
-            f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
-        )
+    with tab_chart:
+        # --- チャート表示 ---
+        df_daily = load_price_csv(selected_symbol)
 
-    df_resampled = _resample_ohlc(df_daily_trading, timeframe)
+        df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
+        removed_rows = len(df_daily) - len(df_daily_trading)
+        if removed_rows > 0:
+            st.sidebar.info(
+                f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
+            )
 
-    if df_resampled.empty:
-        st.warning("表示できるデータがありません。先にデータを取得してください。")
-        return
+        df_resampled = _resample_ohlc(df_daily_trading, timeframe)
 
-    if len(df_resampled) < lookback:
-        st.warning(
-            f"過去本数 {lookback} 本に対してデータが不足しています。"
-            f" 利用可能な {len(df_resampled)} 本のみ表示します。"
-        )
+        if df_resampled.empty:
+            st.warning("表示できるデータがありません。先にデータを取得してください。")
+            return
 
     lookback_window = min(lookback, len(df_resampled))
     df_problem = df_resampled.tail(lookback_window).copy()
@@ -375,152 +392,246 @@ def main():
                     ),
                 )
             )
-            price_fig.update_layout(xaxis_title="列", yaxis_title="価格")
-    else:
-        price_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["close"],
-                name="Close",
-            ),
-            row=1,
-            col=1,
-        )
 
-    if chart_type != "pnf":
-        if show_sma20:
+        lookback_window = min(lookback, len(df_resampled))
+        df_problem = df_resampled.tail(lookback_window).copy()
+        df_problem = _compute_indicators(df_problem)
+        df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
+
+        title_name = name_map.get(selected_symbol, "")
+        title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
+        st.subheader(title)
+
+        volume_applicable = chart_type != "pnf"
+        if chart_type != "pnf":
+            rows = 2 if show_volume else 1
+            price_fig = make_subplots(
+                rows=rows,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05 if show_volume else 0.08,
+                row_heights=[0.7, 0.3] if show_volume else [1.0],
+            )
+        else:
+            price_fig = go.Figure()
+
+        if chart_type == "candlestick":
             price_fig.add_trace(
-                go.Scatter(
+                go.Candlestick(
                     x=df_problem["date_str"],
-                    y=df_problem["sma20"],
-                    name="SMA 20",
-                    line=dict(dash="dash"),
+                    open=df_problem["open"],
+                    high=df_problem["high"],
+                    low=df_problem["low"],
+                    close=df_problem["close"],
+                    name="ローソク足",
                 ),
                 row=1,
                 col=1,
             )
-        if show_sma50:
+        elif chart_type == "pnf":
+            pnf_df = _point_and_figure(df_problem)
+            if pnf_df.empty:
+                st.warning("ポイント・アンド・フィギュアを描画するデータが不足しています。")
+            else:
+                if show_volume:
+                    st.info("ポイント・アンド・フィギュア選択時は出来高表示を省略します。")
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=pnf_df["col"],
+                        y=pnf_df["price"],
+                        mode="markers",
+                        name="ポイント・アンド・フィギュア",
+                        marker=dict(
+                            size=14,
+                            symbol="square",
+                            color=pnf_df["type"].map({"X": "#d62728", "O": "#1f77b4"}),
+                            line=dict(width=1, color="#333333"),
+                        ),
+                    )
+                )
+                price_fig.update_layout(xaxis_title="列", yaxis_title="価格")
+        else:
             price_fig.add_trace(
                 go.Scatter(
                     x=df_problem["date_str"],
-                    y=df_problem["sma50"],
-                    name="SMA 50",
-                    line=dict(dash="dot"),
-                ),
-                row=1,
-                col=1,
-            )
-        if show_bbands:
-            price_fig.add_trace(
-                go.Scatter(
-                    x=df_problem["date_str"],
-                    y=df_problem["bb_upper"],
-                    name="BB Upper",
-                    line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-                ),
-                row=1,
-                col=1,
-            )
-            price_fig.add_trace(
-                go.Scatter(
-                    x=df_problem["date_str"],
-                    y=df_problem["bb_lower"],
-                    name="BB Lower",
-                    line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
-                    fill="tonexty",
-                    fillcolor="rgba(180,180,180,0.1)",
+                    y=df_problem["close"],
+                    name="Close",
                 ),
                 row=1,
                 col=1,
             )
 
-        if show_volume:
-            price_fig.add_trace(
+        if chart_type != "pnf":
+            if show_sma20:
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date_str"],
+                        y=df_problem["sma20"],
+                        name="SMA 20",
+                        line=dict(dash="dash"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+            if show_sma50:
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date_str"],
+                        y=df_problem["sma50"],
+                        name="SMA 50",
+                        line=dict(dash="dot"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+            if show_bbands:
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date_str"],
+                        y=df_problem["bb_upper"],
+                        name="BB Upper",
+                        line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date_str"],
+                        y=df_problem["bb_lower"],
+                        name="BB Lower",
+                        line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
+                        fill="tonexty",
+                        fillcolor="rgba(180,180,180,0.1)",
+                    ),
+                    row=1,
+                    col=1,
+                )
+
+            if show_volume:
+                price_fig.add_trace(
+                    go.Bar(
+                        x=df_problem["date_str"],
+                        y=df_problem["volume"],
+                        name="出来高",
+                        marker_color="rgba(100,149,237,0.6)",
+                        opacity=0.7,
+                    ),
+                    row=2 if volume_applicable else 1,
+                    col=1,
+                )
+
+            price_fig.update_yaxes(title_text="価格", row=1, col=1)
+            if show_volume:
+                price_fig.update_yaxes(title_text="出来高", row=2 if volume_applicable else 1, col=1)
+
+            price_fig.update_layout(
+                xaxis_title="Date",
+                margin=dict(l=10, r=10, t=40, b=10),
+            )
+            price_fig.update_xaxes(type="category")
+
+        if chart_type == "pnf":
+            price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
+
+        st.plotly_chart(price_fig, use_container_width=True)
+
+        osc_fig = make_subplots(specs=[[{"secondary_y": True}]])
+        if show_rsi:
+            osc_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date_str"],
+                    y=df_problem["rsi14"],
+                    name="RSI 14",
+                    line=dict(color="#2ca02c"),
+                ),
+                secondary_y=False,
+            )
+            for level in (30, 50, 70):
+                osc_fig.add_hline(y=level, line=dict(color="#cccccc", width=1, dash="dash"))
+        if show_stoch:
+            osc_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date_str"],
+                    y=df_problem["stoch_k"],
+                    name="%K",
+                    line=dict(color="#1f77b4"),
+                ),
+                secondary_y=False,
+            )
+            osc_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date_str"],
+                    y=df_problem["stoch_d"],
+                    name="%D",
+                    line=dict(color="#ff7f0e", dash="dot"),
+                ),
+                secondary_y=False,
+            )
+        if show_macd:
+            osc_fig.add_trace(
                 go.Bar(
                     x=df_problem["date_str"],
-                    y=df_problem["volume"],
-                    name="出来高",
-                    marker_color="rgba(100,149,237,0.6)",
-                    opacity=0.7,
+                    y=df_problem["macd_hist"],
+                    name="MACD Hist",
+                    marker_color="rgba(100,100,100,0.4)",
                 ),
-                row=2 if volume_applicable else 1,
-                col=1,
+                secondary_y=True,
+            )
+            osc_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date_str"],
+                    y=df_problem["macd"],
+                    name="MACD",
+                    line=dict(color="#d62728"),
+                ),
+                secondary_y=True,
+            )
+            osc_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date_str"],
+                    y=df_problem["macd_signal"],
+                    name="Signal",
+                    line=dict(color="#9467bd", dash="dash"),
+                ),
+                secondary_y=True,
+            )
+        if show_obv:
+            osc_fig.add_trace(
+                go.Scatter(
+                    x=df_problem["date_str"],
+                    y=df_problem["obv"],
+                    name="OBV",
+                    line=dict(color="#8c564b"),
+                ),
+                secondary_y=True,
             )
 
-        price_fig.update_yaxes(title_text="価格", row=1, col=1)
-        if show_volume:
-            price_fig.update_yaxes(title_text="出来高", row=2 if volume_applicable else 1, col=1)
-
-        price_fig.update_layout(
+        osc_fig.update_layout(
             xaxis_title="Date",
+            yaxis_title="RSI / Stoch",
             margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h"),
         )
-        price_fig.update_xaxes(type="category")
+        osc_fig.update_yaxes(title_text="MACD", secondary_y=True)
+        osc_fig.update_xaxes(type="category")
 
-    if chart_type == "pnf":
-        price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(osc_fig, use_container_width=True)
 
-    st.plotly_chart(price_fig, use_container_width=True)
+    with tab_screen:
+        st.subheader("テクニカル・スクリーナー")
+        st.caption("日足データを使い、直近のMACDゴールデンクロスやRSI帯などで抽出します。")
 
-    osc_fig = make_subplots(specs=[[{"secondary_y": True}]])
-    if show_rsi:
-        osc_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["rsi14"],
-                name="RSI 14",
-                line=dict(color="#2ca02c"),
-            ),
-            secondary_y=False,
+        target_markets = st.multiselect(
+            "市場 (空欄なら全て)",
+            options=sorted(listed_df["market"].dropna().unique()),
         )
-        for level in (30, 50, 70):
-            osc_fig.add_hline(y=level, line=dict(color="#cccccc", width=1, dash="dash"))
-    if show_stoch:
-        osc_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["stoch_k"],
-                name="%K",
-                line=dict(color="#1f77b4"),
-            ),
-            secondary_y=False,
-        )
-        osc_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["stoch_d"],
-                name="%D",
-                line=dict(color="#ff7f0e", dash="dot"),
-            ),
-            secondary_y=False,
-        )
-    if show_macd:
-        osc_fig.add_trace(
-            go.Bar(
-                x=df_problem["date_str"],
-                y=df_problem["macd_hist"],
-                name="MACD Hist",
-                marker_color="rgba(100,100,100,0.4)",
-            ),
-            secondary_y=True,
-        )
-        osc_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["macd"],
-                name="MACD",
-                line=dict(color="#d62728"),
-            ),
-            secondary_y=True,
-        )
-        osc_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["macd_signal"],
-                name="Signal",
-                line=dict(color="#9467bd", dash="dash"),
-            ),
-            secondary_y=True,
+        rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
+        require_macd_gc = st.checkbox("直近でMACDゴールデンクロス", value=True)
+        require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
+        sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
+        volume_multiplier = st.number_input(
+            "出来高/20日平均の下限 (倍)", min_value=0.0, max_value=10.0, value=0.8, step=0.1
         )
     if show_obv:
         osc_fig.add_trace(
@@ -533,16 +644,76 @@ def main():
             secondary_y=True,
         )
 
-    osc_fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="RSI / Stoch",
-        margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h"),
-    )
-    osc_fig.update_yaxes(title_text="MACD", secondary_y=True)
-    osc_fig.update_xaxes(type="category")
+        screening_results = []
+        for code in symbols:
+            if target_markets:
+                code_market = listed_df.loc[listed_df["code"] == int(code), "market"]
+                if not code_market.empty and code_market.iloc[0] not in target_markets:
+                    continue
 
-    st.plotly_chart(osc_fig, use_container_width=True)
+            try:
+                df_daily = load_price_csv(code)
+            except Exception:
+                continue
+
+            df_daily = df_daily[df_daily["volume"].fillna(0) > 0]
+            if len(df_daily) < max(50, sma_trend_lookback + 1):
+                continue
+
+            df_ind = _compute_indicators(df_daily.tail(200))
+            latest = df_ind.iloc[-1]
+            if latest.isna().any():
+                continue
+
+            rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
+            macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
+
+            sma_ok = True
+            if require_sma20_trend:
+                past_idx = -1 - sma_trend_lookback
+                if abs(past_idx) <= len(df_ind):
+                    past_sma = df_ind.iloc[past_idx]["sma20"]
+                    sma_ok = (
+                        latest["close"] > latest["sma20"]
+                        and latest["sma20"] > past_sma
+                    )
+                else:
+                    sma_ok = False
+
+            avg_vol20 = df_ind["volume"].tail(20).mean()
+            vol_ok = (
+                avg_vol20 is not None
+                and avg_vol20 > 0
+                and latest["volume"] >= avg_vol20 * volume_multiplier
+            )
+
+            if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
+                change_pct = (
+                    (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
+                    if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
+                    else None
+                )
+                screening_results.append(
+                    {
+                        "code": code,
+                        "name": name_map.get(code, "-"),
+                        "close": latest["close"],
+                        "RSI14": round(latest["rsi14"], 2),
+                        "MACD": round(latest["macd"], 3),
+                        "Signal": round(latest["macd_signal"], 3),
+                        "出来高": int(latest["volume"]),
+                        "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
+                        "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
+                    }
+                )
+
+        if screening_results:
+            df_result = pd.DataFrame(screening_results)
+            df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
+            st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
+            st.dataframe(df_result, use_container_width=True)
+        else:
+            st.info("条件に合致する銘柄が見つかりませんでした。条件を緩めて再検索してください。")
 
 if __name__ == "__main__":
     main()
