@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+import random
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,11 @@ class JQuantsError(RuntimeError):
 
 FREE_PLAN_WINDOW_DAYS = 365 * 2  # 2年
 FREE_PLAN_LAG_WEEKS = 12  # 直近12週間は取得不可
+RATE_LIMIT_STATUS_CODES = {429, 503}
+RATE_LIMIT_INITIAL_WAIT = 300  # 秒（5分）
+RATE_LIMIT_MAX_WAIT = 1800  # 秒（30分）
+RATE_LIMIT_BACKOFF = 2.0
+RATE_LIMIT_MAX_RETRIES = 5
 
 
 @dataclass
@@ -97,13 +103,47 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
     token = _get_id_token(client)
     url = f"{client.base_url}{path}"
     headers = {"Authorization": f"Bearer {token}"}
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:  # pragma: no cover - thin wrapper
-        logger.exception("J-Quants API リクエストに失敗しました: %s", path)
-        raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}") from exc
+
+    retry = 0
+    wait_seconds = RATE_LIMIT_INITIAL_WAIT
+    while True:
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+        except Exception as exc:  # pragma: no cover - thin wrapper
+            logger.exception("J-Quants API リクエスト送信に失敗しました: %s", path)
+            raise JQuantsError(f"J-Quants API リクエスト送信に失敗しました: {path}") from exc
+
+        if response.status_code in RATE_LIMIT_STATUS_CODES:
+            retry += 1
+            if retry > RATE_LIMIT_MAX_RETRIES:
+                raise JQuantsError("レートリミットを複数回超過したため中断しました。")
+
+            retry_after_header = response.headers.get("Retry-After")
+            try:
+                retry_after = int(retry_after_header) if retry_after_header else None
+            except ValueError:
+                retry_after = None
+
+            sleep_for = retry_after or wait_seconds
+            # ジッターを加えて衝突を避ける
+            sleep_for = min(sleep_for + random.randint(5, 30), RATE_LIMIT_MAX_WAIT)
+            logger.warning(
+                "レートリミットに達しました(status=%s)。%s 秒待機して再試行します (%s/%s)。",
+                response.status_code,
+                sleep_for,
+                retry,
+                RATE_LIMIT_MAX_RETRIES,
+            )
+            time.sleep(sleep_for)
+            wait_seconds = min(int(wait_seconds * RATE_LIMIT_BACKOFF), RATE_LIMIT_MAX_WAIT)
+            continue
+
+        try:
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:  # pragma: no cover - thin wrapper
+            logger.exception("J-Quants API リクエストに失敗しました: %s", path)
+            raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}") from exc
 
 
 def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:

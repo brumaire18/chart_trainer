@@ -142,6 +142,11 @@ class JQuantsClient:
 
         return refresh_token
 
+    def authenticate(self) -> str:
+        """Obtain and cache an id token using the refresh token."""
+        if self._id_token:
+            self._debug("using cached id token")
+            return self._id_token
     def create_refresh_token(self) -> str:
         """Generate and store a refresh token along with its expiration."""
 

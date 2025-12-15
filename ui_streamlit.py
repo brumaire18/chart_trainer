@@ -336,10 +336,61 @@ def main():
             st.warning("表示できるデータがありません。先にデータを取得してください。")
             return
 
-        if len(df_resampled) < lookback:
-            st.warning(
-                f"過去本数 {lookback} 本に対してデータが不足しています。"
-                f" 利用可能な {len(df_resampled)} 本のみ表示します。"
+    lookback_window = min(lookback, len(df_resampled))
+    df_problem = df_resampled.tail(lookback_window).copy()
+    df_problem = _compute_indicators(df_problem)
+    df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
+
+    title_name = name_map.get(selected_symbol, "")
+    title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
+    st.subheader(title)
+
+    volume_applicable = chart_type != "pnf"
+    if chart_type != "pnf":
+        rows = 2 if show_volume else 1
+        price_fig = make_subplots(
+            rows=rows,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05 if show_volume else 0.08,
+            row_heights=[0.7, 0.3] if show_volume else [1.0],
+        )
+    else:
+        price_fig = go.Figure()
+
+    if chart_type == "candlestick":
+        price_fig.add_trace(
+            go.Candlestick(
+                x=df_problem["date_str"],
+                open=df_problem["open"],
+                high=df_problem["high"],
+                low=df_problem["low"],
+                close=df_problem["close"],
+                name="ローソク足",
+            ),
+            row=1,
+            col=1,
+        )
+    elif chart_type == "pnf":
+        pnf_df = _point_and_figure(df_problem)
+        if pnf_df.empty:
+            st.warning("ポイント・アンド・フィギュアを描画するデータが不足しています。")
+        else:
+            if show_volume:
+                st.info("ポイント・アンド・フィギュア選択時は出来高表示を省略します。")
+            price_fig.add_trace(
+                go.Scatter(
+                    x=pnf_df["col"],
+                    y=pnf_df["price"],
+                    mode="markers",
+                    name="ポイント・アンド・フィギュア",
+                    marker=dict(
+                        size=14,
+                        symbol="square",
+                        color=pnf_df["type"].map({"X": "#d62728", "O": "#1f77b4"}),
+                        line=dict(width=1, color="#333333"),
+                    ),
+                )
             )
 
         lookback_window = min(lookback, len(df_resampled))
@@ -581,6 +632,16 @@ def main():
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
         volume_multiplier = st.number_input(
             "出来高/20日平均の下限 (倍)", min_value=0.0, max_value=10.0, value=0.8, step=0.1
+        )
+    if show_obv:
+        osc_fig.add_trace(
+            go.Scatter(
+                x=df_problem["date_str"],
+                y=df_problem["obv"],
+                name="OBV",
+                line=dict(color="#8c564b"),
+            ),
+            secondary_y=True,
         )
 
         screening_results = []
