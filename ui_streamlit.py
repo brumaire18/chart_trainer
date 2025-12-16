@@ -565,6 +565,9 @@ def main():
         st.subheader("テクニカル・スクリーナー")
         st.caption("日足データを使い、直近のMACDゴールデンクロスやRSI帯などで抽出します。")
 
+        if "screening_results" not in st.session_state:
+            st.session_state["screening_results"] = None
+
         target_markets = st.multiselect(
             "市場 (空欄なら全て)",
             options=sorted(listed_df["market"].dropna().unique()),
@@ -584,79 +587,129 @@ def main():
             help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
 
-        screening_results = []
-        for code in symbols:
-            code_str = str(code).strip().zfill(4)
-            if target_markets:
-                code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
-                if not code_market.empty and code_market.iloc[0] not in target_markets:
-                    continue
+        run_screening = st.button("スクリーニングを実行", type="primary")
 
-            try:
-                df_daily = load_price_csv(code_str)
-            except Exception:
-                continue
+        screening_results = st.session_state.get("screening_results")
+        if run_screening:
+            with st.spinner("スクリーニングを実行しています..."):
+                screening_results = []
+                for code in symbols:
+                    code_str = str(code).strip().zfill(4)
+                    if target_markets:
+                        code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
+                        if not code_market.empty and code_market.iloc[0] not in target_markets:
+                            continue
 
-            df_daily = df_daily[df_daily["volume"].fillna(0) > 0]
-            if len(df_daily) < max(50, sma_trend_lookback + 1):
-                continue
+                    try:
+                        df_daily = load_price_csv(code_str)
+                    except Exception:
+                        continue
 
-            df_ind = _compute_indicators(df_daily.tail(200))
-            latest = df_ind.iloc[-1]
-            if latest.isna().any():
-                continue
+                    df_daily = df_daily[df_daily["volume"].fillna(0) > 0]
+                    if len(df_daily) < max(50, sma_trend_lookback + 1):
+                        continue
 
-            rsi_ok = True
-            if apply_rsi_condition:
-                rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
-            macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
+                    df_ind = _compute_indicators(df_daily.tail(200))
+                    latest = df_ind.iloc[-1]
+                    if latest.isna().any():
+                        continue
 
-            sma_ok = True
-            if require_sma20_trend:
-                past_idx = -1 - sma_trend_lookback
-                if abs(past_idx) <= len(df_ind):
-                    past_sma = df_ind.iloc[past_idx]["sma20"]
-                    sma_ok = (
-                        latest["close"] > latest["sma20"]
-                        and latest["sma20"] > past_sma
-                    )
-                else:
-                    sma_ok = False
+                    rsi_ok = True
+                    if apply_rsi_condition:
+                        rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
+                    macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
 
-            avg_vol20 = df_ind["volume"].tail(20).mean()
-            vol_ok = True
-            if apply_volume_condition:
-                vol_ok = (
-                    pd.notna(avg_vol20)
-                    and avg_vol20 > 0
-                    and latest["volume"] >= avg_vol20 * volume_multiplier
-                )
+                    sma_ok = True
+                    if require_sma20_trend:
+                        past_idx = -1 - sma_trend_lookback
+                        if abs(past_idx) <= len(df_ind):
+                            past_sma = df_ind.iloc[past_idx]["sma20"]
+                            sma_ok = (
+                                latest["close"] > latest["sma20"]
+                                and latest["sma20"] > past_sma
+                            )
+                        else:
+                            sma_ok = False
 
-            if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
-                change_pct = (
-                    (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
-                    if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
-                    else None
-                )
-                screening_results.append(
-                    {
-                        "code": code_str,
-                        "name": name_map.get(code_str, "-"),
-                        "close": latest["close"],
-                        "RSI14": round(latest["rsi14"], 2),
-                        "MACD": round(latest["macd"], 3),
-                        "Signal": round(latest["macd_signal"], 3),
-                        "出来高": int(latest["volume"]),
-                        "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
-                        "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
-                    }
-                )
+                    avg_vol20 = df_ind["volume"].tail(20).mean()
+                    vol_ok = True
+                    if apply_volume_condition:
+                        vol_ok = (
+                            pd.notna(avg_vol20)
+                            and avg_vol20 > 0
+                            and latest["volume"] >= avg_vol20 * volume_multiplier
+                        )
+
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
+                        change_pct = (
+                            (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
+                            if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
+                            else None
+                        )
+                        screening_results.append(
+                            {
+                                "code": code_str,
+                                "name": name_map.get(code_str, "-"),
+                                "close": latest["close"],
+                                "RSI14": round(latest["rsi14"], 2),
+                                "MACD": round(latest["macd"], 3),
+                                "Signal": round(latest["macd_signal"], 3),
+                                "出来高": int(latest["volume"]),
+                                "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
+                                "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
+                            }
+                        )
+
+                st.session_state["screening_results"] = screening_results
+
+        if screening_results is None:
+            st.info("条件を設定して『スクリーニングを実行』を押してください。")
+            return
 
         if screening_results:
             df_result = pd.DataFrame(screening_results)
             df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
             st.dataframe(df_result, use_container_width=True)
+
+            st.markdown("### 日足チャートプレビュー")
+            for _, row in df_result.iterrows():
+                code_str = str(row["code"]).zfill(4)
+                try:
+                    chart_df = load_price_csv(code_str)
+                except Exception:
+                    continue
+
+                chart_df = chart_df[chart_df["volume"].fillna(0) > 0]
+                chart_df = chart_df.tail(90)
+                if chart_df.empty:
+                    continue
+
+                chart_df["date_str"] = chart_df["date"].dt.strftime("%Y-%m-%d")
+
+                left, right = st.columns([1, 3])
+                with left:
+                    st.markdown(f"**{code_str} {row['name']}**")
+                    st.caption("直近90日間の終値推移")
+                with right:
+                    preview_fig = go.Figure()
+                    preview_fig.add_trace(
+                        go.Scatter(
+                            x=chart_df["date_str"],
+                            y=chart_df["close"],
+                            mode="lines",
+                            line=dict(color="#1f77b4"),
+                            name="終値",
+                        )
+                    )
+                    preview_fig.update_layout(
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        height=220,
+                        xaxis_title="日付",
+                        yaxis_title="終値",
+                    )
+                    preview_fig.update_xaxes(type="category")
+                    st.plotly_chart(preview_fig, use_container_width=True)
         else:
             st.info("条件に合致する銘柄が見つかりませんでした。条件を緩めて再検索してください。")
 
