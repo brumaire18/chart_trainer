@@ -324,6 +324,51 @@ def _light_plan_window() -> tuple[str, str]:
     return from_date.isoformat(), to_date.isoformat()
 
 
+def _most_recent_weekday(target_weekday: int) -> date:
+    """指定した曜日の直近日付 (同曜日を含む過去) を返す。"""
+
+    today = date.today()
+    delta = (today.weekday() - target_weekday) % 7
+    return today - timedelta(days=delta)
+
+
+def fetch_daily_quotes_for_date(target_date: date | str) -> pd.DataFrame:
+    """指定日付の全銘柄株価を取得し、正規化した DataFrame を返す。"""
+
+    client = _get_client()
+    if isinstance(target_date, str):
+        target_dt = pd.to_datetime(target_date).date()
+    else:
+        target_dt = target_date
+
+    params = {"date": target_dt.isoformat()}
+    logger.info("%s の全銘柄株価を取得します", target_dt)
+    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
+    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
+    if raw_quotes is None:
+        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
+
+    df_raw = pd.DataFrame(raw_quotes)
+    if df_raw.empty:
+        raise JQuantsError(f"{target_dt} の価格データが空でした。")
+
+    code_col = None
+    for candidate in ("Code", "LocalCode", "code", "Localcode"):
+        if candidate in df_raw.columns:
+            code_col = candidate
+            break
+    if code_col is None:
+        raise JQuantsError("銘柄コード列を特定できませんでした。")
+
+    normalized_frames: List[pd.DataFrame] = []
+    for code_value, group in df_raw.groupby(code_col):
+        normalized_frames.append(_normalize_daily_quotes(group, str(code_value).zfill(4)))
+
+    normalized = pd.concat(normalized_frames, ignore_index=True)
+    logger.info("%s の株価を %s 銘柄分取得しました", target_dt, normalized["code"].nunique())
+    return normalized
+
+
 def fetch_listed_master() -> pd.DataFrame:
     """上場銘柄一覧を取得し、CSV として保存する。"""
 
@@ -464,6 +509,51 @@ def _load_existing_csv(code: str) -> Optional[pd.DataFrame]:
     return df
 
 
+def _merge_and_save_daily_snapshot(code: str, snapshot: pd.DataFrame, fetch_to: str) -> pd.DataFrame:
+    """単一日付のスナップショットを既存CSVにマージして保存する。"""
+
+    if snapshot.empty:
+        raise JQuantsError(f"{code} のスナップショットが空でした。")
+
+    existing_df = _load_existing_csv(code)
+    if existing_df is not None and not existing_df.empty:
+        merged = pd.concat([existing_df, snapshot], ignore_index=True)
+        merged = merged.drop_duplicates(subset=["date"], keep="last")
+        merged = merged.sort_values("date").reset_index(drop=True)
+    else:
+        merged = snapshot.sort_values("date").reset_index(drop=True)
+
+    if "datetime" not in merged.columns:
+        merged["datetime"] = pd.to_datetime(merged["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        merged["datetime"] = pd.to_datetime(merged["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
+    csv_path = PRICE_CSV_DIR / f"{code}.csv"
+    merged.to_csv(csv_path, index=False)
+
+    meta = _load_meta(code)
+    market_value = meta.get("market") if meta else None
+    if "market" in snapshot.columns and not snapshot["market"].dropna().empty:
+        market_value = snapshot["market"].dropna().iloc[0]
+
+    history_start = merged["date"].min()
+    history_end = merged["date"].max()
+    meta_out = {
+        "code": code,
+        "market": market_value,
+        "history_start": history_start,
+        "history_end": history_end,
+        "last_fetch_to": fetch_to,
+        "last_fetch_at": datetime.now().astimezone().isoformat(),
+        "plan": "LIGHT",
+    }
+    meta_path = _save_meta(code, meta_out)
+    logger.info("%s を更新しました: %s - %s (meta=%s)", code, history_start, history_end, meta_path)
+
+    return merged
+
+
 def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
     code = str(code).zfill(4)
     client = _get_client()
@@ -529,6 +619,53 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
 
     logger.info("%s を更新しました: %s - %s", code, history_start, history_end)
     return merged
+
+
+def update_universe_with_anchor_day(
+    codes: Optional[List[str]] = None,
+    anchor_date: Optional[str] = None,
+    anchor_weekday: int = 1,
+    include_custom: bool = False,
+    custom_path: Optional[Path] = None,
+    use_listed_master: bool = False,
+) -> None:
+    """指定曜日のスナップショットを反映したうえで日次データを最新化する。"""
+
+    target_codes = codes or build_universe(
+        include_custom=include_custom,
+        custom_path=custom_path,
+        use_listed_master=use_listed_master,
+    )
+    target_codes = [str(code).zfill(4) for code in target_codes]
+
+    anchor_dt = (
+        pd.to_datetime(anchor_date).date()
+        if anchor_date is not None
+        else _most_recent_weekday(anchor_weekday)
+    )
+    anchor_str = anchor_dt.isoformat()
+    try:
+        anchor_quotes = fetch_daily_quotes_for_date(anchor_dt)
+        grouped_anchor = {code: df for code, df in anchor_quotes.groupby("code")}
+    except Exception:
+        logger.exception("指定日 (%s) の株価取得に失敗しました。", anchor_str)
+        grouped_anchor = {}
+
+    for code in target_codes:
+        anchor_df = grouped_anchor.get(code)
+        if anchor_df is not None:
+            try:
+                _merge_and_save_daily_snapshot(code, anchor_df, anchor_str)
+            except Exception:
+                logger.exception("%s の指定日データ保存に失敗しました", code)
+        else:
+            logger.warning("指定日の株価が見つかりませんでした: %s (%s)", code, anchor_str)
+
+        try:
+            update_symbol(code, full_refresh=False)
+        except Exception:
+            logger.exception("%s の日次更新に失敗しました", code)
+        time.sleep(0.3)
 
 
 def update_universe(
@@ -605,6 +742,21 @@ if __name__ == "__main__":
         action="store_true",
         help="listed_master.csv に記載の全銘柄を一括更新する",
     )
+    parser.add_argument(
+        "--use-anchor",
+        action="store_true",
+        help="まず指定曜日のスナップショット（デフォルト: 火曜）を保存し、その後に最新日次を取得",
+    )
+    parser.add_argument(
+        "--anchor-date",
+        help="最初に取得する日付 (YYYY-MM-DD)。未指定時は anchor-weekday の直近日付を使用",
+    )
+    parser.add_argument(
+        "--anchor-weekday",
+        type=int,
+        default=1,
+        help="anchor-date 未指定時に利用する曜日 (0=月曜, 1=火曜, ...)",
+    )
 
     args = parser.parse_args()
 
@@ -617,8 +769,18 @@ if __name__ == "__main__":
             use_listed_master=args.use_listed_master,
         )
 
-    update_universe(
-        codes=codes,
-        full_refresh=args.full_refresh,
-        use_listed_master=args.use_listed_master,
-    )
+    if args.use_anchor:
+        update_universe_with_anchor_day(
+            codes=codes,
+            anchor_date=args.anchor_date,
+            anchor_weekday=args.anchor_weekday,
+            include_custom=args.include_custom,
+            custom_path=args.custom_path,
+            use_listed_master=args.use_listed_master,
+        )
+    else:
+        update_universe(
+            codes=codes,
+            full_refresh=args.full_refresh,
+            use_listed_master=args.use_listed_master,
+        )
