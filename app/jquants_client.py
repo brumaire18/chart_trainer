@@ -120,10 +120,11 @@ class JQuantsClient:
         if not self.password:
             raise ValueError("PASSWORD is not set.")
 
+        self._debug("creating refresh token using configured mailaddress/password")
         auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
         auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
 
-        refresh_token = auth_data.get("refreshToken")
+        refresh_token = _normalize_token(auth_data.get("refreshToken"))
         if not refresh_token:
             raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
 
@@ -140,77 +141,50 @@ class JQuantsClient:
             None,
         )
 
+        preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
+        self._debug(
+            f"obtained new refresh token length={len(refresh_token)} preview={preview} "
+            f"expires_at={self.refresh_token_expires_at}"
+        )
+
         return refresh_token
 
     def authenticate(self) -> str:
         """Obtain and cache an id token using the refresh token."""
+
         if self._id_token:
             self._debug("using cached id token")
             return self._id_token
-    def create_refresh_token(self) -> str:
-        """Generate and store a refresh token along with its expiration."""
 
-        if not self.mailaddress:
-            raise ValueError("MAILADDRESS is not set.")
-        if not self.password:
-            raise ValueError("PASSWORD is not set.")
-
-        self._debug(
-            "creating refresh token using configured mailaddress/password"
-        )
-        auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
-        auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
-
-        refresh_token = self.refresh_token
-        if not self._refresh_token_is_valid():
-            refresh_token = self.create_refresh_token()
-
-        # The refresh endpoint expects a lower-case "refreshtoken" field as documented
-        # at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
-        refresh_payload = {"refreshtoken": refresh_token}
-        refresh_data = self._request("POST", "/v1/token/auth_refresh", json=refresh_payload)
-        new_refresh_token = refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
-        if new_refresh_token:
-            self.refresh_token = new_refresh_token
-
-        expiry_keys = (
-            "refreshTokenExpiresAt",
-            "refreshTokenExpiration",
-            "refreshTokenExpires",
-            "refreshTokenExpiresIn",
-        )
-        self.refresh_token_expires_at = next(
-            (refresh_data.get(key) for key in expiry_keys if refresh_data.get(key) is not None),
-            self.refresh_token_expires_at,
-        )
-        self._id_token = refresh_data.get("idToken")
-        self._access_token = refresh_data.get("accessToken")
-        if not self._access_token:
-            raise ValueError("accessToken was not returned from J-Quants auth_refresh endpoint.")
-
-        refresh_token = self.refresh_token
-        if not self.mailaddress and not refresh_token:
-            raise ValueError("MAILADDRESS or JQUANTS_REFRESH_TOKEN must be set.")
-        if not refresh_token:
-            self._debug("no refresh token configured; generating via auth_user")
-            refresh_token = self.create_refresh_token()
-        else:
-            preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
+        refresh_token = _normalize_token(self.refresh_token)
+        if not refresh_token or not self._refresh_token_is_valid():
             self._debug(
-                "using provided refresh token for auth_refresh "
-                f"length={len(refresh_token)} preview={preview}"
+                "refresh token missing or expired; requesting new one via auth_user"
             )
+            refresh_token = self.create_refresh_token()
 
-        # The refresh endpoint expects a lower-case "refreshtoken" query parameter as
-        # documented at https://jpx.gitbook.io/j-quants-ja/api-reference/refreshtoken.
-        refresh_params = {"refreshtoken": refresh_token}
-        refresh_data = self._request(
-            "POST", "/v1/token/auth_refresh", params=refresh_params
+        preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
+        self._debug(
+            f"requesting id token via auth_refresh length={len(refresh_token)} "
+            f"preview={preview} expires_at={self.refresh_token_expires_at}"
         )
+
+        refresh_params = {"refreshtoken": refresh_token}
+        refresh_data = self._request("POST", "/v1/token/auth_refresh", params=refresh_params)
+
         new_refresh_token = _normalize_token(
             refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
         )
-        if new_refresh_token:
+        if new_refresh_token and new_refresh_token != refresh_token:
+            preview_new = (
+                f"{new_refresh_token[:4]}...{new_refresh_token[-4:]}"
+                if len(new_refresh_token) > 8
+                else "<short>"
+            )
+            self._debug(
+                f"refresh token rotated length={len(new_refresh_token)} "
+                f"preview={preview_new}"
+            )
             self.refresh_token = new_refresh_token
 
         expiry_keys = (
@@ -223,15 +197,16 @@ class JQuantsClient:
             (refresh_data.get(key) for key in expiry_keys if refresh_data.get(key) is not None),
             self.refresh_token_expires_at,
         )
+
         self._id_token = _normalize_token(refresh_data.get("idToken"))
         if not self._id_token:
             raise ValueError("idToken was not returned from J-Quants auth_refresh endpoint.")
 
-        # Keep setting _access_token for callers that still reference it, even though
-        # the API returns only an idToken for authentication.
         self._access_token = self._id_token
-
-        self._debug("successfully obtained id token")
+        self._debug(
+            f"successfully obtained id token length={len(self._id_token)} preview="
+            f"{self._id_token[:4]}...{self._id_token[-4:]}"
+        )
 
         return self._id_token
 

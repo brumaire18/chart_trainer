@@ -27,7 +27,7 @@ from .config import (
     META_DIR,
     PRICE_CSV_DIR,
 )
-from .jquants_client import JQuantsClient
+from .jquants_client import JQuantsClient, _normalize_token
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,21 @@ class JQuantsError(RuntimeError):
     """J-Quants API 呼び出しに関する例外。"""
 
 
+class JQuantsRateLimitError(JQuantsError):
+    """J-Quants API のレートリミットに関する例外。"""
+
+
 LIGHT_PLAN_WINDOW_DAYS = 365 * 5  # 約5年
 LIGHT_PLAN_LAG_WEEKS = 0  # 直近データも取得可能
 RATE_LIMIT_STATUS_CODES = {429, 503}
-RATE_LIMIT_INITIAL_WAIT = 300  # 秒（5分）
-RATE_LIMIT_MAX_WAIT = 1800  # 秒（30分）
+RATE_LIMIT_INITIAL_WAIT = 3600  # 秒（1時間）
+RATE_LIMIT_MAX_WAIT = 21600  # 秒（6時間）
 RATE_LIMIT_BACKOFF = 2.0
 RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_MAX_RETRIES_PER_SYMBOL = 3
+AUTH_ERROR_STATUS_CODES = {401}
+AUTH_ERROR_WAIT = 600  # 秒（10分）
+AUTH_ERROR_MAX_RETRIES = 3
 
 
 @dataclass
@@ -56,20 +64,29 @@ class FetchResult:
 
 def _get_client() -> JQuantsClient:
     # 可能であれば実行時の環境変数を優先的に利用する
-    runtime_refresh = os.getenv("JQUANTS_REFRESH_TOKEN")
+    runtime_refresh_raw = os.getenv("JQUANTS_REFRESH_TOKEN")
+    runtime_refresh = _normalize_token(runtime_refresh_raw)
+    configured_refresh = _normalize_token(JQUANTS_REFRESH_TOKEN)
     runtime_base_url = os.getenv("JQUANTS_BASE_URL")
-    runtime_mail = os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS
-    runtime_password = os.getenv("PASSWORD") or JQUANTS_PASSWORD
+    runtime_mail = (os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS or "").strip() or None
+    runtime_password = (os.getenv("PASSWORD") or JQUANTS_PASSWORD or "").strip() or None
+
+    if runtime_refresh_raw and runtime_refresh_raw != runtime_refresh:
+        logger.info(
+            "JQUANTS_REFRESH_TOKEN の前後にある空白を除去しました (len=%s -> len=%s)",
+            len(runtime_refresh_raw),
+            len(runtime_refresh or ""),
+        )
 
     snapshot = {
         "MAILADDRESS": bool(runtime_mail),
         "PASSWORD": bool(runtime_password),
-        "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh or JQUANTS_REFRESH_TOKEN),
+        "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh or configured_refresh),
     }
 
     client = JQuantsClient(
         base_url=runtime_base_url or JQUANTS_BASE_URL,
-        refresh_token=runtime_refresh or JQUANTS_REFRESH_TOKEN,
+        refresh_token=runtime_refresh or configured_refresh,
         mailaddress=runtime_mail,
         password=runtime_password,
     )
@@ -82,13 +99,41 @@ def _get_client() -> JQuantsClient:
 def get_credential_status() -> Dict[str, bool]:
     """利用可能な認証情報の有無を返す。"""
 
-    runtime_refresh = os.getenv("JQUANTS_REFRESH_TOKEN") or JQUANTS_REFRESH_TOKEN
-    runtime_mail = os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS
-    runtime_password = os.getenv("PASSWORD") or JQUANTS_PASSWORD
+    runtime_refresh = _normalize_token(os.getenv("JQUANTS_REFRESH_TOKEN") or JQUANTS_REFRESH_TOKEN)
+    runtime_mail = (os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS or "").strip()
+    runtime_password = (os.getenv("PASSWORD") or JQUANTS_PASSWORD or "").strip()
     return {
         "MAILADDRESS": bool(runtime_mail),
         "PASSWORD": bool(runtime_password),
         "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh),
+    }
+
+
+def _token_preview(token: Optional[str]) -> str:
+    """トークンの先頭・末尾のみを含むプレビュー文字列を生成する。"""
+
+    cleaned = _normalize_token(token)
+    if not cleaned:
+        return "<missing>"
+    if len(cleaned) <= 8:
+        return f"<len={len(cleaned)}>"
+    return f"<len={len(cleaned)} preview={cleaned[:4]}...{cleaned[-4:]}>"
+
+
+def _credential_debug_info(client: JQuantsClient) -> Dict[str, str]:
+    """現在使用している認証情報の概要を返す（機微情報はマスク）。"""
+
+    runtime_refresh = _normalize_token(os.getenv("JQUANTS_REFRESH_TOKEN"))
+    configured_refresh = _normalize_token(JQUANTS_REFRESH_TOKEN)
+    source = "env" if runtime_refresh else "config" if configured_refresh else "missing"
+    effective_refresh = runtime_refresh or configured_refresh or client.refresh_token
+
+    return {
+        "refresh_token_source": source,
+        "refresh_token_preview": _token_preview(effective_refresh),
+        "client_refresh_token_preview": _token_preview(client.refresh_token),
+        "MAILADDRESS": "set" if client.mailaddress else "missing",
+        "PASSWORD": "set" if client.password else "missing",
     }
 
 
@@ -99,24 +144,52 @@ def _get_id_token(client: JQuantsClient) -> str:
         raise JQuantsError("idToken の取得に失敗しました。") from exc
 
 
+def _extract_error_message(response: requests.Response) -> Optional[str]:
+    """レスポンスボディからエラー文言を抽出する。"""
+
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            for key in ("message", "detail", "error"):
+                if key in payload and payload[key]:
+                    return str(payload[key])
+    except ValueError:
+        pass
+
+    if response.text:
+        return response.text.strip()
+
+    return None
+
+
+def _describe_request(path: str, params: Optional[Dict[str, Any]]) -> str:
+    if not params:
+        return path
+
+    safe_params = {k: v for k, v in params.items() if k.lower() not in {"authorization", "token"}}
+    return f"{path} params={safe_params}"
+
+
 def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     token = _get_id_token(client)
     url = f"{client.base_url}{path}"
     headers = {"Authorization": f"Bearer {token}"}
 
+    request_context = _describe_request(path, params)
     retry = 0
+    auth_retry = 0
     wait_seconds = RATE_LIMIT_INITIAL_WAIT
     while True:
         try:
             response = requests.get(url, headers=headers, params=params, timeout=30)
         except Exception as exc:  # pragma: no cover - thin wrapper
-            logger.exception("J-Quants API リクエスト送信に失敗しました: %s", path)
+            logger.exception("J-Quants API リクエスト送信に失敗しました: %s", request_context)
             raise JQuantsError(f"J-Quants API リクエスト送信に失敗しました: {path}") from exc
 
         if response.status_code in RATE_LIMIT_STATUS_CODES:
             retry += 1
             if retry > RATE_LIMIT_MAX_RETRIES:
-                raise JQuantsError("レートリミットを複数回超過したため中断しました。")
+                raise JQuantsRateLimitError("レートリミットを複数回超過したため中断しました。")
 
             retry_after_header = response.headers.get("Retry-After")
             try:
@@ -128,21 +201,63 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
             # ジッターを加えて衝突を避ける
             sleep_for = min(sleep_for + random.randint(5, 30), RATE_LIMIT_MAX_WAIT)
             logger.warning(
-                "レートリミットに達しました(status=%s)。%s 秒待機して再試行します (%s/%s)。",
+                "レートリミットに達しました(status=%s)。%s 秒待機して再試行します (%s/%s) [%s]",
                 response.status_code,
                 sleep_for,
                 retry,
                 RATE_LIMIT_MAX_RETRIES,
+                request_context,
             )
             time.sleep(sleep_for)
             wait_seconds = min(int(wait_seconds * RATE_LIMIT_BACKOFF), RATE_LIMIT_MAX_WAIT)
+            continue
+
+        if response.status_code in AUTH_ERROR_STATUS_CODES:
+            error_message = _extract_error_message(response)
+            if error_message and "token" in error_message.lower() and "invalid" in error_message.lower():
+                credential_debug = _credential_debug_info(client)
+                logger.error(
+                    "提供されたトークンが無効または期限切れです。JQUANTS_REFRESH_TOKEN を再取得してください"
+                    " (status=%s, message=%s, credentials=%s, request=%s)",
+                    response.status_code,
+                    error_message,
+                    credential_debug,
+                    request_context,
+                )
+                raise JQuantsError(
+                    "認証トークンが無効または期限切れです。JQUANTS_REFRESH_TOKEN を正しい値で再設定してください。"
+                )
+
+            auth_retry += 1
+            if auth_retry > AUTH_ERROR_MAX_RETRIES:
+                logger.error(
+                    "認証エラーが繰り返されたためリトライを中断します (status=%s, retries=%s/%s, request=%s)",
+                    response.status_code,
+                    auth_retry,
+                    AUTH_ERROR_MAX_RETRIES,
+                    request_context,
+                )
+                raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}")
+
+            logger.warning(
+                "認証エラーを検知したため %s 秒待機して再試行します (status=%s, %s/%s) [%s]",
+                AUTH_ERROR_WAIT,
+                response.status_code,
+                auth_retry,
+                AUTH_ERROR_MAX_RETRIES,
+                request_context,
+            )
+            time.sleep(AUTH_ERROR_WAIT)
+
+            token = _get_id_token(client)
+            headers = {"Authorization": f"Bearer {token}"}
             continue
 
         try:
             response.raise_for_status()
             return response.json()
         except Exception as exc:  # pragma: no cover - thin wrapper
-            logger.exception("J-Quants API リクエストに失敗しました: %s", path)
+            logger.exception("J-Quants API リクエストに失敗しました: %s", request_context)
             raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}") from exc
 
 
@@ -365,6 +480,7 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         fetch_from, fetch_to = from_light, to_light
 
     params = {"code": code, "from": fetch_from, "to": fetch_to}
+    logger.info("%s の株価を取得します (from=%s, to=%s)", code, fetch_from, fetch_to)
     data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
     raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
     if raw_quotes is None:
@@ -413,11 +529,32 @@ def update_universe(
 ) -> None:
     target_codes = codes or build_universe(use_listed_master=use_listed_master)
     for code in target_codes:
-        try:
-            update_symbol(code, full_refresh=full_refresh)
-        except Exception as exc:  # pragma: no cover - 継続実行
-            logger.exception("%s の更新中にエラーが発生しました", code)
-            continue
+        rate_limit_retry = 0
+        while True:
+            try:
+                update_symbol(code, full_refresh=full_refresh)
+                break
+            except JQuantsRateLimitError as exc:  # pragma: no cover - 継続実行
+                rate_limit_retry += 1
+                if rate_limit_retry > RATE_LIMIT_MAX_RETRIES_PER_SYMBOL:
+                    logger.exception(
+                        "%s の更新中にレートリミットを繰り返し超過したためスキップします",
+                        code,
+                    )
+                    break
+
+                wait_for = RATE_LIMIT_MAX_WAIT
+                logger.warning(
+                    "レートリミットを検知したため %s 秒待機して再試行します (%s/%s)",
+                    wait_for,
+                    rate_limit_retry,
+                    RATE_LIMIT_MAX_RETRIES_PER_SYMBOL,
+                )
+                time.sleep(wait_for)
+                continue
+            except Exception as exc:  # pragma: no cover - 継続実行
+                logger.exception("%s の更新中にエラーが発生しました", code)
+                break
         time.sleep(0.3)
 
 
