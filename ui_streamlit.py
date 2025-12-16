@@ -569,12 +569,19 @@ def main():
             "市場 (空欄なら全て)",
             options=sorted(listed_df["market"].dropna().unique()),
         )
+        apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
         require_macd_gc = st.checkbox("直近でMACDゴールデンクロス", value=True)
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
+        apply_volume_condition = st.checkbox("出来高条件を適用", value=True)
         volume_multiplier = st.number_input(
-            "出来高/20日平均の下限 (倍)", min_value=0.0, max_value=10.0, value=0.8, step=0.1
+            "出来高/20日平均の下限 (倍)",
+            min_value=0.0,
+            max_value=10.0,
+            value=0.8,
+            step=0.1,
+            help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
 
         screening_results = []
@@ -599,7 +606,9 @@ def main():
             if latest.isna().any():
                 continue
 
-            rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
+            rsi_ok = True
+            if apply_rsi_condition:
+                rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
             macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
 
             sma_ok = True
@@ -615,11 +624,13 @@ def main():
                     sma_ok = False
 
             avg_vol20 = df_ind["volume"].tail(20).mean()
-            vol_ok = (
-                avg_vol20 is not None
-                and avg_vol20 > 0
-                and latest["volume"] >= avg_vol20 * volume_multiplier
-            )
+            vol_ok = True
+            if apply_volume_condition:
+                vol_ok = (
+                    pd.notna(avg_vol20)
+                    and avg_vol20 > 0
+                    and latest["volume"] >= avg_vol20 * volume_multiplier
+                )
 
             if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
                 change_pct = (
