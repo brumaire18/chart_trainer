@@ -579,13 +579,14 @@ def main():
 
         screening_results = []
         for code in symbols:
+            code_str = str(code).strip().zfill(4)
             if target_markets:
-                code_market = listed_df.loc[listed_df["code"] == int(code), "market"]
+                code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
                 if not code_market.empty and code_market.iloc[0] not in target_markets:
                     continue
 
             try:
-                df_daily = load_price_csv(code)
+                df_daily = load_price_csv(code_str)
             except Exception:
                 continue
 
@@ -628,8 +629,8 @@ def main():
                 )
                 screening_results.append(
                     {
-                        "code": code,
-                        "name": name_map.get(code, "-"),
+                        "code": code_str,
+                        "name": name_map.get(code_str, "-"),
                         "close": latest["close"],
                         "RSI14": round(latest["rsi14"], 2),
                         "MACD": round(latest["macd"], 3),
