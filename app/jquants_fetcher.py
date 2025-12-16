@@ -299,6 +299,7 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     normalized = pd.DataFrame(
         {
             "date": df["date"],
+            "datetime": pd.to_datetime(df["date"]),
             "code": str(code).zfill(4),
             "market": market,
             "open": df[open_col],
@@ -310,6 +311,7 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     )
 
     normalized = normalized.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+    normalized["datetime"] = pd.to_datetime(normalized["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
     normalized["date"] = normalized["date"].dt.date.astype(str)
     normalized = normalized.sort_values("date").reset_index(drop=True)
     return normalized
@@ -457,6 +459,8 @@ def _load_existing_csv(code: str) -> Optional[pd.DataFrame]:
     df = pd.read_csv(csv_path)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
+    if "datetime" not in df.columns and "date" in df.columns:
+        df["datetime"] = pd.to_datetime(df["date"]).astype(str)
     return df
 
 
@@ -500,6 +504,11 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         merged = merged.sort_values("date").reset_index(drop=True)
     else:
         merged = normalized
+
+    if "datetime" not in merged.columns:
+        merged["datetime"] = pd.to_datetime(merged["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        merged["datetime"] = pd.to_datetime(merged["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = PRICE_CSV_DIR / f"{code}.csv"

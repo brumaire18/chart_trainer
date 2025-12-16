@@ -110,6 +110,7 @@ def _normalize_from_jquants(
     df = pd.DataFrame(
         {
             "date": df_raw["date"],
+            "datetime": pd.to_datetime(df_raw["date"]),
             "code": str(symbol).zfill(4) if symbol is not None else df_raw.get("code"),
             "market": market or df_raw.get("market"),
             "open": df_raw[open_col],
@@ -122,6 +123,7 @@ def _normalize_from_jquants(
 
     df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df["datetime"] = pd.to_datetime(df["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
     df = df.sort_values("date").reset_index(drop=True)
     return df
 
@@ -143,7 +145,17 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
     if all(col in df_raw.columns for col in normalized_cols):
         df_raw["date"] = pd.to_datetime(df_raw["date"])
         ordered_cols = []
-        for col in ["date", "code", "market", "open", "high", "low", "close", "volume"]:
+        for col in [
+            "date",
+            "datetime",
+            "code",
+            "market",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]:
             if col in df_raw.columns and col not in ordered_cols:
                 ordered_cols.append(col)
         df = df_raw[ordered_cols].copy()
@@ -153,6 +165,8 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
         if "market" not in df.columns:
             df["market"] = None
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        if "datetime" not in df.columns:
+            df["datetime"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
         return df
 
     # パターン2: J-Quants daily_quotes 形式
