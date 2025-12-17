@@ -28,6 +28,16 @@ class HasMacdCrossTest(unittest.TestCase):
 
         self.assertTrue(_has_macd_cross(df, "dead", lookback=2))
 
+    def test_no_cross_when_hist_sign_mismatches(self):
+        df = pd.DataFrame(
+            [
+                {"macd": -0.1, "macd_signal": -0.2, "macd_hist": 0.1},
+                {"macd": 0.05, "macd_signal": -0.05, "macd_hist": -0.1},
+            ]
+        )
+
+        self.assertFalse(_has_macd_cross(df, "golden", lookback=2))
+
     def test_lookback_limits_detection(self):
         df = pd.DataFrame(
             [
