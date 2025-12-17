@@ -1,5 +1,5 @@
 from datetime import date, timedelta
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -180,7 +180,7 @@ def _has_macd_cross(
     df: pd.DataFrame,
     direction: str,
     lookback: int = 5,
-    debug_log: Optional[list[str]] = None,
+    debug_log: Optional[List[str]] = None,
 ) -> bool:
     """
     直近数本の足で MACD がシグナルを上抜け（ゴールデン）または下抜け（デッド）したかを判定する。
