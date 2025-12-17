@@ -1,5 +1,5 @@
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -41,7 +41,7 @@ def _get_price_cache_key(symbol: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _load_price_with_indicators(symbol: str, cache_key: str) -> tuple[pd.DataFrame, int]:
+def _load_price_with_indicators(symbol: str, cache_key: str) -> Tuple[pd.DataFrame, int]:
     """
     日足データを読み込み、出来高0を除外したうえでインジケーターを計算する。
 
