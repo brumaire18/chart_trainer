@@ -177,7 +177,10 @@ def _point_and_figure(
 
 
 def _has_macd_cross(
-    df: pd.DataFrame, direction: str, lookback: int = 5
+    df: pd.DataFrame,
+    direction: str,
+    lookback: int = 5,
+    debug_log: Optional[list[str]] = None,
 ) -> bool:
     """
     直近数本の足で MACD がシグナルを上抜け（ゴールデン）または下抜け（デッド）したかを判定する。
@@ -187,26 +190,50 @@ def _has_macd_cross(
     """
 
     if len(df) < 2 or direction not in {"golden", "dead"}:
+        if debug_log is not None:
+            debug_log.append(
+                f"skip: insufficient length ({len(df)}) or invalid direction={direction}"
+            )
         return False
 
     df_tail = df.tail(lookback + 1)
+    if debug_log is not None:
+        debug_log.append(
+            f"check last {len(df_tail)} bars (lookback={lookback}, direction={direction})"
+        )
     for idx in range(1, len(df_tail)):
         curr = df_tail.iloc[idx]
         prev = df_tail.iloc[idx - 1]
 
-        if pd.isna(curr[["macd", "macd_signal"]]).any() or pd.isna(prev[["macd", "macd_signal"]]).any():
+        if pd.isna(curr[["macd", "macd_signal"]]).any() or pd.isna(
+            prev[["macd", "macd_signal"]]
+        ).any():
+            if debug_log is not None:
+                debug_log.append(f"idx {idx}: skip due to NaN macd/macd_signal")
             continue
 
         if direction == "golden":
             crossed = prev["macd"] <= prev["macd_signal"] and curr["macd"] > curr["macd_signal"]
             hist_ok = curr["macd_hist"] >= 0
+            if debug_log is not None:
+                debug_log.append(
+                    f"idx {idx}: golden prev({prev['macd']:.4f},{prev['macd_signal']:.4f}) -> curr({curr['macd']:.4f},{curr['macd_signal']:.4f}), hist={curr['macd_hist']:.4f}"
+                )
         else:
             crossed = prev["macd"] >= prev["macd_signal"] and curr["macd"] < curr["macd_signal"]
             hist_ok = curr["macd_hist"] <= 0
+            if debug_log is not None:
+                debug_log.append(
+                    f"idx {idx}: dead prev({prev['macd']:.4f},{prev['macd_signal']:.4f}) -> curr({curr['macd']:.4f},{curr['macd_signal']:.4f}), hist={curr['macd_hist']:.4f}"
+                )
 
         if crossed and hist_ok:
+            if debug_log is not None:
+                debug_log.append(f"idx {idx}: crossed and hist_ok -> True")
             return True
 
+    if debug_log is not None:
+        debug_log.append("no cross detected in lookback")
     return False
 
 
@@ -614,6 +641,8 @@ def main():
 
         if "screening_results" not in st.session_state:
             st.session_state["screening_results"] = None
+        if "macd_debug_logs" not in st.session_state:
+            st.session_state["macd_debug_logs"] = []
 
         target_markets = st.multiselect(
             "市場 (空欄なら全て)",
@@ -630,6 +659,11 @@ def main():
                 "dead": "直近でデッドクロス",
             }[v],
             index=1,
+        )
+        macd_debug = st.checkbox(
+            "MACDクロス判定のデバッグログを表示",
+            value=False,
+            help="判定ループの値を全銘柄分出力します（重くなる場合があります）",
         )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
@@ -649,6 +683,7 @@ def main():
         if run_screening:
             with st.spinner("スクリーニングを実行しています..."):
                 screening_results = []
+                macd_debug_logs = [] if macd_debug else None
                 for code in symbols:
                     code_str = str(code).strip().zfill(4)
                     if target_markets:
@@ -673,12 +708,26 @@ def main():
                     rsi_ok = True
                     if apply_rsi_condition:
                         rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
+                    macd_log = [] if macd_debug and macd_condition != "none" else None
                     if macd_condition == "golden":
-                        macd_ok = _has_macd_cross(df_ind, direction="golden")
+                        macd_ok = _has_macd_cross(
+                            df_ind, direction="golden", debug_log=macd_log
+                        )
                     elif macd_condition == "dead":
-                        macd_ok = _has_macd_cross(df_ind, direction="dead")
+                        macd_ok = _has_macd_cross(
+                            df_ind, direction="dead", debug_log=macd_log
+                        )
                     else:
                         macd_ok = True
+
+                    if macd_log is not None and macd_debug_logs is not None:
+                        macd_debug_logs.append(
+                            {
+                                "code": code_str,
+                                "result": macd_ok,
+                                "logs": macd_log,
+                            }
+                        )
 
                     sma_ok = True
                     if require_sma20_trend:
@@ -722,6 +771,7 @@ def main():
                         )
 
                 st.session_state["screening_results"] = screening_results
+                st.session_state["macd_debug_logs"] = macd_debug_logs or []
 
         if screening_results is None:
             st.info("条件を設定して『スクリーニングを実行』を押してください。")
@@ -732,6 +782,17 @@ def main():
             df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
             st.dataframe(df_result, use_container_width=True)
+
+            if macd_debug and st.session_state.get("macd_debug_logs"):
+                with st.expander("MACDクロス判定のデバッグログ", expanded=False):
+                    for entry in st.session_state["macd_debug_logs"]:
+                        st.markdown(
+                            f"**{entry['code']}** : {'合格' if entry['result'] else '不合格'}"
+                        )
+                        if entry["logs"]:
+                            st.code("\n".join(entry["logs"]), language="text")
+                        else:
+                            st.caption("ログなし")
 
             st.markdown("### 日足チャートプレビュー")
             for _, row in df_result.iterrows():
