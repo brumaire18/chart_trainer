@@ -1,12 +1,12 @@
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from app.config import DEFAULT_LOOKBACK_BARS
+from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
 from app.data_loader import (
     enforce_light_plan_window,
     fetch_and_save_price_csv,
@@ -22,6 +22,38 @@ from app.jquants_fetcher import (
 
 
 LIGHT_PLAN_YEARS = 5
+
+
+def _get_price_cache_key(symbol: str) -> str:
+    """
+    CSVファイルの更新を検知するためのキャッシュキー。
+
+    ファイルの更新時刻とサイズをキャッシュのキーに含め、
+    最新のファイルに置き換えられた場合でも再計算されるようにする。
+    """
+
+    csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
+    try:
+        stat = csv_path.stat()
+        return f"{stat.st_mtime_ns}-{stat.st_size}"
+    except FileNotFoundError:
+        return "missing"
+
+
+@st.cache_data(show_spinner=False)
+def _load_price_with_indicators(symbol: str, cache_key: str) -> Tuple[pd.DataFrame, int]:
+    """
+    日足データを読み込み、出来高0を除外したうえでインジケーターを計算する。
+
+    cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
+    """
+
+    _ = cache_key  # キャッシュ用に参照だけ行う
+    df_daily = load_price_csv(symbol)
+    df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
+    removed_rows = len(df_daily) - len(df_daily_trading)
+    df_ind = _compute_indicators(df_daily_trading)
+    return df_ind, removed_rows
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -144,23 +176,65 @@ def _point_and_figure(
     return pd.DataFrame(rows)
 
 
-def _has_macd_golden_cross(df: pd.DataFrame) -> bool:
+def _has_macd_cross(
+    df: pd.DataFrame,
+    direction: str,
+    lookback: int = 5,
+    debug_log: Optional[list[str]] = None,
+) -> bool:
     """
-    直近足で MACD がシグナルを上抜けていれば True。
+    直近数本の足で MACD がシグナルを上抜け（ゴールデン）または下抜け（デッド）したかを判定する。
 
-    ヒストグラムが正の方向へ転じていることも確認する。
+    direction: "golden" または "dead"
+    lookback: 何本前までのクロスを許容するか
     """
 
-    if len(df) < 2:
+    if len(df) < 2 or direction not in {"golden", "dead"}:
+        if debug_log is not None:
+            debug_log.append(
+                f"skip: insufficient length ({len(df)}) or invalid direction={direction}"
+            )
         return False
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    return bool(
-        latest["macd"] > latest["macd_signal"]
-        and prev["macd"] <= prev["macd_signal"]
-        and latest["macd_hist"] > 0
-    )
+    df_tail = df.tail(lookback + 1)
+    if debug_log is not None:
+        debug_log.append(
+            f"check last {len(df_tail)} bars (lookback={lookback}, direction={direction})"
+        )
+    for idx in range(1, len(df_tail)):
+        curr = df_tail.iloc[idx]
+        prev = df_tail.iloc[idx - 1]
+
+        if pd.isna(curr[["macd", "macd_signal"]]).any() or pd.isna(
+            prev[["macd", "macd_signal"]]
+        ).any():
+            if debug_log is not None:
+                debug_log.append(f"idx {idx}: skip due to NaN macd/macd_signal")
+            continue
+
+        if direction == "golden":
+            crossed = prev["macd"] <= prev["macd_signal"] and curr["macd"] > curr["macd_signal"]
+            hist_ok = curr["macd_hist"] >= 0
+            if debug_log is not None:
+                debug_log.append(
+                    f"idx {idx}: golden prev({prev['macd']:.4f},{prev['macd_signal']:.4f}) -> curr({curr['macd']:.4f},{curr['macd_signal']:.4f}), hist={curr['macd_hist']:.4f}"
+                )
+        else:
+            crossed = prev["macd"] >= prev["macd_signal"] and curr["macd"] < curr["macd_signal"]
+            hist_ok = curr["macd_hist"] <= 0
+            if debug_log is not None:
+                debug_log.append(
+                    f"idx {idx}: dead prev({prev['macd']:.4f},{prev['macd_signal']:.4f}) -> curr({curr['macd']:.4f},{curr['macd_signal']:.4f}), hist={curr['macd_hist']:.4f}"
+                )
+
+        if crossed and hist_ok:
+            if debug_log is not None:
+                debug_log.append(f"idx {idx}: crossed and hist_ok -> True")
+            return True
+
+    if debug_log is not None:
+        debug_log.append("no cross detected in lookback")
+    return False
 
 
 def main():
@@ -321,10 +395,10 @@ def main():
 
     with tab_chart:
         # --- チャート表示 ---
-        df_daily = load_price_csv(selected_symbol)
-
-        df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
-        removed_rows = len(df_daily) - len(df_daily_trading)
+        cache_key = _get_price_cache_key(selected_symbol)
+        df_daily_trading, removed_rows = _load_price_with_indicators(
+            selected_symbol, cache_key
+        )
         if removed_rows > 0:
             st.sidebar.info(
                 f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
@@ -567,6 +641,8 @@ def main():
 
         if "screening_results" not in st.session_state:
             st.session_state["screening_results"] = None
+        if "macd_debug_logs" not in st.session_state:
+            st.session_state["macd_debug_logs"] = []
 
         target_markets = st.multiselect(
             "市場 (空欄なら全て)",
@@ -574,7 +650,21 @@ def main():
         )
         apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
-        require_macd_gc = st.checkbox("直近でMACDゴールデンクロス", value=True)
+        macd_condition = st.selectbox(
+            "MACD クロス条件",
+            options=["none", "golden", "dead"],
+            format_func=lambda v: {
+                "none": "条件なし",
+                "golden": "直近でゴールデンクロス",
+                "dead": "直近でデッドクロス",
+            }[v],
+            index=1,
+        )
+        macd_debug = st.checkbox(
+            "MACDクロス判定のデバッグログを表示",
+            value=False,
+            help="判定ループの値を全銘柄分出力します（重くなる場合があります）",
+        )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
         apply_volume_condition = st.checkbox("出来高条件を適用", value=True)
@@ -593,6 +683,7 @@ def main():
         if run_screening:
             with st.spinner("スクリーニングを実行しています..."):
                 screening_results = []
+                macd_debug_logs = [] if macd_debug else None
                 for code in symbols:
                     code_str = str(code).strip().zfill(4)
                     if target_markets:
@@ -600,16 +691,16 @@ def main():
                         if not code_market.empty and code_market.iloc[0] not in target_markets:
                             continue
 
+                    cache_key = _get_price_cache_key(code_str)
                     try:
-                        df_daily = load_price_csv(code_str)
+                        df_ind_full, _ = _load_price_with_indicators(code_str, cache_key)
                     except Exception:
                         continue
 
-                    df_daily = df_daily[df_daily["volume"].fillna(0) > 0]
-                    if len(df_daily) < max(50, sma_trend_lookback + 1):
+                    if len(df_ind_full) < max(50, sma_trend_lookback + 1):
                         continue
 
-                    df_ind = _compute_indicators(df_daily.tail(200))
+                    df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
                     if latest.isna().any():
                         continue
@@ -617,7 +708,26 @@ def main():
                     rsi_ok = True
                     if apply_rsi_condition:
                         rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
-                    macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
+                    macd_log = [] if macd_debug and macd_condition != "none" else None
+                    if macd_condition == "golden":
+                        macd_ok = _has_macd_cross(
+                            df_ind, direction="golden", debug_log=macd_log
+                        )
+                    elif macd_condition == "dead":
+                        macd_ok = _has_macd_cross(
+                            df_ind, direction="dead", debug_log=macd_log
+                        )
+                    else:
+                        macd_ok = True
+
+                    if macd_log is not None and macd_debug_logs is not None:
+                        macd_debug_logs.append(
+                            {
+                                "code": code_str,
+                                "result": macd_ok,
+                                "logs": macd_log,
+                            }
+                        )
 
                     sma_ok = True
                     if require_sma20_trend:
@@ -661,6 +771,7 @@ def main():
                         )
 
                 st.session_state["screening_results"] = screening_results
+                st.session_state["macd_debug_logs"] = macd_debug_logs or []
 
         if screening_results is None:
             st.info("条件を設定して『スクリーニングを実行』を押してください。")
@@ -672,15 +783,25 @@ def main():
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
             st.dataframe(df_result, use_container_width=True)
 
+            if macd_debug and st.session_state.get("macd_debug_logs"):
+                with st.expander("MACDクロス判定のデバッグログ", expanded=False):
+                    for entry in st.session_state["macd_debug_logs"]:
+                        st.markdown(
+                            f"**{entry['code']}** : {'合格' if entry['result'] else '不合格'}"
+                        )
+                        if entry["logs"]:
+                            st.code("\n".join(entry["logs"]), language="text")
+                        else:
+                            st.caption("ログなし")
+
             st.markdown("### 日足チャートプレビュー")
             for _, row in df_result.iterrows():
                 code_str = str(row["code"]).zfill(4)
                 try:
-                    chart_df = load_price_csv(code_str)
+                    cache_key = _get_price_cache_key(code_str)
+                    chart_df, _ = _load_price_with_indicators(code_str, cache_key)
                 except Exception:
                     continue
-
-                chart_df = chart_df[chart_df["volume"].fillna(0) > 0]
                 chart_df = chart_df.tail(90)
                 if chart_df.empty:
                     continue
