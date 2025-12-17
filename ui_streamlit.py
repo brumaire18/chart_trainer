@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from app.config import DEFAULT_LOOKBACK_BARS
+from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
 from app.data_loader import (
     enforce_light_plan_window,
     fetch_and_save_price_csv,
@@ -22,6 +22,38 @@ from app.jquants_fetcher import (
 
 
 LIGHT_PLAN_YEARS = 5
+
+
+def _get_price_cache_key(symbol: str) -> str:
+    """
+    CSVファイルの更新を検知するためのキャッシュキー。
+
+    ファイルの更新時刻とサイズをキャッシュのキーに含め、
+    最新のファイルに置き換えられた場合でも再計算されるようにする。
+    """
+
+    csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
+    try:
+        stat = csv_path.stat()
+        return f"{stat.st_mtime_ns}-{stat.st_size}"
+    except FileNotFoundError:
+        return "missing"
+
+
+@st.cache_data(show_spinner=False)
+def _load_price_with_indicators(symbol: str, cache_key: str) -> tuple[pd.DataFrame, int]:
+    """
+    日足データを読み込み、出来高0を除外したうえでインジケーターを計算する。
+
+    cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
+    """
+
+    _ = cache_key  # キャッシュ用に参照だけ行う
+    df_daily = load_price_csv(symbol)
+    df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
+    removed_rows = len(df_daily) - len(df_daily_trading)
+    df_ind = _compute_indicators(df_daily_trading)
+    return df_ind, removed_rows
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -144,23 +176,28 @@ def _point_and_figure(
     return pd.DataFrame(rows)
 
 
-def _has_macd_golden_cross(df: pd.DataFrame) -> bool:
+def _has_macd_golden_cross(df: pd.DataFrame, lookback: int = 3) -> bool:
     """
-    直近足で MACD がシグナルを上抜けていれば True。
+    直近数本の足のどこかで MACD がシグナルを上抜けたかを判定する。
 
-    ヒストグラムが正の方向へ転じていることも確認する。
+    最新足が陽転 (ヒストグラムが正) であることも確認する。
     """
 
     if len(df) < 2:
         return False
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    return bool(
-        latest["macd"] > latest["macd_signal"]
-        and prev["macd"] <= prev["macd_signal"]
-        and latest["macd_hist"] > 0
-    )
+    df_tail = df.tail(lookback + 1)
+    for idx in range(1, len(df_tail)):
+        latest = df_tail.iloc[idx]
+        prev = df_tail.iloc[idx - 1]
+        if (
+            latest["macd"] > latest["macd_signal"]
+            and prev["macd"] <= prev["macd_signal"]
+            and latest["macd_hist"] > 0
+        ):
+            return True
+
+    return False
 
 
 def main():
@@ -321,10 +358,10 @@ def main():
 
     with tab_chart:
         # --- チャート表示 ---
-        df_daily = load_price_csv(selected_symbol)
-
-        df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
-        removed_rows = len(df_daily) - len(df_daily_trading)
+        cache_key = _get_price_cache_key(selected_symbol)
+        df_daily_trading, removed_rows = _load_price_with_indicators(
+            selected_symbol, cache_key
+        )
         if removed_rows > 0:
             st.sidebar.info(
                 f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
@@ -600,16 +637,16 @@ def main():
                         if not code_market.empty and code_market.iloc[0] not in target_markets:
                             continue
 
+                    cache_key = _get_price_cache_key(code_str)
                     try:
-                        df_daily = load_price_csv(code_str)
+                        df_ind_full, _ = _load_price_with_indicators(code_str, cache_key)
                     except Exception:
                         continue
 
-                    df_daily = df_daily[df_daily["volume"].fillna(0) > 0]
-                    if len(df_daily) < max(50, sma_trend_lookback + 1):
+                    if len(df_ind_full) < max(50, sma_trend_lookback + 1):
                         continue
 
-                    df_ind = _compute_indicators(df_daily.tail(200))
+                    df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
                     if latest.isna().any():
                         continue
@@ -676,11 +713,10 @@ def main():
             for _, row in df_result.iterrows():
                 code_str = str(row["code"]).zfill(4)
                 try:
-                    chart_df = load_price_csv(code_str)
+                    cache_key = _get_price_cache_key(code_str)
+                    chart_df, _ = _load_price_with_indicators(code_str, cache_key)
                 except Exception:
                     continue
-
-                chart_df = chart_df[chart_df["volume"].fillna(0) > 0]
                 chart_df = chart_df.tail(90)
                 if chart_df.empty:
                     continue
