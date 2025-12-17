@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import date, timedelta
 from typing import List, Optional, Tuple
 
@@ -706,6 +707,11 @@ def main():
             value=False,
             help="判定ループの値を全銘柄分出力します（重くなる場合があります）",
         )
+        show_detailed_log = st.checkbox(
+            "スクリーニング詳細ログを表示",
+            value=False,
+            help="各銘柄がどの条件で除外されたかを一覧で確認できます。MACDデバッグとは独立して動作します。",
+        )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
         apply_volume_condition = st.checkbox("出来高条件を適用", value=True)
@@ -725,8 +731,11 @@ def main():
             with st.spinner("スクリーニングを実行しています..."):
                 screening_results = []
                 macd_debug_logs = [] if macd_debug else None
+                failure_logs = []
+                reason_counter = Counter()
                 for code in symbols:
                     code_str = str(code).strip().zfill(4)
+                    code_reasons = []
                     if target_markets:
                         code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
                         if not code_market.empty and code_market.iloc[0] not in target_markets:
@@ -736,14 +745,29 @@ def main():
                     try:
                         df_ind_full, _ = _load_price_with_indicators(code_str, cache_key)
                     except Exception:
+                        code_reasons.append("データ取得エラー")
+                        failure_logs.append(
+                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                        )
+                        reason_counter.update(code_reasons)
                         continue
 
                     if len(df_ind_full) < max(50, sma_trend_lookback + 1):
+                        code_reasons.append("データ不足")
+                        failure_logs.append(
+                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                        )
+                        reason_counter.update(code_reasons)
                         continue
 
                     df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
                     if latest.isna().any():
+                        code_reasons.append("最新データに欠損あり")
+                        failure_logs.append(
+                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                        )
+                        reason_counter.update(code_reasons)
                         continue
 
                     rsi_ok = True
@@ -816,9 +840,27 @@ def main():
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                             }
                         )
+                        continue
+
+                    if apply_rsi_condition and not rsi_ok:
+                        code_reasons.append("RSI条件不合格")
+                    if macd_condition != "none" and not macd_ok:
+                        code_reasons.append("MACD条件不合格")
+                    if require_sma20_trend and not sma_ok:
+                        code_reasons.append("SMAトレンド不合格")
+                    if apply_volume_condition and not vol_ok:
+                        code_reasons.append("出来高条件不合格")
+
+                    if code_reasons:
+                        failure_logs.append(
+                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                        )
+                        reason_counter.update(code_reasons)
 
                 st.session_state["screening_results"] = screening_results
                 st.session_state["macd_debug_logs"] = macd_debug_logs or []
+                st.session_state["screening_failure_logs"] = failure_logs
+                st.session_state["screening_reason_counter"] = reason_counter
 
         if screening_results is None:
             st.info("条件を設定して『スクリーニングを実行』を押してください。")
@@ -840,6 +882,33 @@ def main():
                             st.code("\n".join(entry["logs"]), language="text")
                         else:
                             st.caption("ログなし")
+
+            if show_detailed_log and st.session_state.get("screening_reason_counter"):
+                with st.expander("不合格理由のサマリと詳細", expanded=False):
+                    reason_counter = st.session_state.get("screening_reason_counter", Counter())
+                    total_failures = sum(reason_counter.values())
+                    if total_failures:
+                        summary_lines = [
+                            f"{reason}: {count}件 ({count / total_failures * 100:.1f}%)"
+                            for reason, count in reason_counter.most_common()
+                        ]
+                        st.markdown("#### 不合格理由のサマリ")
+                        st.markdown("\n".join(f"- {line}" for line in summary_lines))
+
+                    failure_logs = st.session_state.get("screening_failure_logs", [])
+                    if failure_logs:
+                        st.markdown("#### 不合格銘柄一覧")
+                        fail_df = pd.DataFrame(
+                            [
+                                {
+                                    "code": log["code"],
+                                    "name": log["name"],
+                                    "理由": " / ".join(log["reasons"]),
+                                }
+                                for log in failure_logs
+                            ]
+                        )
+                        st.dataframe(fail_df, use_container_width=True)
 
             st.markdown("### 日足チャートプレビュー")
             for _, row in df_result.iterrows():
@@ -879,7 +948,21 @@ def main():
                     preview_fig.update_xaxes(type="category")
                     st.plotly_chart(preview_fig, use_container_width=True)
         else:
-            st.info("条件に合致する銘柄が見つかりませんでした。条件を緩めて再検索してください。")
+            reason_counter = st.session_state.get("screening_reason_counter", Counter())
+            total_failures = sum(reason_counter.values())
+            if total_failures:
+                summary_text = ", ".join(
+                    [
+                        f"{reason}が全体の{count / total_failures * 100:.1f}%"
+                        for reason, count in reason_counter.most_common()
+                    ]
+                )
+                st.info(
+                    "条件に合致する銘柄はありませんでした。主な不合格理由: "
+                    f"{summary_text}。条件を緩めて再検索してください。"
+                )
+            else:
+                st.info("条件に合致する銘柄はありませんでした。条件を緩めて再検索してください。")
 
 if __name__ == "__main__":
     main()
