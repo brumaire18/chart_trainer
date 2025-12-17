@@ -17,6 +17,7 @@ from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
     load_listed_master,
+    update_universe_with_anchor_day,
     update_universe,
 )
 
@@ -282,6 +283,30 @@ def main():
             value=False,
             key="full_refresh_universe",
         )
+        st.markdown("---")
+        st.write("スナップショット → 日次更新フロー")
+        st.caption(
+            "まず指定日の全銘柄株価を取得し、その後で日次データを最新化します。"
+            "曜日未指定時は直近の火曜日を使用します。"
+        )
+        use_anchor_flow = st.checkbox(
+            "スナップショットを取得してから更新する", value=True, key="use_anchor_flow"
+        )
+        anchor_weekday = st.selectbox(
+            "スナップショット曜日（0=月曜, 1=火曜...）",
+            options=list(range(7)),
+            format_func=lambda w: f"{['月','火','水','木','金','土','日'][w]}曜 ({w})",
+            index=1,
+            key="anchor_weekday",
+        )
+        use_custom_anchor_date = st.checkbox(
+            "スナップショット日を手動指定", value=False, key="use_custom_anchor_date"
+        )
+        anchor_date_input: Optional[date] = None
+        if use_custom_anchor_date:
+            anchor_date_input = st.date_input(
+                "取得日 (YYYY-MM-DD)", value=date.today(), key="anchor_date_input"
+            )
         if st.button("ユニバースを更新", key="update_universe_button"):
             try:
                 with st.spinner("ユニバースを更新しています..."):
@@ -289,11 +314,20 @@ def main():
                         include_custom=include_custom,
                         use_listed_master=universe_source == "listed_all",
                     )
-                    update_universe(
-                        codes=target_codes,
-                        full_refresh=full_refresh,
-                        use_listed_master=universe_source == "listed_all",
-                    )
+                    if use_anchor_flow:
+                        update_universe_with_anchor_day(
+                            codes=target_codes,
+                            anchor_date=anchor_date_input.isoformat() if anchor_date_input else None,
+                            anchor_weekday=anchor_weekday,
+                            include_custom=include_custom,
+                            use_listed_master=universe_source == "listed_all",
+                        )
+                    else:
+                        update_universe(
+                            codes=target_codes,
+                            full_refresh=full_refresh,
+                            use_listed_master=universe_source == "listed_all",
+                        )
                 st.success("一括更新が完了しました。")
                 st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
