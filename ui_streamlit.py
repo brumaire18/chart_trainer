@@ -1,12 +1,12 @@
 from datetime import date, timedelta
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from app.config import DEFAULT_LOOKBACK_BARS
+from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
 from app.data_loader import (
     enforce_light_plan_window,
     fetch_and_save_price_csv,
@@ -17,11 +17,44 @@ from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
     load_listed_master,
+    update_universe_with_anchor_day,
     update_universe,
 )
 
 
 LIGHT_PLAN_YEARS = 5
+
+
+def _get_price_cache_key(symbol: str) -> str:
+    """
+    CSVファイルの更新を検知するためのキャッシュキー。
+
+    ファイルの更新時刻とサイズをキャッシュのキーに含め、
+    最新のファイルに置き換えられた場合でも再計算されるようにする。
+    """
+
+    csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
+    try:
+        stat = csv_path.stat()
+        return f"{stat.st_mtime_ns}-{stat.st_size}"
+    except FileNotFoundError:
+        return "missing"
+
+
+@st.cache_data(show_spinner=False)
+def _load_price_with_indicators(symbol: str, cache_key: str) -> Tuple[pd.DataFrame, int]:
+    """
+    日足データを読み込み、出来高0を除外したうえでインジケーターを計算する。
+
+    cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
+    """
+
+    _ = cache_key  # キャッシュ用に参照だけ行う
+    df_daily = load_price_csv(symbol)
+    df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
+    removed_rows = len(df_daily) - len(df_daily_trading)
+    df_ind = _compute_indicators(df_daily_trading)
+    return df_ind, removed_rows
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -144,23 +177,65 @@ def _point_and_figure(
     return pd.DataFrame(rows)
 
 
-def _has_macd_golden_cross(df: pd.DataFrame) -> bool:
+def _has_macd_cross(
+    df: pd.DataFrame,
+    direction: str,
+    lookback: int = 5,
+    debug_log: Optional[List[str]] = None,
+) -> bool:
     """
-    直近足で MACD がシグナルを上抜けていれば True。
+    直近数本の足で MACD がシグナルを上抜け（ゴールデン）または下抜け（デッド）したかを判定する。
 
-    ヒストグラムが正の方向へ転じていることも確認する。
+    direction: "golden" または "dead"
+    lookback: 何本前までのクロスを許容するか
     """
 
-    if len(df) < 2:
+    if len(df) < 2 or direction not in {"golden", "dead"}:
+        if debug_log is not None:
+            debug_log.append(
+                f"skip: insufficient length ({len(df)}) or invalid direction={direction}"
+            )
         return False
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    return bool(
-        latest["macd"] > latest["macd_signal"]
-        and prev["macd"] <= prev["macd_signal"]
-        and latest["macd_hist"] > 0
-    )
+    df_tail = df.tail(lookback + 1)
+    if debug_log is not None:
+        debug_log.append(
+            f"check last {len(df_tail)} bars (lookback={lookback}, direction={direction})"
+        )
+    for idx in range(1, len(df_tail)):
+        curr = df_tail.iloc[idx]
+        prev = df_tail.iloc[idx - 1]
+
+        if pd.isna(curr[["macd", "macd_signal"]]).any() or pd.isna(
+            prev[["macd", "macd_signal"]]
+        ).any():
+            if debug_log is not None:
+                debug_log.append(f"idx {idx}: skip due to NaN macd/macd_signal")
+            continue
+
+        if direction == "golden":
+            crossed = prev["macd"] <= prev["macd_signal"] and curr["macd"] > curr["macd_signal"]
+            hist_ok = curr["macd_hist"] >= 0
+            if debug_log is not None:
+                debug_log.append(
+                    f"idx {idx}: golden prev({prev['macd']:.4f},{prev['macd_signal']:.4f}) -> curr({curr['macd']:.4f},{curr['macd_signal']:.4f}), hist={curr['macd_hist']:.4f}"
+                )
+        else:
+            crossed = prev["macd"] >= prev["macd_signal"] and curr["macd"] < curr["macd_signal"]
+            hist_ok = curr["macd_hist"] <= 0
+            if debug_log is not None:
+                debug_log.append(
+                    f"idx {idx}: dead prev({prev['macd']:.4f},{prev['macd_signal']:.4f}) -> curr({curr['macd']:.4f},{curr['macd_signal']:.4f}), hist={curr['macd_hist']:.4f}"
+                )
+
+        if crossed and hist_ok:
+            if debug_log is not None:
+                debug_log.append(f"idx {idx}: crossed and hist_ok -> True")
+            return True
+
+    if debug_log is not None:
+        debug_log.append("no cross detected in lookback")
+    return False
 
 
 def main():
@@ -208,6 +283,30 @@ def main():
             value=False,
             key="full_refresh_universe",
         )
+        st.markdown("---")
+        st.write("スナップショット → 日次更新フロー")
+        st.caption(
+            "まず指定日の全銘柄株価を取得し、その後で日次データを最新化します。"
+            "曜日未指定時は直近の火曜日を使用します。"
+        )
+        use_anchor_flow = st.checkbox(
+            "スナップショットを取得してから更新する", value=True, key="use_anchor_flow"
+        )
+        anchor_weekday = st.selectbox(
+            "スナップショット曜日（0=月曜, 1=火曜...）",
+            options=list(range(7)),
+            format_func=lambda w: f"{['月','火','水','木','金','土','日'][w]}曜 ({w})",
+            index=1,
+            key="anchor_weekday",
+        )
+        use_custom_anchor_date = st.checkbox(
+            "スナップショット日を手動指定", value=False, key="use_custom_anchor_date"
+        )
+        anchor_date_input: Optional[date] = None
+        if use_custom_anchor_date:
+            anchor_date_input = st.date_input(
+                "取得日 (YYYY-MM-DD)", value=date.today(), key="anchor_date_input"
+            )
         if st.button("ユニバースを更新", key="update_universe_button"):
             try:
                 with st.spinner("ユニバースを更新しています..."):
@@ -215,11 +314,20 @@ def main():
                         include_custom=include_custom,
                         use_listed_master=universe_source == "listed_all",
                     )
-                    update_universe(
-                        codes=target_codes,
-                        full_refresh=full_refresh,
-                        use_listed_master=universe_source == "listed_all",
-                    )
+                    if use_anchor_flow:
+                        update_universe_with_anchor_day(
+                            codes=target_codes,
+                            anchor_date=anchor_date_input.isoformat() if anchor_date_input else None,
+                            anchor_weekday=anchor_weekday,
+                            include_custom=include_custom,
+                            use_listed_master=universe_source == "listed_all",
+                        )
+                    else:
+                        update_universe(
+                            codes=target_codes,
+                            full_refresh=full_refresh,
+                            use_listed_master=universe_source == "listed_all",
+                        )
                 st.success("一括更新が完了しました。")
                 st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
@@ -321,10 +429,10 @@ def main():
 
     with tab_chart:
         # --- チャート表示 ---
-        df_daily = load_price_csv(selected_symbol)
-
-        df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
-        removed_rows = len(df_daily) - len(df_daily_trading)
+        cache_key = _get_price_cache_key(selected_symbol)
+        df_daily_trading, removed_rows = _load_price_with_indicators(
+            selected_symbol, cache_key
+        )
         if removed_rows > 0:
             st.sidebar.info(
                 f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
@@ -335,63 +443,6 @@ def main():
         if df_resampled.empty:
             st.warning("表示できるデータがありません。先にデータを取得してください。")
             return
-
-    lookback_window = min(lookback, len(df_resampled))
-    df_problem = df_resampled.tail(lookback_window).copy()
-    df_problem = _compute_indicators(df_problem)
-    df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
-
-    title_name = name_map.get(selected_symbol, "")
-    title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
-    st.subheader(title)
-
-    volume_applicable = chart_type != "pnf"
-    if chart_type != "pnf":
-        rows = 2 if show_volume else 1
-        price_fig = make_subplots(
-            rows=rows,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.05 if show_volume else 0.08,
-            row_heights=[0.7, 0.3] if show_volume else [1.0],
-        )
-    else:
-        price_fig = go.Figure()
-
-    if chart_type == "candlestick":
-        price_fig.add_trace(
-            go.Candlestick(
-                x=df_problem["date_str"],
-                open=df_problem["open"],
-                high=df_problem["high"],
-                low=df_problem["low"],
-                close=df_problem["close"],
-                name="ローソク足",
-            ),
-            row=1,
-            col=1,
-        )
-    elif chart_type == "pnf":
-        pnf_df = _point_and_figure(df_problem)
-        if pnf_df.empty:
-            st.warning("ポイント・アンド・フィギュアを描画するデータが不足しています。")
-        else:
-            if show_volume:
-                st.info("ポイント・アンド・フィギュア選択時は出来高表示を省略します。")
-            price_fig.add_trace(
-                go.Scatter(
-                    x=pnf_df["col"],
-                    y=pnf_df["price"],
-                    mode="markers",
-                    name="ポイント・アンド・フィギュア",
-                    marker=dict(
-                        size=14,
-                        symbol="square",
-                        color=pnf_df["type"].map({"X": "#d62728", "O": "#1f77b4"}),
-                        line=dict(width=1, color="#333333"),
-                    ),
-                )
-            )
 
         lookback_window = min(lookback, len(df_resampled))
         df_problem = df_resampled.tail(lookback_window).copy()
@@ -622,96 +673,198 @@ def main():
         st.subheader("テクニカル・スクリーナー")
         st.caption("日足データを使い、直近のMACDゴールデンクロスやRSI帯などで抽出します。")
 
+        if "screening_results" not in st.session_state:
+            st.session_state["screening_results"] = None
+        if "macd_debug_logs" not in st.session_state:
+            st.session_state["macd_debug_logs"] = []
+
         target_markets = st.multiselect(
             "市場 (空欄なら全て)",
             options=sorted(listed_df["market"].dropna().unique()),
         )
+        apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
-        require_macd_gc = st.checkbox("直近でMACDゴールデンクロス", value=True)
+        macd_condition = st.selectbox(
+            "MACD クロス条件",
+            options=["none", "golden", "dead"],
+            format_func=lambda v: {
+                "none": "条件なし",
+                "golden": "直近でゴールデンクロス",
+                "dead": "直近でデッドクロス",
+            }[v],
+            index=1,
+        )
+        macd_debug = st.checkbox(
+            "MACDクロス判定のデバッグログを表示",
+            value=False,
+            help="判定ループの値を全銘柄分出力します（重くなる場合があります）",
+        )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
+        apply_volume_condition = st.checkbox("出来高条件を適用", value=True)
         volume_multiplier = st.number_input(
-            "出来高/20日平均の下限 (倍)", min_value=0.0, max_value=10.0, value=0.8, step=0.1
-        )
-    if show_obv:
-        osc_fig.add_trace(
-            go.Scatter(
-                x=df_problem["date_str"],
-                y=df_problem["obv"],
-                name="OBV",
-                line=dict(color="#8c564b"),
-            ),
-            secondary_y=True,
+            "出来高/20日平均の下限 (倍)",
+            min_value=0.0,
+            max_value=10.0,
+            value=0.8,
+            step=0.1,
+            help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
 
-        screening_results = []
-        for code in symbols:
-            if target_markets:
-                code_market = listed_df.loc[listed_df["code"] == int(code), "market"]
-                if not code_market.empty and code_market.iloc[0] not in target_markets:
-                    continue
+        run_screening = st.button("スクリーニングを実行", type="primary")
 
-            try:
-                df_daily = load_price_csv(code)
-            except Exception:
-                continue
+        screening_results = st.session_state.get("screening_results")
+        if run_screening:
+            with st.spinner("スクリーニングを実行しています..."):
+                screening_results = []
+                macd_debug_logs = [] if macd_debug else None
+                for code in symbols:
+                    code_str = str(code).strip().zfill(4)
+                    if target_markets:
+                        code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
+                        if not code_market.empty and code_market.iloc[0] not in target_markets:
+                            continue
 
-            df_daily = df_daily[df_daily["volume"].fillna(0) > 0]
-            if len(df_daily) < max(50, sma_trend_lookback + 1):
-                continue
+                    cache_key = _get_price_cache_key(code_str)
+                    try:
+                        df_ind_full, _ = _load_price_with_indicators(code_str, cache_key)
+                    except Exception:
+                        continue
 
-            df_ind = _compute_indicators(df_daily.tail(200))
-            latest = df_ind.iloc[-1]
-            if latest.isna().any():
-                continue
+                    if len(df_ind_full) < max(50, sma_trend_lookback + 1):
+                        continue
 
-            rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
-            macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
+                    df_ind = df_ind_full.tail(200)
+                    latest = df_ind.iloc[-1]
+                    if latest.isna().any():
+                        continue
 
-            sma_ok = True
-            if require_sma20_trend:
-                past_idx = -1 - sma_trend_lookback
-                if abs(past_idx) <= len(df_ind):
-                    past_sma = df_ind.iloc[past_idx]["sma20"]
-                    sma_ok = (
-                        latest["close"] > latest["sma20"]
-                        and latest["sma20"] > past_sma
-                    )
-                else:
-                    sma_ok = False
+                    rsi_ok = True
+                    if apply_rsi_condition:
+                        rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
+                    macd_log = [] if macd_debug and macd_condition != "none" else None
+                    if macd_condition == "golden":
+                        macd_ok = _has_macd_cross(
+                            df_ind, direction="golden", debug_log=macd_log
+                        )
+                    elif macd_condition == "dead":
+                        macd_ok = _has_macd_cross(
+                            df_ind, direction="dead", debug_log=macd_log
+                        )
+                    else:
+                        macd_ok = True
 
-            avg_vol20 = df_ind["volume"].tail(20).mean()
-            vol_ok = (
-                avg_vol20 is not None
-                and avg_vol20 > 0
-                and latest["volume"] >= avg_vol20 * volume_multiplier
-            )
+                    if macd_log is not None and macd_debug_logs is not None:
+                        macd_debug_logs.append(
+                            {
+                                "code": code_str,
+                                "result": macd_ok,
+                                "logs": macd_log,
+                            }
+                        )
 
-            if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
-                change_pct = (
-                    (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
-                    if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
-                    else None
-                )
-                screening_results.append(
-                    {
-                        "code": code,
-                        "name": name_map.get(code, "-"),
-                        "close": latest["close"],
-                        "RSI14": round(latest["rsi14"], 2),
-                        "MACD": round(latest["macd"], 3),
-                        "Signal": round(latest["macd_signal"], 3),
-                        "出来高": int(latest["volume"]),
-                        "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
-                        "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
-                    }
-                )
+                    sma_ok = True
+                    if require_sma20_trend:
+                        past_idx = -1 - sma_trend_lookback
+                        if abs(past_idx) <= len(df_ind):
+                            past_sma = df_ind.iloc[past_idx]["sma20"]
+                            sma_ok = (
+                                latest["close"] > latest["sma20"]
+                                and latest["sma20"] > past_sma
+                            )
+                        else:
+                            sma_ok = False
+
+                    avg_vol20 = df_ind["volume"].tail(20).mean()
+                    vol_ok = True
+                    if apply_volume_condition:
+                        vol_ok = (
+                            pd.notna(avg_vol20)
+                            and avg_vol20 > 0
+                            and latest["volume"] >= avg_vol20 * volume_multiplier
+                        )
+
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
+                        change_pct = (
+                            (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
+                            if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
+                            else None
+                        )
+                        screening_results.append(
+                            {
+                                "code": code_str,
+                                "name": name_map.get(code_str, "-"),
+                                "close": latest["close"],
+                                "RSI14": round(latest["rsi14"], 2),
+                                "MACD": round(latest["macd"], 3),
+                                "Signal": round(latest["macd_signal"], 3),
+                                "出来高": int(latest["volume"]),
+                                "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
+                                "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
+                            }
+                        )
+
+                st.session_state["screening_results"] = screening_results
+                st.session_state["macd_debug_logs"] = macd_debug_logs or []
+
+        if screening_results is None:
+            st.info("条件を設定して『スクリーニングを実行』を押してください。")
+            return
 
         if screening_results:
             df_result = pd.DataFrame(screening_results)
             df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
             st.dataframe(df_result, use_container_width=True)
+
+            if macd_debug and st.session_state.get("macd_debug_logs"):
+                with st.expander("MACDクロス判定のデバッグログ", expanded=False):
+                    for entry in st.session_state["macd_debug_logs"]:
+                        st.markdown(
+                            f"**{entry['code']}** : {'合格' if entry['result'] else '不合格'}"
+                        )
+                        if entry["logs"]:
+                            st.code("\n".join(entry["logs"]), language="text")
+                        else:
+                            st.caption("ログなし")
+
+            st.markdown("### 日足チャートプレビュー")
+            for _, row in df_result.iterrows():
+                code_str = str(row["code"]).zfill(4)
+                try:
+                    cache_key = _get_price_cache_key(code_str)
+                    chart_df, _ = _load_price_with_indicators(code_str, cache_key)
+                except Exception:
+                    continue
+                chart_df = chart_df.tail(90)
+                if chart_df.empty:
+                    continue
+
+                chart_df["date_str"] = chart_df["date"].dt.strftime("%Y-%m-%d")
+
+                left, right = st.columns([1, 3])
+                with left:
+                    st.markdown(f"**{code_str} {row['name']}**")
+                    st.caption("直近90日間の終値推移")
+                with right:
+                    preview_fig = go.Figure()
+                    preview_fig.add_trace(
+                        go.Scatter(
+                            x=chart_df["date_str"],
+                            y=chart_df["close"],
+                            mode="lines",
+                            line=dict(color="#1f77b4"),
+                            name="終値",
+                        )
+                    )
+                    preview_fig.update_layout(
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        height=220,
+                        xaxis_title="日付",
+                        yaxis_title="終値",
+                    )
+                    preview_fig.update_xaxes(type="category")
+                    st.plotly_chart(preview_fig, use_container_width=True)
         else:
             st.info("条件に合致する銘柄が見つかりませんでした。条件を緩めて再検索してください。")
 
