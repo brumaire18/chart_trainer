@@ -694,6 +694,13 @@ def main():
             }[v],
             index=1,
         )
+        macd_lookback = st.slider(
+            "MACDクロスを探す過去本数",
+            min_value=3,
+            max_value=30,
+            value=5,
+            help="クロスを検出する期間を広げることで、直近数日以内に発生したサインを拾いやすくします。",
+        )
         macd_debug = st.checkbox(
             "MACDクロス判定のデバッグログを表示",
             value=False,
@@ -745,11 +752,17 @@ def main():
                     macd_log = [] if macd_debug and macd_condition != "none" else None
                     if macd_condition == "golden":
                         macd_ok = _has_macd_cross(
-                            df_ind, direction="golden", debug_log=macd_log
+                            df_ind,
+                            direction="golden",
+                            lookback=macd_lookback,
+                            debug_log=macd_log,
                         )
                     elif macd_condition == "dead":
                         macd_ok = _has_macd_cross(
-                            df_ind, direction="dead", debug_log=macd_log
+                            df_ind,
+                            direction="dead",
+                            lookback=macd_lookback,
+                            debug_log=macd_log,
                         )
                     else:
                         macd_ok = True
