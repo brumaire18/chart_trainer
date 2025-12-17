@@ -176,25 +176,35 @@ def _point_and_figure(
     return pd.DataFrame(rows)
 
 
-def _has_macd_golden_cross(df: pd.DataFrame, lookback: int = 3) -> bool:
+def _has_macd_cross(
+    df: pd.DataFrame, direction: str, lookback: int = 5
+) -> bool:
     """
-    直近数本の足のどこかで MACD がシグナルを上抜けたかを判定する。
+    直近数本の足で MACD がシグナルを上抜け（ゴールデン）または下抜け（デッド）したかを判定する。
 
-    最新足が陽転 (ヒストグラムが正) であることも確認する。
+    direction: "golden" または "dead"
+    lookback: 何本前までのクロスを許容するか
     """
 
-    if len(df) < 2:
+    if len(df) < 2 or direction not in {"golden", "dead"}:
         return False
 
     df_tail = df.tail(lookback + 1)
     for idx in range(1, len(df_tail)):
-        latest = df_tail.iloc[idx]
+        curr = df_tail.iloc[idx]
         prev = df_tail.iloc[idx - 1]
-        if (
-            latest["macd"] > latest["macd_signal"]
-            and prev["macd"] <= prev["macd_signal"]
-            and latest["macd_hist"] > 0
-        ):
+
+        if pd.isna(curr[["macd", "macd_signal"]]).any() or pd.isna(prev[["macd", "macd_signal"]]).any():
+            continue
+
+        if direction == "golden":
+            crossed = prev["macd"] <= prev["macd_signal"] and curr["macd"] > curr["macd_signal"]
+            hist_ok = curr["macd_hist"] >= 0
+        else:
+            crossed = prev["macd"] >= prev["macd_signal"] and curr["macd"] < curr["macd_signal"]
+            hist_ok = curr["macd_hist"] <= 0
+
+        if crossed and hist_ok:
             return True
 
     return False
@@ -611,7 +621,16 @@ def main():
         )
         apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
-        require_macd_gc = st.checkbox("直近でMACDゴールデンクロス", value=True)
+        macd_condition = st.selectbox(
+            "MACD クロス条件",
+            options=["none", "golden", "dead"],
+            format_func=lambda v: {
+                "none": "条件なし",
+                "golden": "直近でゴールデンクロス",
+                "dead": "直近でデッドクロス",
+            }[v],
+            index=1,
+        )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
         apply_volume_condition = st.checkbox("出来高条件を適用", value=True)
@@ -654,7 +673,12 @@ def main():
                     rsi_ok = True
                     if apply_rsi_condition:
                         rsi_ok = rsi_range[0] <= latest["rsi14"] <= rsi_range[1]
-                    macd_ok = _has_macd_golden_cross(df_ind) if require_macd_gc else True
+                    if macd_condition == "golden":
+                        macd_ok = _has_macd_cross(df_ind, direction="golden")
+                    elif macd_condition == "dead":
+                        macd_ok = _has_macd_cross(df_ind, direction="dead")
+                    else:
+                        macd_ok = True
 
                     sma_ok = True
                     if require_sma20_trend:
