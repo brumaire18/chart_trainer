@@ -524,9 +524,13 @@ def _merge_and_save_daily_snapshot(code: str, snapshot: pd.DataFrame, fetch_to: 
         merged = snapshot.sort_values("date").reset_index(drop=True)
 
     if "datetime" not in merged.columns:
-        merged["datetime"] = pd.to_datetime(merged["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+        merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
     else:
-        merged["datetime"] = pd.to_datetime(merged["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+        merged["datetime"] = pd.to_datetime(merged["datetime"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = PRICE_CSV_DIR / f"{code}.csv"
@@ -596,9 +600,13 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         merged = normalized
 
     if "datetime" not in merged.columns:
-        merged["datetime"] = pd.to_datetime(merged["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+        merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
     else:
-        merged["datetime"] = pd.to_datetime(merged["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+        merged["datetime"] = pd.to_datetime(merged["datetime"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = PRICE_CSV_DIR / f"{code}.csv"
