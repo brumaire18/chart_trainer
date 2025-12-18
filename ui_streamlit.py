@@ -239,6 +239,42 @@ def _has_macd_cross(
     return False
 
 
+def _calculate_minimum_data_length(
+    require_sma20_trend: bool,
+    sma_trend_lookback: int,
+    macd_condition: str,
+    macd_lookback: int,
+    apply_volume_condition: bool,
+    apply_rsi_condition: bool,
+) -> Tuple[int, List[str]]:
+    """
+    スクリーニングに必要な最小データ本数と理由を返す。
+
+    条件に応じて閾値を切り替え、どの条件が必要本数を決めているかを
+    文字列で併せて返却する。
+    """
+
+    requirements: List[Tuple[str, int]] = []
+
+    if require_sma20_trend:
+        required_length = max(50, sma_trend_lookback + 1)
+        requirements.append(("SMAトレンド判定", required_length))
+    else:
+        if macd_condition != "none":
+            macd_required = max(macd_lookback + 2, 26)
+            requirements.append(("MACD判定", macd_required))
+        if apply_volume_condition:
+            requirements.append(("出来高条件", 20))
+        if apply_rsi_condition:
+            requirements.append(("RSI計算", 14))
+        if not requirements:
+            requirements.append(("スクリーニング", 2))
+
+    min_length = max(length for _, length in requirements)
+    reasons = [f"{desc}には{length}本以上のデータ" for desc, length in requirements]
+    return min_length, reasons
+
+
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
     st.title("Chart Trainer - フェーズ1（ラインチャート版）")
@@ -752,8 +788,23 @@ def main():
                         reason_counter.update(code_reasons)
                         continue
 
-                    if len(df_ind_full) < max(50, sma_trend_lookback + 1):
-                        code_reasons.append("データ不足")
+                    required_length, requirement_messages = _calculate_minimum_data_length(
+                        require_sma20_trend=require_sma20_trend,
+                        sma_trend_lookback=sma_trend_lookback,
+                        macd_condition=macd_condition,
+                        macd_lookback=macd_lookback,
+                        apply_volume_condition=apply_volume_condition,
+                        apply_rsi_condition=apply_rsi_condition,
+                    )
+
+                    if len(df_ind_full) < required_length:
+                        reason_detail = " / ".join(requirement_messages)
+                        data_short_reason = (
+                            f"データ不足（{reason_detail}が必要）"
+                            if requirement_messages
+                            else "データ不足"
+                        )
+                        code_reasons.append(data_short_reason)
                         failure_logs.append(
                             {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
                         )
