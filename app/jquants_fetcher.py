@@ -524,7 +524,16 @@ def _merge_and_save(
         merged = merged.drop_duplicates(subset=["date"], keep="last")
         merged = merged.sort_values("date").reset_index(drop=True)
     else:
-        merged = normalized
+        merged = snapshot.sort_values("date").reset_index(drop=True)
+
+    if "datetime" not in merged.columns:
+        merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+    else:
+        merged["datetime"] = pd.to_datetime(merged["datetime"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = PRICE_CSV_DIR / f"{code}.csv"
@@ -583,10 +592,14 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
 
     merged = _merge_and_save(code, normalized, fetch_to, existing_df=existing_df, meta=meta)
 
-    logger.info(
-        "%s を更新しました: %s - %s", code, merged["date"].min(), merged["date"].max()
-    )
-    return merged
+    if "datetime" not in merged.columns:
+        merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+    else:
+        merged["datetime"] = pd.to_datetime(merged["datetime"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
 
 
 def append_quotes_for_date(target_date: str, codes: Optional[List[str]] = None) -> None:
