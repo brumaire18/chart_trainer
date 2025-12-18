@@ -509,15 +509,18 @@ def _load_existing_csv(code: str) -> Optional[pd.DataFrame]:
     return df
 
 
-def _merge_and_save_daily_snapshot(code: str, snapshot: pd.DataFrame, fetch_to: str) -> pd.DataFrame:
-    """単一日付のスナップショットを既存CSVにマージして保存する。"""
+def _merge_and_save(
+    code: str,
+    normalized: pd.DataFrame,
+    fetch_to: str,
+    *,
+    existing_df: Optional[pd.DataFrame] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> pd.DataFrame:
+    existing_df = existing_df if existing_df is not None else _load_existing_csv(code)
 
-    if snapshot.empty:
-        raise JQuantsError(f"{code} のスナップショットが空でした。")
-
-    existing_df = _load_existing_csv(code)
     if existing_df is not None and not existing_df.empty:
-        merged = pd.concat([existing_df, snapshot], ignore_index=True)
+        merged = pd.concat([existing_df, normalized], ignore_index=True)
         merged = merged.drop_duplicates(subset=["date"], keep="last")
         merged = merged.sort_values("date").reset_index(drop=True)
     else:
@@ -536,25 +539,20 @@ def _merge_and_save_daily_snapshot(code: str, snapshot: pd.DataFrame, fetch_to: 
     csv_path = PRICE_CSV_DIR / f"{code}.csv"
     merged.to_csv(csv_path, index=False)
 
-    meta = _load_meta(code)
-    market_value = meta.get("market") if meta else None
-    if "market" in snapshot.columns and not snapshot["market"].dropna().empty:
-        market_value = snapshot["market"].dropna().iloc[0]
-
+    meta = meta or {}
     history_start = merged["date"].min()
     history_end = merged["date"].max()
+    market = meta.get("market") or (normalized.get("market").iloc[0] if not normalized.empty else None)
     meta_out = {
         "code": code,
-        "market": market_value,
+        "market": market,
         "history_start": history_start,
         "history_end": history_end,
         "last_fetch_to": fetch_to,
         "last_fetch_at": datetime.now().astimezone().isoformat(),
         "plan": "LIGHT",
     }
-    meta_path = _save_meta(code, meta_out)
-    logger.info("%s を更新しました: %s - %s (meta=%s)", code, history_start, history_end, meta_path)
-
+    _save_meta(code, meta_out)
     return merged
 
 
@@ -592,12 +590,7 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
     if normalized.empty:
         raise JQuantsError(f"{code} の正規化後データが空でした。")
 
-    if existing_df is not None and not existing_df.empty:
-        merged = pd.concat([existing_df, normalized], ignore_index=True)
-        merged = merged.drop_duplicates(subset=["date"], keep="last")
-        merged = merged.sort_values("date").reset_index(drop=True)
-    else:
-        merged = normalized
+    merged = _merge_and_save(code, normalized, fetch_to, existing_df=existing_df, meta=meta)
 
     if "datetime" not in merged.columns:
         merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
@@ -608,25 +601,52 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
             "%Y-%m-%dT%H:%M:%S"
         )
 
-    PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = PRICE_CSV_DIR / f"{code}.csv"
-    merged.to_csv(csv_path, index=False)
 
-    history_start = merged["date"].min()
-    history_end = merged["date"].max()
-    meta_out = {
-        "code": code,
-        "market": meta.get("market") or normalized.get("market").iloc[0],
-        "history_start": history_start,
-        "history_end": history_end,
-        "last_fetch_to": fetch_to,
-        "last_fetch_at": datetime.now().astimezone().isoformat(),
-        "plan": "LIGHT",
-    }
-    meta_path = _save_meta(code, meta_out)
+def append_quotes_for_date(target_date: str, codes: Optional[List[str]] = None) -> None:
+    try:
+        datetime.fromisoformat(target_date)
+    except ValueError as exc:
+        raise JQuantsError("日付は YYYY-MM-DD 形式で指定してください。") from exc
 
-    logger.info("%s を更新しました: %s - %s", code, history_start, history_end)
-    return merged
+    client = _get_client()
+    params = {"date": target_date}
+    # 日付指定のみで全上場銘柄のデータを取得する
+    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
+    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
+    if raw_quotes is None:
+        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
+
+    df_raw = pd.DataFrame(raw_quotes)
+    if df_raw.empty:
+        logger.info("%s の株価データが空でした。", target_date)
+        return
+
+    code_col = next((col for col in ("code", "LocalCode", "Code") if col in df_raw.columns), None)
+    if code_col is None:
+        raise JQuantsError("銘柄コードのカラムが見つかりませんでした。")
+
+    df_raw["code_norm"] = df_raw[code_col].astype(str).str.zfill(4)
+    target_set = {str(code).zfill(4) for code in codes} if codes else None
+
+    grouped = df_raw.groupby("code_norm")
+    available_codes = set(grouped.groups)
+    for code in sorted(available_codes):
+        if target_set is not None and code not in target_set:
+            continue
+
+        filtered = grouped.get_group(code)
+        normalized = _normalize_daily_quotes(filtered, code)
+        if normalized.empty:
+            continue
+
+        meta = _load_meta(code)
+        _merge_and_save(code, normalized, target_date, meta=meta)
+        logger.info("%s の株価を %s に追記しました", target_date, code)
+
+    if target_set is not None:
+        missing = sorted(target_set - available_codes)
+        if missing:
+            logger.info("%s にデータが見つからなかった銘柄: %s", target_date, ", ".join(missing))
 
 
 def update_universe_with_anchor_day(
@@ -680,6 +700,7 @@ def update_universe(
     codes: Optional[List[str]] = None,
     full_refresh: bool = False,
     use_listed_master: bool = False,
+    append_date: Optional[str] = None,
 ) -> None:
     target_codes = codes or build_universe(use_listed_master=use_listed_master)
     for code in target_codes:
@@ -710,6 +731,9 @@ def update_universe(
                 logger.exception("%s の更新中にエラーが発生しました", code)
                 break
         time.sleep(0.3)
+
+    if append_date:
+        append_quotes_for_date(append_date)
 
 
 def load_custom_symbols(path: Optional[Path] = None) -> List[str]:
@@ -751,19 +775,8 @@ if __name__ == "__main__":
         help="listed_master.csv に記載の全銘柄を一括更新する",
     )
     parser.add_argument(
-        "--use-anchor",
-        action="store_true",
-        help="まず指定曜日のスナップショット（デフォルト: 火曜）を保存し、その後に最新日次を取得",
-    )
-    parser.add_argument(
-        "--anchor-date",
-        help="最初に取得する日付 (YYYY-MM-DD)。未指定時は anchor-weekday の直近日付を使用",
-    )
-    parser.add_argument(
-        "--anchor-weekday",
-        type=int,
-        default=1,
-        help="anchor-date 未指定時に利用する曜日 (0=月曜, 1=火曜, ...)",
+        "--append-date",
+        help="全銘柄の当日株価を追記する日付 (YYYY-MM-DD)",
     )
 
     args = parser.parse_args()
@@ -777,18 +790,9 @@ if __name__ == "__main__":
             use_listed_master=args.use_listed_master,
         )
 
-    if args.use_anchor:
-        update_universe_with_anchor_day(
-            codes=codes,
-            anchor_date=args.anchor_date,
-            anchor_weekday=args.anchor_weekday,
-            include_custom=args.include_custom,
-            custom_path=args.custom_path,
-            use_listed_master=args.use_listed_master,
-        )
-    else:
-        update_universe(
-            codes=codes,
-            full_refresh=args.full_refresh,
-            use_listed_master=args.use_listed_master,
-        )
+    update_universe(
+        codes=codes,
+        full_refresh=args.full_refresh,
+        use_listed_master=args.use_listed_master,
+        append_date=args.append_date,
+    )
