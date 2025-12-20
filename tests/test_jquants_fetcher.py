@@ -1,0 +1,53 @@
+import unittest
+from datetime import date
+from unittest.mock import patch
+
+import pandas as pd
+
+from app.jquants_fetcher import update_symbol
+
+
+class UpdateSymbolReturnTest(unittest.TestCase):
+    @patch("app.jquants_fetcher._merge_and_save")
+    @patch("app.jquants_fetcher._normalize_daily_quotes")
+    @patch("app.jquants_fetcher._request_with_token")
+    @patch("app.jquants_fetcher._get_latest_trading_day")
+    @patch("app.jquants_fetcher._light_plan_window")
+    @patch("app.jquants_fetcher._load_existing_csv")
+    @patch("app.jquants_fetcher._load_meta")
+    @patch("app.jquants_fetcher._get_client")
+    def test_returns_merged_dataframe(
+        self,
+        mock_get_client,
+        mock_load_meta,
+        mock_load_existing_csv,
+        mock_light_plan_window,
+        mock_get_latest_trading_day,
+        mock_request_with_token,
+        mock_normalize_daily_quotes,
+        mock_merge_and_save,
+    ):
+        mock_get_client.return_value = object()
+        mock_load_meta.return_value = {}
+        mock_load_existing_csv.return_value = None
+        mock_light_plan_window.return_value = ("2024-01-01", "2024-01-31")
+        mock_get_latest_trading_day.return_value = (date(2024, 1, 31), None)
+        mock_request_with_token.return_value = {"daily_quotes": [{"date": "2024-01-30"}]}
+
+        normalized_df = pd.DataFrame(
+            {"date": ["2024-01-30"], "code": ["7203"], "market": ["プライム"]}
+        )
+        mock_normalize_daily_quotes.return_value = normalized_df
+
+        merged_df = pd.DataFrame({"date": ["2024-01-30"], "close": [1000]})
+        mock_merge_and_save.return_value = merged_df
+
+        result = update_symbol("7203")
+
+        self.assertIs(result, merged_df)
+        self.assertIn("datetime", result.columns)
+        self.assertEqual(result.loc[0, "datetime"], "2024-01-30T00:00:00")
+
+
+if __name__ == "__main__":
+    unittest.main()
