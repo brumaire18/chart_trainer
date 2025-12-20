@@ -270,6 +270,42 @@ def _latest_has_required_data(
     return not latest[columns_to_check].isna().any()
 
 
+def _calculate_minimum_data_length(
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    macd_lookback: int,
+    require_sma20_trend: bool,
+    sma_trend_lookback: int,
+    apply_volume_condition: bool,
+) -> Tuple[int, List[str]]:
+    """スクリーニングに必要な最低データ本数と理由を返す。"""
+
+    required_length = 50
+    reasons: List[str] = ["インジケーター計算を安定させるため最低50本"]
+
+    if apply_rsi_condition:
+        required_length = max(required_length, 14)
+        reasons.append("RSI(14)を評価するには14本以上必要")
+
+    if macd_condition != "none":
+        macd_length = max(26, macd_lookback + 1)
+        required_length = max(required_length, macd_length)
+        reasons.append(
+            f"MACDクロス判定にはEMA26と直近{macd_lookback}本を含めた{macd_length}本以上が必要"
+        )
+
+    if require_sma20_trend:
+        sma_length = 20 + sma_trend_lookback
+        required_length = max(required_length, sma_length)
+        reasons.append(f"SMA20上向き判定には20+{sma_trend_lookback}本以上必要")
+
+    if apply_volume_condition:
+        required_length = max(required_length, 20)
+        reasons.append("20日平均出来高を計算するには20本以上必要")
+
+    return required_length, reasons
+
+
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
     st.title("Chart Trainer - フェーズ1（ラインチャート版）")
@@ -784,24 +820,23 @@ def main():
                         continue
 
                     required_length, requirement_messages = _calculate_minimum_data_length(
-                        require_sma20_trend=require_sma20_trend,
-                        sma_trend_lookback=sma_trend_lookback,
+                        apply_rsi_condition=apply_rsi_condition,
                         macd_condition=macd_condition,
                         macd_lookback=macd_lookback,
+                        require_sma20_trend=require_sma20_trend,
+                        sma_trend_lookback=sma_trend_lookback,
                         apply_volume_condition=apply_volume_condition,
-                        apply_rsi_condition=apply_rsi_condition,
                     )
 
                     if len(df_ind_full) < required_length:
-                        reason_detail = " / ".join(requirement_messages)
-                        data_short_reason = (
-                            f"データ不足（{reason_detail}が必要）"
-                            if requirement_messages
-                            else "データ不足"
-                        )
-                        code_reasons.append(data_short_reason)
+                        code_reasons.append("データ不足")
                         failure_logs.append(
-                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                            {
+                                "code": code_str,
+                                "name": name_map.get(code_str, "-"),
+                                "reasons": code_reasons,
+                                "details": requirement_messages,
+                            }
                         )
                         reason_counter.update(code_reasons)
                         continue
