@@ -783,8 +783,23 @@ def main():
                         reason_counter.update(code_reasons)
                         continue
 
-                    if len(df_ind_full) < max(50, sma_trend_lookback + 1):
-                        code_reasons.append("データ不足")
+                    required_length, requirement_messages = _calculate_minimum_data_length(
+                        require_sma20_trend=require_sma20_trend,
+                        sma_trend_lookback=sma_trend_lookback,
+                        macd_condition=macd_condition,
+                        macd_lookback=macd_lookback,
+                        apply_volume_condition=apply_volume_condition,
+                        apply_rsi_condition=apply_rsi_condition,
+                    )
+
+                    if len(df_ind_full) < required_length:
+                        reason_detail = " / ".join(requirement_messages)
+                        data_short_reason = (
+                            f"データ不足（{reason_detail}が必要）"
+                            if requirement_messages
+                            else "データ不足"
+                        )
+                        code_reasons.append(data_short_reason)
                         failure_logs.append(
                             {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
                         )
