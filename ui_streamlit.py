@@ -239,6 +239,37 @@ def _has_macd_cross(
     return False
 
 
+def _columns_to_check_latest(
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    require_sma20_trend: bool,
+) -> List[str]:
+    columns = ["date", "close", "volume"]
+
+    if apply_rsi_condition:
+        columns.append("rsi14")
+
+    if macd_condition != "none":
+        columns.extend(["macd", "macd_signal", "macd_hist"])
+
+    if require_sma20_trend:
+        columns.append("sma20")
+
+    return list(dict.fromkeys(columns))
+
+
+def _latest_has_required_data(
+    latest: pd.Series,
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    require_sma20_trend: bool,
+) -> bool:
+    columns_to_check = _columns_to_check_latest(
+        apply_rsi_condition, macd_condition, require_sma20_trend
+    )
+    return not latest[columns_to_check].isna().any()
+
+
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
     st.title("Chart Trainer - フェーズ1（ラインチャート版）")
@@ -762,7 +793,12 @@ def main():
 
                     df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
-                    if latest.isna().any():
+                    if not _latest_has_required_data(
+                        latest,
+                        apply_rsi_condition=apply_rsi_condition,
+                        macd_condition=macd_condition,
+                        require_sma20_trend=require_sma20_trend,
+                    ):
                         code_reasons.append("最新データに欠損あり")
                         failure_logs.append(
                             {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
