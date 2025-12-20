@@ -239,6 +239,73 @@ def _has_macd_cross(
     return False
 
 
+def _columns_to_check_latest(
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    require_sma20_trend: bool,
+) -> List[str]:
+    columns = ["date", "close", "volume"]
+
+    if apply_rsi_condition:
+        columns.append("rsi14")
+
+    if macd_condition != "none":
+        columns.extend(["macd", "macd_signal", "macd_hist"])
+
+    if require_sma20_trend:
+        columns.append("sma20")
+
+    return list(dict.fromkeys(columns))
+
+
+def _latest_has_required_data(
+    latest: pd.Series,
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    require_sma20_trend: bool,
+) -> bool:
+    columns_to_check = _columns_to_check_latest(
+        apply_rsi_condition, macd_condition, require_sma20_trend
+    )
+    return not latest[columns_to_check].isna().any()
+
+
+def _calculate_minimum_data_length(
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    macd_lookback: int,
+    require_sma20_trend: bool,
+    sma_trend_lookback: int,
+    apply_volume_condition: bool,
+) -> Tuple[int, List[str]]:
+    """スクリーニングに必要な最低データ本数と理由を返す。"""
+
+    required_length = 50
+    reasons: List[str] = ["インジケーター計算を安定させるため最低50本"]
+
+    if apply_rsi_condition:
+        required_length = max(required_length, 14)
+        reasons.append("RSI(14)を評価するには14本以上必要")
+
+    if macd_condition != "none":
+        macd_length = max(26, macd_lookback + 1)
+        required_length = max(required_length, macd_length)
+        reasons.append(
+            f"MACDクロス判定にはEMA26と直近{macd_lookback}本を含めた{macd_length}本以上が必要"
+        )
+
+    if require_sma20_trend:
+        sma_length = 20 + sma_trend_lookback
+        required_length = max(required_length, sma_length)
+        reasons.append(f"SMA20上向き判定には20+{sma_trend_lookback}本以上必要")
+
+    if apply_volume_condition:
+        required_length = max(required_length, 20)
+        reasons.append("20日平均出来高を計算するには20本以上必要")
+
+    return required_length, reasons
+
+
 def main():
     st.set_page_config(page_title="Chart Trainer (Line ver.)", layout="wide")
     st.title("Chart Trainer - フェーズ1（ラインチャート版）")
@@ -697,7 +764,7 @@ def main():
         )
         macd_lookback = st.slider(
             "MACDクロスを探す過去本数",
-            min_value=3,
+            min_value=1,
             max_value=30,
             value=5,
             help="クロスを検出する期間を広げることで、直近数日以内に発生したサインを拾いやすくします。",
@@ -752,17 +819,36 @@ def main():
                         reason_counter.update(code_reasons)
                         continue
 
-                    if len(df_ind_full) < max(50, sma_trend_lookback + 1):
+                    required_length, requirement_messages = _calculate_minimum_data_length(
+                        apply_rsi_condition=apply_rsi_condition,
+                        macd_condition=macd_condition,
+                        macd_lookback=macd_lookback,
+                        require_sma20_trend=require_sma20_trend,
+                        sma_trend_lookback=sma_trend_lookback,
+                        apply_volume_condition=apply_volume_condition,
+                    )
+
+                    if len(df_ind_full) < required_length:
                         code_reasons.append("データ不足")
                         failure_logs.append(
-                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                            {
+                                "code": code_str,
+                                "name": name_map.get(code_str, "-"),
+                                "reasons": code_reasons,
+                                "details": requirement_messages,
+                            }
                         )
                         reason_counter.update(code_reasons)
                         continue
 
                     df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
-                    if latest.isna().any():
+                    if not _latest_has_required_data(
+                        latest,
+                        apply_rsi_condition=apply_rsi_condition,
+                        macd_condition=macd_condition,
+                        require_sma20_trend=require_sma20_trend,
+                    ):
                         code_reasons.append("最新データに欠損あり")
                         failure_logs.append(
                             {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
@@ -871,6 +957,18 @@ def main():
             df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
             st.dataframe(df_result, use_container_width=True)
+            enable_preview = st.checkbox(
+                "日足チャートプレビューを表示（件数が多い場合は負荷が高くなります）",
+                value=False,
+            )
+            max_preview = st.number_input(
+                "プレビュー最大件数",
+                min_value=1,
+                max_value=50,
+                value=10,
+                step=1,
+                help="プレビューを表示する場合に処理負荷を抑えるための件数上限です。",
+            )
 
             if macd_debug and st.session_state.get("macd_debug_logs"):
                 with st.expander("MACDクロス判定のデバッグログ", expanded=False):
@@ -910,43 +1008,44 @@ def main():
                         )
                         st.dataframe(fail_df, use_container_width=True)
 
-            st.markdown("### 日足チャートプレビュー")
-            for _, row in df_result.iterrows():
-                code_str = str(row["code"]).zfill(4)
-                try:
-                    cache_key = _get_price_cache_key(code_str)
-                    chart_df, _ = _load_price_with_indicators(code_str, cache_key)
-                except Exception:
-                    continue
-                chart_df = chart_df.tail(90)
-                if chart_df.empty:
-                    continue
+            if enable_preview:
+                st.markdown("### 日足チャートプレビュー")
+                for _, row in df_result.head(max_preview).iterrows():
+                    code_str = str(row["code"]).zfill(4)
+                    try:
+                        cache_key = _get_price_cache_key(code_str)
+                        chart_df, _ = _load_price_with_indicators(code_str, cache_key)
+                    except Exception:
+                        continue
+                    chart_df = chart_df.tail(90)
+                    if chart_df.empty:
+                        continue
 
-                chart_df["date_str"] = chart_df["date"].dt.strftime("%Y-%m-%d")
+                    chart_df["date_str"] = chart_df["date"].dt.strftime("%Y-%m-%d")
 
-                left, right = st.columns([1, 3])
-                with left:
-                    st.markdown(f"**{code_str} {row['name']}**")
-                    st.caption("直近90日間の終値推移")
-                with right:
-                    preview_fig = go.Figure()
-                    preview_fig.add_trace(
-                        go.Scatter(
-                            x=chart_df["date_str"],
-                            y=chart_df["close"],
-                            mode="lines",
-                            line=dict(color="#1f77b4"),
-                            name="終値",
+                    left, right = st.columns([1, 3])
+                    with left:
+                        st.markdown(f"**{code_str} {row['name']}**")
+                        st.caption("直近90日間の終値推移")
+                    with right:
+                        preview_fig = go.Figure()
+                        preview_fig.add_trace(
+                            go.Scatter(
+                                x=chart_df["date_str"],
+                                y=chart_df["close"],
+                                mode="lines",
+                                line=dict(color="#1f77b4"),
+                                name="終値",
+                            )
                         )
-                    )
-                    preview_fig.update_layout(
-                        margin=dict(l=10, r=10, t=10, b=10),
-                        height=220,
-                        xaxis_title="日付",
-                        yaxis_title="終値",
-                    )
-                    preview_fig.update_xaxes(type="category")
-                    st.plotly_chart(preview_fig, use_container_width=True)
+                        preview_fig.update_layout(
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            height=220,
+                            xaxis_title="日付",
+                            yaxis_title="終値",
+                        )
+                        preview_fig.update_xaxes(type="category")
+                        st.plotly_chart(preview_fig, use_container_width=True)
         else:
             reason_counter = st.session_state.get("screening_reason_counter", Counter())
             total_failures = sum(reason_counter.values())
