@@ -12,7 +12,7 @@ import os
 import time
 import random
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -317,11 +317,11 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     return normalized
 
 
-def _light_plan_window() -> tuple[str, str]:
-    today = date.today()
-    to_date = today - timedelta(weeks=LIGHT_PLAN_LAG_WEEKS)
-    from_date = to_date - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
-    return from_date.isoformat(), to_date.isoformat()
+def _light_plan_window(client: Optional[JQuantsClient] = None) -> tuple[str, str]:
+    client = client or _get_client()
+    latest_trading_day, _ = _get_latest_trading_day(client)
+    from_date = latest_trading_day - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
+    return from_date.isoformat(), latest_trading_day.isoformat()
 
 
 def _most_recent_weekday(target_weekday: int) -> date:
@@ -330,6 +330,58 @@ def _most_recent_weekday(target_weekday: int) -> date:
     today = date.today()
     delta = (today.weekday() - target_weekday) % 7
     return today - timedelta(days=delta)
+
+
+def _previous_business_day(base_date: date) -> date:
+    """前営業日 (祝日考慮なし) を返す。"""
+
+    return pd.bdate_range(end=base_date - timedelta(days=1), periods=1)[0].date()
+
+
+def _fetch_daily_quotes_raw(client: JQuantsClient, target_date: date) -> pd.DataFrame:
+    params = {"date": target_date.isoformat()}
+    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
+    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
+    if raw_quotes is None:
+        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
+
+    return pd.DataFrame(raw_quotes)
+
+
+def _get_latest_trading_day(
+    client: JQuantsClient,
+    *,
+    preferred_date: Optional[date] = None,
+    now: Optional[datetime] = None,
+    max_lookback_days: int = 10,
+    return_raw: bool = False,
+) -> tuple[date, Optional[pd.DataFrame]]:
+    """取得可能な最新営業日を、APIレスポンスの空判定を用いて決定する。"""
+
+    reference_dt = now or datetime.now()
+    candidate_date = preferred_date or reference_dt.date()
+
+    if candidate_date > reference_dt.date():
+        candidate_date = reference_dt.date()
+
+    if preferred_date is None:
+        if reference_dt.weekday() >= 5 or reference_dt.time() < dt_time(hour=9):
+            candidate_date = candidate_date - timedelta(days=1)
+
+    candidate_date = pd.bdate_range(end=candidate_date, periods=1)[0].date()
+
+    lookback = 0
+    df_raw: Optional[pd.DataFrame] = None
+    while lookback <= max_lookback_days:
+        df_raw = _fetch_daily_quotes_raw(client, candidate_date)
+        if not df_raw.empty:
+            return candidate_date, df_raw if return_raw else None
+
+        logger.info("%s の株価データが空のため前営業日にフォールバックします", candidate_date)
+        candidate_date = _previous_business_day(candidate_date)
+        lookback += 1
+
+    raise JQuantsError("取得可能な最新営業日を特定できませんでした。")
 
 
 def fetch_daily_quotes_for_date(target_date: date | str) -> pd.DataFrame:
@@ -341,16 +393,14 @@ def fetch_daily_quotes_for_date(target_date: date | str) -> pd.DataFrame:
     else:
         target_dt = target_date
 
-    params = {"date": target_dt.isoformat()}
-    logger.info("%s の全銘柄株価を取得します", target_dt)
-    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
-    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
-    if raw_quotes is None:
-        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
+    resolved_date, df_raw = _get_latest_trading_day(
+        client, preferred_date=target_dt, return_raw=True
+    )
 
-    df_raw = pd.DataFrame(raw_quotes)
-    if df_raw.empty:
-        raise JQuantsError(f"{target_dt} の価格データが空でした。")
+    if resolved_date != target_dt:
+        logger.info("%s の代わりに直近営業日 %s の全銘柄株価を取得します", target_dt, resolved_date)
+    else:
+        logger.info("%s の全銘柄株価を取得します", resolved_date)
 
     code_col = None
     for candidate in ("Code", "LocalCode", "code", "Localcode"):
@@ -365,7 +415,7 @@ def fetch_daily_quotes_for_date(target_date: date | str) -> pd.DataFrame:
         normalized_frames.append(_normalize_daily_quotes(group, str(code_value).zfill(4)))
 
     normalized = pd.concat(normalized_frames, ignore_index=True)
-    logger.info("%s の株価を %s 銘柄分取得しました", target_dt, normalized["code"].nunique())
+    logger.info("%s の株価を %s 銘柄分取得しました", resolved_date, normalized["code"].nunique())
     return normalized
 
 
@@ -524,7 +574,7 @@ def _merge_and_save(
         merged = merged.drop_duplicates(subset=["date"], keep="last")
         merged = merged.sort_values("date").reset_index(drop=True)
     else:
-        merged = snapshot.sort_values("date").reset_index(drop=True)
+        merged = normalized.sort_values("date").reset_index(drop=True)
 
     if "datetime" not in merged.columns:
         merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
@@ -542,7 +592,8 @@ def _merge_and_save(
     meta = meta or {}
     history_start = merged["date"].min()
     history_end = merged["date"].max()
-    market = meta.get("market") or (normalized.get("market").iloc[0] if not normalized.empty else None)
+    market_series = normalized["market"] if "market" in normalized.columns else None
+    market = meta.get("market") or (market_series.iloc[0] if market_series is not None else None)
     meta_out = {
         "code": code,
         "market": market,
@@ -563,7 +614,7 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
     meta = _load_meta(code)
     existing_df = None if full_refresh else _load_existing_csv(code)
 
-    from_light, to_light = _light_plan_window()
+    from_light, to_light = _light_plan_window(client)
 
     if not full_refresh and meta.get("history_end") and existing_df is not None:
         from_date = (pd.to_datetime(meta["history_end"]) + pd.Timedelta(days=1)).date()
@@ -575,6 +626,13 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
     else:
         fetch_from, fetch_to = from_light, to_light
 
+    resolved_to, _ = _get_latest_trading_day(
+        client, preferred_date=datetime.fromisoformat(fetch_to).date()
+    )
+    if resolved_to.isoformat() != fetch_to:
+        logger.info("最新営業日を %s から %s に補正しました", fetch_to, resolved_to)
+    fetch_to = resolved_to.isoformat()
+
     params = {"code": code, "from": fetch_from, "to": fetch_to}
     logger.info("%s の株価を取得します (from=%s, to=%s)", code, fetch_from, fetch_to)
     data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
@@ -584,13 +642,23 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
 
     df_raw = pd.DataFrame(raw_quotes)
     if df_raw.empty:
-        raise JQuantsError(f"{code} の価格データが空でした。")
+        logger.info("%s の価格データが空のため前営業日にフォールバックします", code)
+        resolved_to, df_raw = _get_latest_trading_day(
+            client, preferred_date=datetime.fromisoformat(fetch_to).date(), return_raw=True
+        )
+        fetch_to = resolved_to.isoformat()
+        logger.info("%s の株価を取得し直します (from=%s, to=%s)", code, fetch_from, fetch_to)
+        if df_raw.empty:
+            raise JQuantsError(f"{code} の価格データが空でした。")
 
     normalized = _normalize_daily_quotes(df_raw, code)
     if normalized.empty:
         raise JQuantsError(f"{code} の正規化後データが空でした。")
 
-    merged = _merge_and_save(code, normalized, fetch_to, existing_df=existing_df, meta=meta)
+    actual_fetch_to = str(normalized["date"].max())
+    merged = _merge_and_save(
+        code, normalized, actual_fetch_to, existing_df=existing_df, meta=meta
+    )
 
     if "datetime" not in merged.columns:
         merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
@@ -600,6 +668,8 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         merged["datetime"] = pd.to_datetime(merged["datetime"], format="ISO8601").dt.strftime(
             "%Y-%m-%dT%H:%M:%S"
         )
+
+    return merged
 
 
 def append_quotes_for_date(target_date: str, codes: Optional[List[str]] = None) -> None:
