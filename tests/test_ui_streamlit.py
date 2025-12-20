@@ -2,7 +2,11 @@ import unittest
 
 import pandas as pd
 
-from ui_streamlit import _has_macd_cross, _latest_has_required_data
+from ui_streamlit import (
+    _calculate_minimum_data_length,
+    _has_macd_cross,
+    _latest_has_required_data,
+)
 
 
 class HasMacdCrossTest(unittest.TestCase):
@@ -109,6 +113,38 @@ class LatestHasRequiredDataTest(unittest.TestCase):
                 require_sma20_trend=True,
             )
         )
+
+
+class CalculateMinimumDataLengthTest(unittest.TestCase):
+    def test_returns_base_requirement_and_reasons(self):
+        required_length, reasons = _calculate_minimum_data_length(
+            apply_rsi_condition=False,
+            macd_condition="none",
+            macd_lookback=5,
+            require_sma20_trend=False,
+            sma_trend_lookback=3,
+            apply_volume_condition=False,
+        )
+
+        self.assertEqual(required_length, 50)
+        self.assertTrue(any("最低50本" in msg for msg in reasons))
+
+    def test_respects_all_enabled_conditions(self):
+        required_length, reasons = _calculate_minimum_data_length(
+            apply_rsi_condition=True,
+            macd_condition="golden",
+            macd_lookback=8,
+            require_sma20_trend=True,
+            sma_trend_lookback=4,
+            apply_volume_condition=True,
+        )
+
+        # MACD requires 26, SMA20 requires 24, base is 50 -> expect 50
+        self.assertEqual(required_length, 50)
+        self.assertTrue(any("RSI(14)" in msg for msg in reasons))
+        self.assertTrue(any("MACDクロス" in msg for msg in reasons))
+        self.assertTrue(any("SMA20" in msg for msg in reasons))
+        self.assertTrue(any("20日平均出来高" in msg for msg in reasons))
 
 
 if __name__ == "__main__":
