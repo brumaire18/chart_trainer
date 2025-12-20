@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from ui_streamlit import _calculate_minimum_data_length, _has_macd_cross
+from ui_streamlit import _has_macd_cross, _latest_has_required_data
 
 
 class HasMacdCrossTest(unittest.TestCase):
@@ -63,45 +63,52 @@ class HasMacdCrossTest(unittest.TestCase):
         self.assertTrue(_has_macd_cross(df, "golden", lookback=4))
 
 
-class CalculateMinimumDataLengthTest(unittest.TestCase):
-    def test_keeps_original_threshold_with_sma_trend(self):
-        required_length, reasons = _calculate_minimum_data_length(
-            require_sma20_trend=True,
-            sma_trend_lookback=7,
-            macd_condition="golden",
-            macd_lookback=5,
-            apply_volume_condition=True,
-            apply_rsi_condition=True,
+class LatestHasRequiredDataTest(unittest.TestCase):
+    def test_allows_nan_when_condition_disabled(self):
+        latest = pd.Series(
+            {
+                "date": pd.Timestamp("2024-01-01"),
+                "close": 1000,
+                "volume": 12345,
+                "rsi14": float("nan"),
+                "macd": float("nan"),
+                "macd_signal": float("nan"),
+                "macd_hist": float("nan"),
+                "sma20": float("nan"),
+            }
         )
 
-        self.assertEqual(required_length, max(50, 7 + 1))
-        self.assertTrue(any("SMAトレンド判定" in reason for reason in reasons))
-
-    def test_macd_only_uses_macd_threshold(self):
-        required_length, reasons = _calculate_minimum_data_length(
-            require_sma20_trend=False,
-            sma_trend_lookback=3,
-            macd_condition="golden",
-            macd_lookback=5,
-            apply_volume_condition=False,
-            apply_rsi_condition=False,
+        self.assertTrue(
+            _latest_has_required_data(
+                latest,
+                apply_rsi_condition=False,
+                macd_condition="none",
+                require_sma20_trend=False,
+            )
         )
 
-        self.assertEqual(required_length, max(5 + 2, 26))
-        self.assertTrue(any("MACD判定" in reason for reason in reasons))
-
-    def test_volume_condition_requires_twenty_bars(self):
-        required_length, reasons = _calculate_minimum_data_length(
-            require_sma20_trend=False,
-            sma_trend_lookback=3,
-            macd_condition="none",
-            macd_lookback=5,
-            apply_volume_condition=True,
-            apply_rsi_condition=False,
+    def test_detects_nan_on_required_columns(self):
+        latest = pd.Series(
+            {
+                "date": pd.Timestamp("2024-01-01"),
+                "close": 1000,
+                "volume": float("nan"),
+                "rsi14": 55.0,
+                "macd": 0.1,
+                "macd_signal": 0.05,
+                "macd_hist": 0.05,
+                "sma20": 990.0,
+            }
         )
 
-        self.assertEqual(required_length, 20)
-        self.assertTrue(any("出来高条件" in reason for reason in reasons))
+        self.assertFalse(
+            _latest_has_required_data(
+                latest,
+                apply_rsi_condition=True,
+                macd_condition="golden",
+                require_sma20_trend=True,
+            )
+        )
 
 
 if __name__ == "__main__":

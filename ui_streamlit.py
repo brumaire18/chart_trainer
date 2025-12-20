@@ -239,40 +239,35 @@ def _has_macd_cross(
     return False
 
 
-def _calculate_minimum_data_length(
-    require_sma20_trend: bool,
-    sma_trend_lookback: int,
-    macd_condition: str,
-    macd_lookback: int,
-    apply_volume_condition: bool,
+def _columns_to_check_latest(
     apply_rsi_condition: bool,
-) -> Tuple[int, List[str]]:
-    """
-    スクリーニングに必要な最小データ本数と理由を返す。
+    macd_condition: str,
+    require_sma20_trend: bool,
+) -> List[str]:
+    columns = ["date", "close", "volume"]
 
-    条件に応じて閾値を切り替え、どの条件が必要本数を決めているかを
-    文字列で併せて返却する。
-    """
+    if apply_rsi_condition:
+        columns.append("rsi14")
 
-    requirements: List[Tuple[str, int]] = []
+    if macd_condition != "none":
+        columns.extend(["macd", "macd_signal", "macd_hist"])
 
     if require_sma20_trend:
-        required_length = max(50, sma_trend_lookback + 1)
-        requirements.append(("SMAトレンド判定", required_length))
-    else:
-        if macd_condition != "none":
-            macd_required = max(macd_lookback + 2, 26)
-            requirements.append(("MACD判定", macd_required))
-        if apply_volume_condition:
-            requirements.append(("出来高条件", 20))
-        if apply_rsi_condition:
-            requirements.append(("RSI計算", 14))
-        if not requirements:
-            requirements.append(("スクリーニング", 2))
+        columns.append("sma20")
 
-    min_length = max(length for _, length in requirements)
-    reasons = [f"{desc}には{length}本以上のデータ" for desc, length in requirements]
-    return min_length, reasons
+    return list(dict.fromkeys(columns))
+
+
+def _latest_has_required_data(
+    latest: pd.Series,
+    apply_rsi_condition: bool,
+    macd_condition: str,
+    require_sma20_trend: bool,
+) -> bool:
+    columns_to_check = _columns_to_check_latest(
+        apply_rsi_condition, macd_condition, require_sma20_trend
+    )
+    return not latest[columns_to_check].isna().any()
 
 
 def main():
@@ -813,7 +808,12 @@ def main():
 
                     df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
-                    if latest.isna().any():
+                    if not _latest_has_required_data(
+                        latest,
+                        apply_rsi_condition=apply_rsi_condition,
+                        macd_condition=macd_condition,
+                        require_sma20_trend=require_sma20_trend,
+                    ):
                         code_reasons.append("最新データに欠損あり")
                         failure_logs.append(
                             {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
