@@ -1,8 +1,9 @@
 from datetime import date
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 from .config import (
     JQUANTS_BASE_URL,
@@ -203,3 +204,81 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
     csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
     df_normalized.to_csv(csv_path, index=False)
     return csv_path
+
+
+def load_topix_csv() -> pd.DataFrame:
+    """TOPIX の日次CSVを読み込む。"""
+
+    csv_path = PRICE_CSV_DIR / "topix.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError("TOPIX のCSVファイル (data/price_csv/topix.csv) が見つかりません。")
+
+    df_raw = pd.read_csv(csv_path)
+    if "date" not in df_raw.columns or "close" not in df_raw.columns:
+        raise ValueError("topix.csv に必要な date / close 列が存在しません。")
+
+    df_raw["date"] = pd.to_datetime(df_raw["date"]).dt.normalize()
+    if "datetime" in df_raw.columns:
+        df_raw["datetime"] = pd.to_datetime(df_raw["datetime"])
+    else:
+        df_raw["datetime"] = df_raw["date"]
+
+    for price_col in ["open", "high", "low", "close"]:
+        if price_col in df_raw.columns:
+            df_raw[price_col] = pd.to_numeric(df_raw[price_col], errors="coerce")
+
+    df = df_raw[
+        [col for col in ["date", "datetime", "open", "high", "low", "close"] if col in df_raw.columns]
+    ].copy()
+    df = df.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+    df["datetime"] = df["datetime"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return df
+
+
+def attach_topix_relative_strength(
+    df_stock: pd.DataFrame, topix_df: Optional[pd.DataFrame] = None
+) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    """
+    銘柄データとTOPIXを日付でinner joinして RS (対TOPIX) を計算する。
+
+    Returns:
+        merged_df: TOPIX列とRS列を付与したDataFrame（重複日付は最後にソート）
+        info: 追加情報 (coverage_ratio, missing_rows など)
+    """
+
+    if topix_df is None:
+        topix_df = load_topix_csv()
+
+    df_stock = df_stock.copy()
+    df_stock["date"] = pd.to_datetime(df_stock["date"]).dt.normalize()
+
+    df_topix = topix_df.copy()
+    df_topix["date"] = pd.to_datetime(df_topix["date"]).dt.normalize()
+    df_topix = df_topix.dropna(subset=["date", "close"])
+
+    merged = pd.merge(
+        df_stock,
+        df_topix[["date", "close"]].rename(columns={"close": "topix_close"}),
+        on="date",
+        how="inner",
+        validate="many_to_one",
+    )
+
+    info: Dict[str, object] = {
+        "source_rows": float(len(df_stock)),
+        "merged_rows": float(len(merged)),
+        "missing_rows": float(len(df_stock) - len(merged)),
+    }
+    info["coverage_ratio"] = float(len(merged) / len(df_stock)) if len(df_stock) else 0.0
+
+    if merged.empty:
+        info["status"] = "empty_merge"
+        return df_stock, info
+
+    merged["topix_rs"] = merged["close"] / merged["topix_close"]
+    merged["topix_rs_log"] = np.log(merged["close"]) - np.log(merged["topix_close"])
+    merged = merged.sort_values("date").reset_index(drop=True)
+    info["status"] = "ok"
+    info["start_date"] = merged["date"].min()
+    info["end_date"] = merged["date"].max()
+    return merged, info
