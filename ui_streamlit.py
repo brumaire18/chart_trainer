@@ -9,6 +9,7 @@ import streamlit as st
 
 from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
 from app.data_loader import (
+    attach_topix_relative_strength,
     enforce_light_plan_window,
     fetch_and_save_price_csv,
     get_available_symbols,
@@ -44,19 +45,28 @@ def _get_price_cache_key(symbol: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _load_price_with_indicators(symbol: str, cache_key: str) -> Tuple[pd.DataFrame, int]:
+def _load_price_with_indicators(
+    symbol: str, cache_key: str, topix_cache_key: Optional[str] = None
+) -> Tuple[pd.DataFrame, int, Optional[dict]]:
     """
     日足データを読み込み、出来高0を除外したうえでインジケーターを計算する。
 
     cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
     """
 
-    _ = cache_key  # キャッシュ用に参照だけ行う
+    _ = (cache_key, topix_cache_key)  # キャッシュ用に参照だけ行う
     df_daily = load_price_csv(symbol)
     df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
     removed_rows = len(df_daily) - len(df_daily_trading)
     df_ind = _compute_indicators(df_daily_trading)
-    return df_ind, removed_rows
+    topix_info = None
+    try:
+        df_ind, topix_info = attach_topix_relative_strength(df_ind)
+    except FileNotFoundError:
+        topix_info = {"status": "missing_file"}
+    except ValueError as exc:
+        topix_info = {"status": "invalid_file", "message": str(exc)}
+    return df_ind, removed_rows, topix_info
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -113,9 +123,22 @@ def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         return df.copy()
 
     df_idx = df.set_index("date")
+    agg_map = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }
+    if "topix_close" in df.columns:
+        agg_map["topix_close"] = "last"
+    if "topix_rs" in df.columns:
+        agg_map["topix_rs"] = "last"
+    if "topix_rs_log" in df.columns:
+        agg_map["topix_rs_log"] = "last"
     resampled = (
         df_idx.resample(rule)
-        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .agg(agg_map)
         .dropna()
         .reset_index()
     )
@@ -244,6 +267,7 @@ def _columns_to_check_latest(
     apply_rsi_condition: bool,
     macd_condition: str,
     require_sma20_trend: bool,
+    apply_topix_rs_condition: bool,
 ) -> List[str]:
     columns = ["date", "close", "volume"]
 
@@ -256,6 +280,9 @@ def _columns_to_check_latest(
     if require_sma20_trend:
         columns.append("sma20")
 
+    if apply_topix_rs_condition:
+        columns.append("topix_rs")
+
     return list(dict.fromkeys(columns))
 
 
@@ -264,10 +291,14 @@ def _latest_has_required_data(
     apply_rsi_condition: bool,
     macd_condition: str,
     require_sma20_trend: bool,
+    apply_topix_rs_condition: bool,
 ) -> bool:
     columns_to_check = _columns_to_check_latest(
-        apply_rsi_condition, macd_condition, require_sma20_trend
+        apply_rsi_condition, macd_condition, require_sma20_trend, apply_topix_rs_condition
     )
+    missing_columns = [col for col in columns_to_check if col not in latest.index]
+    if missing_columns:
+        return False
     return not latest[columns_to_check].isna().any()
 
 
@@ -278,6 +309,8 @@ def _calculate_minimum_data_length(
     require_sma20_trend: bool,
     sma_trend_lookback: int,
     apply_volume_condition: bool,
+    apply_topix_rs_condition: bool,
+    topix_rs_lookback: int,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
 
@@ -303,6 +336,10 @@ def _calculate_minimum_data_length(
     if apply_volume_condition:
         required_length = max(required_length, 20)
         reasons.append("20日平均出来高を計算するには20本以上必要")
+
+    if apply_topix_rs_condition:
+        required_length = max(required_length, topix_rs_lookback + 1)
+        reasons.append(f"TOPIX RSを{topix_rs_lookback}本前と比較するには十分な期間が必要")
 
     return required_length, reasons
 
@@ -493,19 +530,43 @@ def main():
     show_macd = st.sidebar.checkbox("MACD (12,26,9)", value=True)
     show_stoch = st.sidebar.checkbox("ストキャスティクス (14,3)", value=False)
     show_obv = st.sidebar.checkbox("オンバランスボリューム", value=False)
+    show_topix_rs = st.sidebar.checkbox(
+        "TOPIX RSを表示",
+        value=False,
+        help="TOPIXとの相対力(RS=株価/ TOPIX)をオシレーター領域に描画します。",
+    )
 
     tab_chart, tab_screen, tab_breadth = st.tabs(["チャート表示", "スクリーナー", "マーケットブレッドス"])
 
     with tab_chart:
         # --- チャート表示 ---
         cache_key = _get_price_cache_key(selected_symbol)
-        df_daily_trading, removed_rows = _load_price_with_indicators(
-            selected_symbol, cache_key
+        topix_cache_key = _get_price_cache_key("topix")
+        df_daily_trading, removed_rows, topix_info = _load_price_with_indicators(
+            selected_symbol, cache_key, topix_cache_key
         )
         if removed_rows > 0:
             st.sidebar.info(
                 f"出来高が0の日を{removed_rows}日分除外して日足チャートを表示します。"
             )
+
+        if topix_info:
+            coverage = float(topix_info.get("coverage_ratio", 1.0))
+            status = topix_info.get("status")
+            if status == "missing_file":
+                st.sidebar.info("TOPIX CSVが見つからないためRS計算はスキップします。")
+            elif status == "empty_merge":
+                st.warning("TOPIXと重複する日付がなく、RSを計算できませんでした。")
+            elif status == "invalid_file":
+                st.warning(f"topix.csv の読み込みに失敗しました: {topix_info.get('message')}")
+            elif coverage < 0.5:
+                st.warning(
+                    f"TOPIXデータの欠損が多いため、重複日付のみ({coverage*100:.1f}%の範囲)でRSを描画します。"
+                )
+            elif coverage < 0.8:
+                st.info(
+                    f"TOPIXデータに欠損があるため、重複する期間のみ({coverage*100:.1f}%)でRSを描画します。"
+                )
 
         df_resampled = _resample_ohlc(df_daily_trading, timeframe)
 
@@ -726,6 +787,19 @@ def main():
                 ),
                 secondary_y=True,
             )
+        if show_topix_rs:
+            if "topix_rs" in df_problem.columns:
+                osc_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date_str"],
+                        y=df_problem["topix_rs"],
+                        name="TOPIX RS",
+                        line=dict(color="#111111", dash="solid"),
+                    ),
+                    secondary_y=True,
+                )
+            else:
+                st.info("TOPIX RS を計算できないため表示をスキップしました。")
 
         osc_fig.update_layout(
             xaxis_title="Date",
@@ -733,7 +807,7 @@ def main():
             margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(orientation="h"),
         )
-        osc_fig.update_yaxes(title_text="MACD", secondary_y=True)
+        osc_fig.update_yaxes(title_text="MACD / RS", secondary_y=True)
         osc_fig.update_xaxes(type="category")
 
         st.plotly_chart(osc_fig, use_container_width=True)
@@ -753,6 +827,25 @@ def main():
         )
         apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
+        apply_topix_rs_condition = st.checkbox(
+            "TOPIX RS 条件を適用",
+            value=False,
+            help="TOPIXとの相対力を評価します。TOPIXデータがない場合は自動的にスキップされます。",
+        )
+        topix_rs_lookback = st.slider(
+            "RSの比較期間（日）",
+            min_value=5,
+            max_value=120,
+            value=20,
+            help="最新のRSが過去の値よりどの程度変化したかを判定します。",
+        )
+        topix_rs_threshold = st.slider(
+            "RS変化率の下限(%)",
+            min_value=-50,
+            max_value=50,
+            value=0,
+            help="0%以上ならTOPIXより直近でアウトパフォームしている銘柄を抽出します。",
+        )
         macd_condition = st.selectbox(
             "MACD クロス条件",
             options=["none", "golden", "dead"],
@@ -791,6 +884,7 @@ def main():
             step=0.1,
             help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
+        topix_cache_key = _get_price_cache_key("topix")
 
         run_screening = st.button("スクリーニングを実行", type="primary")
 
@@ -811,7 +905,9 @@ def main():
 
                     cache_key = _get_price_cache_key(code_str)
                     try:
-                        df_ind_full, _ = _load_price_with_indicators(code_str, cache_key)
+                        df_ind_full, _, _ = _load_price_with_indicators(
+                            code_str, cache_key, topix_cache_key
+                        )
                     except Exception:
                         code_reasons.append("データ取得エラー")
                         failure_logs.append(
@@ -827,6 +923,8 @@ def main():
                         require_sma20_trend=require_sma20_trend,
                         sma_trend_lookback=sma_trend_lookback,
                         apply_volume_condition=apply_volume_condition,
+                        apply_topix_rs_condition=apply_topix_rs_condition,
+                        topix_rs_lookback=topix_rs_lookback,
                     )
 
                     if len(df_ind_full) < required_length:
@@ -842,6 +940,17 @@ def main():
                         reason_counter.update(code_reasons)
                         continue
 
+                    if apply_topix_rs_condition and (
+                        "topix_rs" not in df_ind_full.columns
+                        or df_ind_full["topix_rs"].dropna().empty
+                    ):
+                        code_reasons.append("TOPIX RSデータなし")
+                        failure_logs.append(
+                            {"code": code_str, "name": name_map.get(code_str, "-"), "reasons": code_reasons}
+                        )
+                        reason_counter.update(code_reasons)
+                        continue
+
                     df_ind = df_ind_full.tail(200)
                     latest = df_ind.iloc[-1]
                     if not _latest_has_required_data(
@@ -849,6 +958,7 @@ def main():
                         apply_rsi_condition=apply_rsi_condition,
                         macd_condition=macd_condition,
                         require_sma20_trend=require_sma20_trend,
+                        apply_topix_rs_condition=apply_topix_rs_condition,
                     ):
                         code_reasons.append("最新データに欠損あり")
                         failure_logs.append(
@@ -907,8 +1017,22 @@ def main():
                             and avg_vol20 > 0
                             and latest["volume"] >= avg_vol20 * volume_multiplier
                         )
+                    rs_ok = True
+                    rs_change = None
+                    if apply_topix_rs_condition:
+                        if "topix_rs" not in df_ind.columns or df_ind["topix_rs"].isna().all():
+                            rs_ok = False
+                        elif len(df_ind) > topix_rs_lookback:
+                            baseline = df_ind.iloc[-1 - topix_rs_lookback]["topix_rs"]
+                            if pd.notna(latest["topix_rs"]) and pd.notna(baseline) and baseline != 0:
+                                rs_change = (latest["topix_rs"] / baseline - 1) * 100
+                                rs_ok = rs_change >= topix_rs_threshold
+                            else:
+                                rs_ok = False
+                        else:
+                            rs_ok = False
 
-                    if all([rsi_ok, macd_ok, sma_ok, vol_ok]):
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok]):
                         change_pct = (
                             (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
                             if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
@@ -925,6 +1049,7 @@ def main():
                                 "出来高": int(latest["volume"]),
                                 "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
+                                "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
                             }
                         )
                         continue
@@ -937,6 +1062,13 @@ def main():
                         code_reasons.append("SMAトレンド不合格")
                     if apply_volume_condition and not vol_ok:
                         code_reasons.append("出来高条件不合格")
+                    if apply_topix_rs_condition and not rs_ok:
+                        if "topix_rs" not in df_ind.columns:
+                            code_reasons.append("TOPIX RSデータなし")
+                        elif len(df_ind) <= topix_rs_lookback:
+                            code_reasons.append("TOPIX RS期間不足")
+                        else:
+                            code_reasons.append("TOPIX RS条件不合格")
 
                     if code_reasons:
                         failure_logs.append(
@@ -1015,7 +1147,9 @@ def main():
                     code_str = str(row["code"]).zfill(4)
                     try:
                         cache_key = _get_price_cache_key(code_str)
-                        chart_df, _ = _load_price_with_indicators(code_str, cache_key)
+                        chart_df, _, _ = _load_price_with_indicators(
+                            code_str, cache_key, topix_cache_key
+                        )
                     except Exception:
                         continue
                     chart_df = chart_df.tail(90)
