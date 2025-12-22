@@ -52,6 +52,10 @@ AUTH_ERROR_STATUS_CODES = {401}
 AUTH_ERROR_WAIT = 600  # 秒（10分）
 AUTH_ERROR_MAX_RETRIES = 3
 
+TOPIX_CODE = "TOPIX"
+TOPIX_CSV_PATH = PRICE_CSV_DIR / "topix.csv"
+TOPIX_META_PATH = META_DIR / "topix.json"
+
 
 @dataclass
 class FetchResult:
@@ -317,6 +321,49 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     return normalized
 
 
+def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFrame:
+    df = df_raw.copy()
+
+    if "Date" in df.columns:
+        df["date"] = pd.to_datetime(df["Date"], errors="coerce")
+    elif "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    else:
+        raise JQuantsError("Date 列が存在しません。")
+
+    open_col = next((col for col in ("AdjustmentOpen", "Open", "open") if col in df.columns), None)
+    high_col = next((col for col in ("AdjustmentHigh", "High", "high") if col in df.columns), None)
+    low_col = next((col for col in ("AdjustmentLow", "Low", "low") if col in df.columns), None)
+    close_col = next((col for col in ("AdjustmentClose", "Close", "close") if col in df.columns), None)
+
+    missing_cols = [name for name, col in {
+        "open": open_col,
+        "high": high_col,
+        "low": low_col,
+        "close": close_col,
+    }.items() if col is None]
+    if missing_cols:
+        raise JQuantsError(f"TOPIX データに必要なカラムが不足しています: {missing_cols}")
+
+    normalized = pd.DataFrame(
+        {
+            "date": df["date"],
+            "datetime": pd.to_datetime(df["date"]),
+            "code": code,
+            "open": df[open_col],
+            "high": df[high_col],
+            "low": df[low_col],
+            "close": df[close_col],
+        }
+    )
+
+    normalized = normalized.dropna(subset=["date", "open", "high", "low", "close"])
+    normalized["datetime"] = pd.to_datetime(normalized["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    normalized["date"] = normalized["date"].dt.date.astype(str)
+    normalized = normalized.sort_values("date").reset_index(drop=True)
+    return normalized
+
+
 def _light_plan_window(client: Optional[JQuantsClient] = None) -> tuple[str, str]:
     client = client or _get_client()
     latest_trading_day, _ = _get_latest_trading_day(client)
@@ -547,11 +594,33 @@ def _save_meta(code: str, meta: Dict[str, Any]) -> Path:
     return meta_path
 
 
+def _load_topix_meta() -> Dict[str, Any]:
+    if TOPIX_META_PATH.exists():
+        return json.loads(TOPIX_META_PATH.read_text())
+    return {}
+
+
+def _save_topix_meta(meta: Dict[str, Any]) -> Path:
+    TOPIX_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    return TOPIX_META_PATH
+
+
 def _load_existing_csv(code: str) -> Optional[pd.DataFrame]:
     csv_path = PRICE_CSV_DIR / f"{code}.csv"
     if not csv_path.exists():
         return None
     df = pd.read_csv(csv_path)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
+    if "datetime" not in df.columns and "date" in df.columns:
+        df["datetime"] = pd.to_datetime(df["date"]).astype(str)
+    return df
+
+
+def _load_existing_topix() -> Optional[pd.DataFrame]:
+    if not TOPIX_CSV_PATH.exists():
+        return None
+    df = pd.read_csv(TOPIX_CSV_PATH)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
     if "datetime" not in df.columns and "date" in df.columns:
@@ -604,6 +673,45 @@ def _merge_and_save(
         "plan": "LIGHT",
     }
     _save_meta(code, meta_out)
+    return merged
+
+
+def _merge_topix_and_save(
+    normalized: pd.DataFrame,
+    fetch_to: str,
+    *,
+    existing_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    existing_df = existing_df if existing_df is not None else _load_existing_topix()
+
+    if existing_df is not None and not existing_df.empty:
+        merged = pd.concat([existing_df, normalized], ignore_index=True)
+        merged = merged.drop_duplicates(subset=["date"], keep="last")
+        merged = merged.sort_values("date").reset_index(drop=True)
+    else:
+        merged = normalized.sort_values("date").reset_index(drop=True)
+
+    if "datetime" not in merged.columns:
+        merged["datetime"] = pd.to_datetime(merged["date"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+    else:
+        merged["datetime"] = pd.to_datetime(merged["datetime"], format="ISO8601").dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+
+    PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(TOPIX_CSV_PATH, index=False)
+
+    meta_out = {
+        "code": TOPIX_CODE,
+        "history_start": merged["date"].min(),
+        "history_end": merged["date"].max(),
+        "last_fetch_to": fetch_to,
+        "last_fetch_at": datetime.now().astimezone().isoformat(),
+        "plan": "LIGHT",
+    }
+    _save_topix_meta(meta_out)
     return merged
 
 
@@ -669,6 +777,49 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
             "%Y-%m-%dT%H:%M:%S"
         )
 
+    return merged
+
+
+def update_topix(full_refresh: bool = False) -> pd.DataFrame:
+    """TOPIX 指数をライトプランの取得可能期間で保存する。"""
+
+    client = _get_client()
+
+    meta = _load_topix_meta()
+    existing_df = None if full_refresh else _load_existing_topix()
+
+    from_light, to_light = _light_plan_window(client)
+
+    if not full_refresh and meta.get("history_end") and existing_df is not None:
+        from_date = (pd.to_datetime(meta["history_end"]) + pd.Timedelta(days=1)).date()
+        to_date = datetime.fromisoformat(to_light).date()
+        if from_date > to_date:
+            logger.info("TOPIX は取得可能期間外のためスキップします")
+            return existing_df
+        fetch_from, fetch_to = from_date.isoformat(), to_light
+    else:
+        fetch_from, fetch_to = from_light, to_light
+
+    resolved_to, _ = _get_latest_trading_day(
+        client, preferred_date=datetime.fromisoformat(fetch_to).date()
+    )
+    if resolved_to.isoformat() != fetch_to:
+        logger.info("TOPIX の最新営業日を %s から %s に補正しました", fetch_to, resolved_to)
+    fetch_to = resolved_to.isoformat()
+
+    logger.info("TOPIX を取得します (from=%s, to=%s)", fetch_from, fetch_to)
+    df_raw = client.fetch_topix(fetch_from, fetch_to)
+    if df_raw.empty:
+        raise JQuantsError("TOPIX の価格データが空でした。")
+
+    normalized = _normalize_topix(df_raw)
+    if normalized.empty:
+        raise JQuantsError("TOPIX の正規化後データが空でした。")
+
+    actual_fetch_to = str(normalized["date"].max())
+    merged = _merge_topix_and_save(
+        normalized, actual_fetch_to, existing_df=existing_df
+    )
     return merged
 
 
@@ -848,6 +999,11 @@ if __name__ == "__main__":
         "--append-date",
         help="全銘柄の当日株価を追記する日付 (YYYY-MM-DD)",
     )
+    parser.add_argument(
+        "--include-topix",
+        action="store_true",
+        help="銘柄の更新に加えて TOPIX 指数も保存する",
+    )
 
     args = parser.parse_args()
 
@@ -866,3 +1022,9 @@ if __name__ == "__main__":
         use_listed_master=args.use_listed_master,
         append_date=args.append_date,
     )
+
+    if args.include_topix:
+        try:
+            update_topix(full_refresh=args.full_refresh)
+        except Exception:
+            logger.exception("TOPIX の更新に失敗しました")

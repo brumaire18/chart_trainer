@@ -226,3 +226,33 @@ class JQuantsClient:
             raise ValueError("No price data returned for the requested symbol and date range.")
 
         return df
+
+    def fetch_topix(self, from_date: str, to_date: str) -> pd.DataFrame:
+        """TOPIX 指数を指定期間で取得する。"""
+
+        id_token = self.authenticate()
+        headers = {"Authorization": f"Bearer {id_token}"}
+        base_params = {"from": from_date, "to": to_date}
+
+        all_rows = []
+        pagination_key: Optional[str] = None
+        while True:
+            params = dict(base_params)
+            if pagination_key:
+                params["pagination_key"] = pagination_key
+
+            data = self._request("GET", "/v1/indices/topix", headers=headers, params=params)
+            rows = data.get("topix")
+            if rows is None:
+                raise ValueError("topix data was not found in the API response.")
+
+            all_rows.extend(rows)
+            pagination_key = data.get("pagination_key") or data.get("paginationKey")
+            if not pagination_key:
+                break
+
+        df = pd.DataFrame(all_rows)
+        if df.empty:
+            raise ValueError("No TOPIX data returned for the requested date range.")
+
+        return df
