@@ -14,6 +14,7 @@ from app.data_loader import (
     get_available_symbols,
     load_price_csv,
 )
+from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
@@ -493,7 +494,7 @@ def main():
     show_stoch = st.sidebar.checkbox("ストキャスティクス (14,3)", value=False)
     show_obv = st.sidebar.checkbox("オンバランスボリューム", value=False)
 
-    tab_chart, tab_screen = st.tabs(["チャート表示", "スクリーナー"])
+    tab_chart, tab_screen, tab_breadth = st.tabs(["チャート表示", "スクリーナー", "マーケットブレッドス"])
 
     with tab_chart:
         # --- チャート表示 ---
@@ -1062,6 +1063,130 @@ def main():
                 )
             else:
                 st.info("条件に合致する銘柄はありませんでした。条件を緩めて再検索してください。")
+
+    with tab_breadth:
+        st.subheader("マーケットブレッドス")
+        st.caption("騰落銘柄数やTRIN、マクレラン指標を可視化します。")
+
+        breadth_period = st.radio(
+            "対象期間",
+            options=["1y", "all"],
+            format_func=lambda v: "過去1年" if v == "1y" else "全期間",
+            horizontal=True,
+        )
+
+        st.markdown("---")
+        recompute = st.button("再計算", key="recompute_breadth")
+
+        @st.cache_data(show_spinner=False)
+        def _load_breadth_data(cache_key: str) -> pd.DataFrame:
+            _ = cache_key
+            return compute_breadth_indicators(aggregate_market_breadth())
+
+        price_files = sorted(str(p) for p in PRICE_CSV_DIR.glob("*.csv"))
+        cache_key = "|".join(price_files)
+        if recompute:
+            st.cache_data.clear()
+
+        df_breadth = _load_breadth_data(cache_key)
+
+        if df_breadth.empty:
+            st.warning("集計に必要なデータが不足しています。price_csvに銘柄CSVがあるか確認してください。")
+            return
+
+        df_breadth = df_breadth.dropna(subset=["advancing_issues", "declining_issues"])
+        if df_breadth.empty:
+            st.warning("有効な日次データが見つかりませんでした。")
+            return
+
+        if breadth_period == "1y":
+            cutoff = pd.to_datetime(date.today() - timedelta(days=365))
+            df_breadth = df_breadth[df_breadth["date"] >= cutoff]
+
+        if df_breadth.empty:
+            st.warning("指定期間にデータがありません。期間を広げてください。")
+            return
+
+        df_breadth["date_str"] = pd.to_datetime(df_breadth["date"]).dt.strftime("%Y-%m-%d")
+
+        fig_breadth = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05)
+
+        fig_breadth.add_trace(
+            go.Bar(
+                x=df_breadth["date_str"],
+                y=df_breadth["advancing_issues"],
+                name="上昇銘柄",
+                marker_color="#2ca02c",
+            ),
+            row=1,
+            col=1,
+        )
+        fig_breadth.add_trace(
+            go.Bar(
+                x=df_breadth["date_str"],
+                y=df_breadth["declining_issues"] * -1,
+                name="下落銘柄",
+                marker_color="#d62728",
+            ),
+            row=1,
+            col=1,
+        )
+        fig_breadth.update_yaxes(title_text="銘柄数 (下落は負値)", row=1, col=1)
+
+        fig_breadth.add_trace(
+            go.Scatter(
+                x=df_breadth["date_str"],
+                y=df_breadth["advance_decline_line"],
+                name="騰落ライン",
+                line=dict(color="#1f77b4"),
+            ),
+            row=2,
+            col=1,
+        )
+        fig_breadth.add_trace(
+            go.Scatter(
+                x=df_breadth["date_str"],
+                y=df_breadth["mcclellan_oscillator"],
+                name="マクレラン・オシレーター",
+                line=dict(color="#ff7f0e"),
+            ),
+            row=3,
+            col=1,
+        )
+        fig_breadth.add_trace(
+            go.Scatter(
+                x=df_breadth["date_str"],
+                y=df_breadth["mcclellan_summation"],
+                name="マクレラン・サマ",
+                line=dict(color="#9467bd", dash="dash"),
+            ),
+            row=3,
+            col=1,
+        )
+
+        fig_breadth.update_layout(
+            height=900,
+            margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation="h"),
+        )
+        fig_breadth.update_xaxes(type="category")
+
+        st.plotly_chart(fig_breadth, use_container_width=True)
+
+        st.markdown("### TRIN")
+        fig_trin = go.Figure()
+        fig_trin.add_trace(
+            go.Scatter(
+                x=df_breadth["date_str"],
+                y=df_breadth["trin"],
+                mode="lines",
+                name="TRIN",
+            )
+        )
+        fig_trin.add_hline(y=1.0, line=dict(color="#cccccc", dash="dash"))
+        fig_trin.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300)
+        fig_trin.update_xaxes(type="category")
+        st.plotly_chart(fig_trin, use_container_width=True)
 
 if __name__ == "__main__":
     main()
