@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from app.jquants_fetcher import update_symbol
+from app.jquants_fetcher import JQuantsError, _get_id_token, update_symbol
 
 
 class UpdateSymbolReturnTest(unittest.TestCase):
@@ -51,3 +51,21 @@ class UpdateSymbolReturnTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GetIdTokenTests(unittest.TestCase):
+    def test_get_id_token_success(self):
+        class DummyClient:
+            def authenticate(self):
+                return "new-id-token"
+
+        token = _get_id_token(DummyClient())
+        self.assertEqual(token, "new-id-token")
+
+    def test_get_id_token_failure(self):
+        class DummyClient:
+            def authenticate(self):
+                raise ValueError("invalid grant")
+
+        with self.assertRaises(JQuantsError):
+            _get_id_token(DummyClient())
