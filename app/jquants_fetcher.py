@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 import requests
@@ -829,28 +829,43 @@ def append_quotes_for_date(target_date: str, codes: Optional[List[str]] = None) 
     except ValueError as exc:
         raise JQuantsError("日付は YYYY-MM-DD 形式で指定してください。") from exc
 
-    client = _get_client()
-    params = {"date": target_date}
-    # 日付指定のみで全上場銘柄のデータを取得する
-    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
-    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
-    if raw_quotes is None:
-        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
+    resolved, _, _ = _append_daily_quotes_for_date(
+        pd.to_datetime(target_date).date(),
+        target_codes=set(codes) if codes else None,
+        allow_fallback=False,
+    )
+    logger.info("%s の株価データ追加処理が完了しました", resolved)
 
-    df_raw = pd.DataFrame(raw_quotes)
-    if df_raw.empty:
-        logger.info("%s の株価データが空でした。", target_date)
-        return
+
+def _append_daily_quotes_for_date(
+    target_date: date,
+    *,
+    target_codes: Optional[Set[str]] = None,
+    allow_fallback: bool = False,
+) -> tuple[str, Set[str], Set[str]]:
+    client = _get_client()
+    if allow_fallback:
+        resolved_date, df_raw = _get_latest_trading_day(
+            client, preferred_date=target_date, return_raw=True
+        )
+    else:
+        resolved_date = target_date
+        df_raw = _fetch_daily_quotes_raw(client, target_date)
+
+    if df_raw is None or df_raw.empty:
+        logger.info("%s の株価データが空でした。", resolved_date)
+        return resolved_date.isoformat(), set(), set()
 
     code_col = next((col for col in ("code", "LocalCode", "Code") if col in df_raw.columns), None)
     if code_col is None:
         raise JQuantsError("銘柄コードのカラムが見つかりませんでした。")
 
     df_raw["code_norm"] = df_raw[code_col].astype(str).str.zfill(4)
-    target_set = {str(code).zfill(4) for code in codes} if codes else None
+    target_set = {str(code).zfill(4) for code in target_codes} if target_codes else None
 
     grouped = df_raw.groupby("code_norm")
     available_codes = set(grouped.groups)
+    updated_codes: Set[str] = set()
     for code in sorted(available_codes):
         if target_set is not None and code not in target_set:
             continue
@@ -861,13 +876,16 @@ def append_quotes_for_date(target_date: str, codes: Optional[List[str]] = None) 
             continue
 
         meta = _load_meta(code)
-        _merge_and_save(code, normalized, target_date, meta=meta)
-        logger.info("%s の株価を %s に追記しました", target_date, code)
+        _merge_and_save(code, normalized, resolved_date.isoformat(), meta=meta)
+        updated_codes.add(code)
+        logger.info("%s の株価を %s に追記しました", resolved_date, code)
 
     if target_set is not None:
         missing = sorted(target_set - available_codes)
         if missing:
-            logger.info("%s にデータが見つからなかった銘柄: %s", target_date, ", ".join(missing))
+            logger.info("%s にデータが見つからなかった銘柄: %s", resolved_date, ", ".join(missing))
+
+    return resolved_date.isoformat(), updated_codes, available_codes
 
 
 def update_universe_with_anchor_day(
@@ -924,7 +942,41 @@ def update_universe(
     append_date: Optional[str] = None,
 ) -> None:
     target_codes = codes or build_universe(use_listed_master=use_listed_master)
+    target_codes = [str(code).zfill(4) for code in target_codes]
+
+    bulk_updated: Set[str] = set()
+    latest_snapshot_date: Optional[str] = None
+    previous_meta_end: Dict[str, Optional[str]] = {}
+    if not full_refresh and append_date is None:
+        previous_meta_end = {code: _load_meta(code).get("history_end") for code in target_codes}
+        try:
+            latest_snapshot_date, bulk_updated, _ = _append_daily_quotes_for_date(
+                date.today(), target_codes=set(target_codes), allow_fallback=True
+            )
+        except Exception:
+            logger.exception("最新営業日の一括取得に失敗しました")
+            latest_snapshot_date = None
+
+    latest_snapshot_dt = (
+        datetime.fromisoformat(latest_snapshot_date).date() if latest_snapshot_date else None
+    )
+    latest_prev_bday = _previous_business_day(latest_snapshot_dt) if latest_snapshot_dt else None
+
     for code in target_codes:
+        needs_symbol_update = full_refresh or append_date is not None or latest_snapshot_dt is None
+        if not needs_symbol_update:
+            prev_end_str = previous_meta_end.get(code)
+            prev_end_dt = pd.to_datetime(prev_end_str).date() if prev_end_str else None
+            if prev_end_dt is None:
+                needs_symbol_update = True
+            elif latest_prev_bday and prev_end_dt < latest_prev_bday:
+                needs_symbol_update = True
+            elif code not in bulk_updated:
+                needs_symbol_update = True
+
+        if not needs_symbol_update:
+            continue
+
         rate_limit_retry = 0
         while True:
             try:
