@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Union
 
 
@@ -53,10 +53,41 @@ class JQuantsClient:
         """Lightweight console logger for debugging."""
         print(f"[JQuantsClient] {message}")
 
+    @staticmethod
+    def _extract_error_detail(response: requests.Response) -> str:
+        """Return a human-readable error detail from the J-Quants API response."""
+
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                if payload.get("message"):
+                    return str(payload["message"])
+                if payload.get("detail"):
+                    return str(payload["detail"])
+                if payload.get("error"):
+                    if isinstance(payload["error"], dict):
+                        return str(
+                            payload["error"].get("message")
+                            or payload["error"].get("code")
+                            or payload["error"]
+                        )
+                    return str(payload["error"])
+        except ValueError:
+            pass
+
+        return response.text or ""
+
     def _request(self, method: str, path: str, **kwargs) -> Dict:
         url = f"{self.base_url}{path}"
         max_retries = 3
         base_retry_delay = 5.0
+
+        headers = kwargs.pop("headers", {}) or {}
+        default_headers = {"Accept": "application/json"}
+        if method.upper() == "POST" and "json" in kwargs and "Content-Type" not in headers:
+            default_headers["Content-Type"] = "application/json"
+        merged_headers = {**default_headers, **headers}
+        kwargs["headers"] = merged_headers
 
         for attempt in range(max_retries):
             response = requests.request(method, url, timeout=10, **kwargs)
@@ -70,13 +101,15 @@ class JQuantsClient:
                 continue
 
             if not response.ok:
-                error_message = response.text
+                error_message = self._extract_error_detail(response)
                 if response.status_code == 429:
                     error_message = (
                         f"Rate limit exceeded after {max_retries} attempts. "
                         "Please wait before retrying."
                     )
-                raise ValueError(f"J-Quants API request failed: {response.status_code} {error_message}")
+                raise ValueError(
+                    f"J-Quants API request failed: {response.status_code} {error_message.strip()}"
+                )
 
             try:
                 return response.json()
@@ -112,6 +145,52 @@ class JQuantsClient:
 
         return datetime.now(timezone.utc) < expiry
 
+    def _extract_refresh_metadata(self, payload: Dict) -> Dict[str, Optional[str]]:
+        """Normalize refresh token and expiration fields from API responses."""
+
+        refresh_token = _normalize_token(
+            payload.get("refresh_token")
+            or payload.get("refreshToken")
+            or payload.get("refreshtoken")
+        )
+
+        expiry_at_keys = (
+            "refresh_token_expires_at",
+            "refresh_token_expiration",
+            "refreshTokenExpiresAt",
+            "refreshTokenExpiration",
+            "refreshTokenExpires",
+            "refreshTokenExpiresAt",
+        )
+        expiry_in_keys = (
+            "refresh_token_expires_in",
+            "refreshTokenExpiresIn",
+            "refresh_token_expires",
+        )
+
+        refresh_expires_at: Optional[str] = None
+
+        for key in expiry_at_keys:
+            if payload.get(key) is not None:
+                refresh_expires_at = payload.get(key)
+                break
+
+        if refresh_expires_at is None:
+            for key in expiry_in_keys:
+                expires_in_value = payload.get(key)
+                if expires_in_value is None:
+                    continue
+                try:
+                    seconds = float(expires_in_value)
+                    refresh_expires_at = (
+                        datetime.now(timezone.utc) + timedelta(seconds=seconds)
+                    ).isoformat()
+                    break
+                except (TypeError, ValueError):
+                    continue
+
+        return {"refresh_token": refresh_token, "refresh_token_expires_at": refresh_expires_at}
+
     def create_refresh_token(self) -> str:
         """Generate and store a refresh token along with its expiration."""
 
@@ -122,24 +201,15 @@ class JQuantsClient:
 
         self._debug("creating refresh token using configured mailaddress/password")
         auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
-        auth_data = self._request("POST", "/v1/token/auth_user", json=auth_payload)
+        auth_data = self._request("POST", "/v2/token/auth_user", json=auth_payload)
 
-        refresh_token = _normalize_token(auth_data.get("refreshToken"))
+        refresh_metadata = self._extract_refresh_metadata(auth_data)
+        refresh_token = refresh_metadata.get("refresh_token")
         if not refresh_token:
-            raise ValueError("refreshToken was not returned from J-Quants auth_user endpoint.")
+            raise ValueError("refresh_token was not returned from J-Quants auth_user endpoint.")
 
         self.refresh_token = refresh_token
-
-        expiry_keys = (
-            "refreshTokenExpiresAt",
-            "refreshTokenExpiration",
-            "refreshTokenExpires",
-            "refreshTokenExpiresIn",
-        )
-        self.refresh_token_expires_at = next(
-            (auth_data.get(key) for key in expiry_keys if auth_data.get(key) is not None),
-            None,
-        )
+        self.refresh_token_expires_at = refresh_metadata.get("refresh_token_expires_at")
 
         preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
         self._debug(
@@ -169,12 +239,12 @@ class JQuantsClient:
             f"preview={preview} expires_at={self.refresh_token_expires_at}"
         )
 
-        refresh_params = {"refreshtoken": refresh_token}
-        refresh_data = self._request("POST", "/v1/token/auth_refresh", params=refresh_params)
+        refresh_payload = {"refresh_token": refresh_token}
+        refresh_data = self._request("POST", "/v2/token/auth_refresh", json=refresh_payload)
 
-        new_refresh_token = _normalize_token(
-            refresh_data.get("refreshToken") or refresh_data.get("refreshtoken")
-        )
+        refresh_metadata = self._extract_refresh_metadata(refresh_data)
+
+        new_refresh_token = refresh_metadata.get("refresh_token")
         if new_refresh_token and new_refresh_token != refresh_token:
             preview_new = (
                 f"{new_refresh_token[:4]}...{new_refresh_token[-4:]}"
@@ -187,20 +257,16 @@ class JQuantsClient:
             )
             self.refresh_token = new_refresh_token
 
-        expiry_keys = (
-            "refreshTokenExpiresAt",
-            "refreshTokenExpiration",
-            "refreshTokenExpires",
-            "refreshTokenExpiresIn",
-        )
-        self.refresh_token_expires_at = next(
-            (refresh_data.get(key) for key in expiry_keys if refresh_data.get(key) is not None),
-            self.refresh_token_expires_at,
-        )
+        if refresh_metadata.get("refresh_token_expires_at"):
+            self.refresh_token_expires_at = refresh_metadata["refresh_token_expires_at"]
 
-        self._id_token = _normalize_token(refresh_data.get("idToken"))
+        self._id_token = _normalize_token(
+            refresh_data.get("id_token")
+            or refresh_data.get("idToken")
+            or refresh_data.get("token")
+        )
         if not self._id_token:
-            raise ValueError("idToken was not returned from J-Quants auth_refresh endpoint.")
+            raise ValueError("id_token was not returned from J-Quants auth_refresh endpoint.")
 
         self._access_token = self._id_token
         self._debug(
