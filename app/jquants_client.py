@@ -1,7 +1,7 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Union
+from typing import Dict, Iterable, Optional, Union
 
 
 def _normalize_token(value: Optional[str]) -> Optional[str]:
@@ -14,6 +14,31 @@ def _normalize_token(value: Optional[str]) -> Optional[str]:
 
 import pandas as pd
 import requests
+
+
+DAILY_QUOTES_ENDPOINT = "/v2/prices/daily_quotes"
+TOPIX_ENDPOINT = "/v2/indices/topix"
+
+
+def _extract_paginated_rows(payload: Dict, candidate_keys: Iterable[str]) -> Optional[list]:
+    for key in candidate_keys:
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
+def _extract_pagination_key(payload: Dict) -> Optional[str]:
+    for key in (
+        "pagination_key",
+        "paginationKey",
+        "paginationkey",
+        "next_pagination_key",
+        "nextPaginationKey",
+    ):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
 
 
 class JQuantsClient:
@@ -60,6 +85,14 @@ class JQuantsClient:
         try:
             payload = response.json()
             if isinstance(payload, dict):
+                if payload.get("errors") and isinstance(payload["errors"], list):
+                    first_error = payload["errors"][0]
+                    if isinstance(first_error, dict):
+                        message = first_error.get("message") or first_error.get("detail")
+                        if message:
+                            return str(message)
+                    if first_error:
+                        return str(first_error)
                 if payload.get("message"):
                     return str(payload["message"])
                 if payload.get("detail"):
@@ -280,14 +313,36 @@ class JQuantsClient:
         """Retrieve OHLCV daily quotes for the specified code and date range."""
         id_token = self.authenticate()
         headers = {"Authorization": f"Bearer {id_token}"}
-        params = {"code": code, "from": start_date, "to": end_date}
+        params = {"symbol": code, "from": start_date, "to": end_date}
 
-        data = self._request("GET", "/v1/prices/daily_quotes", headers=headers, params=params)
-        quotes = data.get("daily_quotes") or data.get("dailyQuotes")
-        if quotes is None:
-            raise ValueError("daily_quotes data was not found in the API response.")
+        all_rows = []
+        pagination_key: Optional[str] = None
+        while True:
+            request_params = dict(params)
+            if pagination_key:
+                request_params["pagination_key"] = pagination_key
 
-        df = pd.DataFrame(quotes)
+            data = self._request(
+                "GET", DAILY_QUOTES_ENDPOINT, headers=headers, params=request_params
+            )
+            quotes = _extract_paginated_rows(
+                data,
+                (
+                    "dailyQuotes",
+                    "daily_quotes",
+                    "prices",
+                    "quotes",
+                ),
+            )
+            if quotes is None:
+                raise ValueError("dailyQuotes data was not found in the API response.")
+
+            all_rows.extend(quotes)
+            pagination_key = _extract_pagination_key(data)
+            if not pagination_key:
+                break
+
+        df = pd.DataFrame(all_rows)
         if df.empty:
             raise ValueError("No price data returned for the requested symbol and date range.")
 
@@ -307,13 +362,20 @@ class JQuantsClient:
             if pagination_key:
                 params["pagination_key"] = pagination_key
 
-            data = self._request("GET", "/v1/indices/topix", headers=headers, params=params)
-            rows = data.get("topix")
+            data = self._request("GET", TOPIX_ENDPOINT, headers=headers, params=params)
+            rows = _extract_paginated_rows(
+                data,
+                (
+                    "topix",
+                    "indices",
+                    "indexQuotes",
+                ),
+            )
             if rows is None:
                 raise ValueError("topix data was not found in the API response.")
 
             all_rows.extend(rows)
-            pagination_key = data.get("pagination_key") or data.get("paginationKey")
+            pagination_key = _extract_pagination_key(data)
             if not pagination_key:
                 break
 

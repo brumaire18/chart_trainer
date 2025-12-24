@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from app.jquants_client import JQuantsClient
+from app.jquants_client import DAILY_QUOTES_ENDPOINT, TOPIX_ENDPOINT, JQuantsClient
 
 
 class _MockResponse:
@@ -84,6 +84,53 @@ class JQuantsClientAuthTests(unittest.TestCase):
 
         self.assertIn("400", str(ctx.exception))
         self.assertIn("invalid credentials", str(ctx.exception))
+
+    def test_fetch_daily_quotes_paginates(self):
+        client = JQuantsClient(refresh_token="refresh")
+
+        with patch.object(client, "authenticate", return_value="id-token"):
+            with patch.object(
+                client,
+                "_request",
+                side_effect=[
+                    {"dailyQuotes": [{"date": "2024-01-01"}], "paginationKey": "next"},
+                    {"dailyQuotes": [{"date": "2024-01-02"}]},
+                ],
+            ) as mock_request:
+                df = client.fetch_daily_quotes("7203", "2024-01-01", "2024-01-02")
+
+        self.assertEqual(len(df), 2)
+        first_call = mock_request.call_args_list[0]
+        second_call = mock_request.call_args_list[1]
+        self.assertEqual(first_call.args[0], "GET")
+        self.assertEqual(first_call.args[1], DAILY_QUOTES_ENDPOINT)
+        self.assertEqual(
+            first_call.kwargs["params"],
+            {"symbol": "7203", "from": "2024-01-01", "to": "2024-01-02"},
+        )
+        self.assertEqual(second_call.args[1], DAILY_QUOTES_ENDPOINT)
+        self.assertEqual(
+            second_call.kwargs["params"],
+            {
+                "symbol": "7203",
+                "from": "2024-01-01",
+                "to": "2024-01-02",
+                "pagination_key": "next",
+            },
+        )
+
+    def test_fetch_topix_without_pagination(self):
+        client = JQuantsClient(refresh_token="refresh")
+
+        with patch.object(client, "authenticate", return_value="id-token"):
+            with patch.object(client, "_request", return_value={"indices": [{"date": "2024-01-01"}]}) as mock_request:
+                df = client.fetch_topix("2024-01-01", "2024-01-02")
+
+        self.assertEqual(len(df), 1)
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], "GET")
+        self.assertEqual(args[1], TOPIX_ENDPOINT)
+        self.assertEqual(kwargs["params"], {"from": "2024-01-01", "to": "2024-01-02"})
 
 
 if __name__ == "__main__":

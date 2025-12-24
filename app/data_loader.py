@@ -83,23 +83,43 @@ def _normalize_from_jquants(
     date, open, high, low, close, volume の6列に正規化する。
     """
     # 日付列
-    if "Date" in df_raw.columns:
-        df_raw["date"] = pd.to_datetime(df_raw["Date"])
-    elif "date" in df_raw.columns:
-        df_raw["date"] = pd.to_datetime(df_raw["date"])
+    date_col = None
+    for candidate in ("Date", "date", "quoteDate", "datetime", "DateTime"):
+        if candidate in df_raw.columns:
+            date_col = candidate
+            break
+    if date_col:
+        df_raw["date"] = pd.to_datetime(df_raw[date_col])
     else:
         raise ValueError("J-Quants形式のCSVに Date/date 列が見つかりません。")
 
     # 調整後OHLCVがあればそちらを優先
-    if all(
-        col in df_raw.columns
-        for col in ["AdjustmentOpen", "AdjustmentHigh", "AdjustmentLow", "AdjustmentClose"]
+    adjustment_cols = (
+        "AdjustmentOpen",
+        "AdjustmentHigh",
+        "AdjustmentLow",
+        "AdjustmentClose",
+        "adjustmentOpen",
+        "adjustmentHigh",
+        "adjustmentLow",
+        "adjustmentClose",
+    )
+    if all(col in df_raw.columns for col in adjustment_cols[:4]) or all(
+        col in df_raw.columns for col in adjustment_cols[4:]
     ):
-        open_col = "AdjustmentOpen"
-        high_col = "AdjustmentHigh"
-        low_col = "AdjustmentLow"
-        close_col = "AdjustmentClose"
-        vol_col = "AdjustmentVolume" if "AdjustmentVolume" in df_raw.columns else "Volume"
+        open_col = "AdjustmentOpen" if "AdjustmentOpen" in df_raw.columns else "adjustmentOpen"
+        high_col = "AdjustmentHigh" if "AdjustmentHigh" in df_raw.columns else "adjustmentHigh"
+        low_col = "AdjustmentLow" if "AdjustmentLow" in df_raw.columns else "adjustmentLow"
+        close_col = "AdjustmentClose" if "AdjustmentClose" in df_raw.columns else "adjustmentClose"
+        vol_col = (
+            "AdjustmentVolume"
+            if "AdjustmentVolume" in df_raw.columns
+            else "adjustmentVolume"
+            if "adjustmentVolume" in df_raw.columns
+            else "Volume"
+            if "Volume" in df_raw.columns
+            else "volume"
+        )
     else:
         # 調整後がなければ素の Open/High/Low/Close/Volume を使う
         open_col = "Open" if "Open" in df_raw.columns else "open"

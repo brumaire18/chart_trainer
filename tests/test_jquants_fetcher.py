@@ -4,7 +4,13 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from app.jquants_fetcher import JQuantsError, _get_id_token, update_symbol
+from app.jquants_fetcher import (
+    JQuantsError,
+    _get_id_token,
+    _normalize_daily_quotes,
+    _normalize_topix,
+    update_symbol,
+)
 
 
 class UpdateSymbolReturnTest(unittest.TestCase):
@@ -32,7 +38,7 @@ class UpdateSymbolReturnTest(unittest.TestCase):
         mock_load_existing_csv.return_value = None
         mock_light_plan_window.return_value = ("2024-01-01", "2024-01-31")
         mock_get_latest_trading_day.return_value = (date(2024, 1, 31), None)
-        mock_request_with_token.return_value = {"daily_quotes": [{"date": "2024-01-30"}]}
+        mock_request_with_token.return_value = {"dailyQuotes": [{"date": "2024-01-30"}]}
 
         normalized_df = pd.DataFrame(
             {"date": ["2024-01-30"], "code": ["7203"], "market": ["プライム"]}
@@ -69,3 +75,48 @@ class GetIdTokenTests(unittest.TestCase):
 
         with self.assertRaises(JQuantsError):
             _get_id_token(DummyClient())
+
+
+class NormalizeDailyQuotesTests(unittest.TestCase):
+    def test_accepts_new_column_names(self):
+        df_raw = pd.DataFrame(
+            [
+                {
+                    "date": "2024-01-02",
+                    "symbol": "7203",
+                    "marketCode": "0111",
+                    "adjustmentOpen": 100,
+                    "adjustmentHigh": 110,
+                    "adjustmentLow": 90,
+                    "adjustmentClose": 105,
+                    "adjustmentVolume": 1000,
+                }
+            ]
+        )
+
+        normalized = _normalize_daily_quotes(df_raw, "7203")
+
+        self.assertEqual(normalized.loc[0, "code"], "7203")
+        self.assertEqual(normalized.loc[0, "market"], "0111")
+        self.assertEqual(normalized.loc[0, "open"], 100)
+        self.assertEqual(normalized.loc[0, "close"], 105)
+
+
+class NormalizeTopixTests(unittest.TestCase):
+    def test_accepts_lowercase_columns(self):
+        df_raw = pd.DataFrame(
+            [
+                {
+                    "date": "2024-01-02",
+                    "open": 2000,
+                    "high": 2010,
+                    "low": 1990,
+                    "close": 2005,
+                }
+            ]
+        )
+
+        normalized = _normalize_topix(df_raw)
+
+        self.assertEqual(normalized.loc[0, "code"], "TOPIX")
+        self.assertEqual(normalized.loc[0, "close"], 2005)
