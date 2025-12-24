@@ -55,6 +55,16 @@ AUTH_ERROR_MAX_RETRIES = 3
 TOPIX_CODE = "TOPIX"
 TOPIX_CSV_PATH = PRICE_CSV_DIR / "topix.csv"
 TOPIX_META_PATH = META_DIR / "topix.json"
+LISTED_MASTER_ENDPOINT = "/v1/listed/info"
+
+LISTED_MASTER_MARKET_CODE_MAP = {
+    "0111": "PRIME",
+    "0112": "STANDARD",
+    "0113": "GROWTH",
+    "0101": "PRIME",
+    "0102": "STANDARD",
+    "0103": "GROWTH",
+}
 
 
 @dataclass
@@ -300,8 +310,174 @@ def _extract_daily_quotes_payload(payload: Dict[str, Any]) -> Optional[List[Dict
     return None
 
 
+def _extract_listed_master_payload(payload: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    for key in (
+        "info",
+        "listedInfo",
+        "listed_info",
+        "listed",
+        "listed_master",
+        "data",
+    ):
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
 def _find_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     return next((col for col in candidates if col in df.columns), None)
+
+
+def _combine_columns(df: pd.DataFrame, candidates: List[str]) -> Optional[pd.Series]:
+    series: Optional[pd.Series] = None
+    for col in candidates:
+        if col not in df.columns:
+            continue
+        if series is None:
+            series = df[col]
+        else:
+            series = series.fillna(df[col])
+    return series
+
+
+def _normalize_market_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    mapped = LISTED_MASTER_MARKET_CODE_MAP.get(text)
+    if mapped:
+        return mapped
+
+    normalized = text.upper()
+    if "PRIME" in normalized or "プライム" in text:
+        return "PRIME"
+    if "STANDARD" in normalized or "スタンダード" in text:
+        return "STANDARD"
+    if "GROWTH" in normalized or "グロース" in text or "MOTHERS" in normalized or "マザーズ" in text:
+        return "GROWTH"
+
+    return text
+
+
+def _fetch_listed_master_paginated(
+    client: JQuantsClient, params: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    all_rows: List[Dict[str, Any]] = []
+    pagination_key: Optional[str] = None
+    while True:
+        request_params = dict(params or {})
+        if pagination_key:
+            request_params["pagination_key"] = pagination_key
+        data = _request_with_token(client, LISTED_MASTER_ENDPOINT, params=request_params)
+        rows = _extract_listed_master_payload(data)
+        if rows is None:
+            raise JQuantsError("listed master がレスポンスに存在しません。")
+        all_rows.extend(rows)
+        pagination_key = _extract_pagination_key(data)
+        if not pagination_key:
+            break
+    return all_rows
+
+
+def _normalize_listed_master(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = df_raw.copy()
+
+    code_series = _combine_columns(
+        df,
+        [
+            "code",
+            "Code",
+            "LocalCode",
+            "Localcode",
+            "SecurityCode",
+            "Securitycode",
+            "Symbol",
+            "symbol",
+        ],
+    )
+    if code_series is not None:
+        df["code"] = code_series
+
+    name_series = _combine_columns(
+        df,
+        [
+            "name",
+            "Name",
+            "CompanyName",
+            "CompanyNameJp",
+            "CompanyNameJapanese",
+            "CompanyNameEnglish",
+            "companyName",
+        ],
+    )
+    if name_series is not None:
+        df["name"] = name_series
+
+    if "Sector17Code" in df.columns and "sector17" not in df.columns:
+        df["sector17"] = df["Sector17Code"]
+    if "Sector33Code" in df.columns and "sector33" not in df.columns:
+        df["sector33"] = df["Sector33Code"]
+
+    market_code_series = _combine_columns(
+        df,
+        [
+            "market_code",
+            "MarketCode",
+            "marketCode",
+            "MarketSegmentCode",
+            "marketSegmentCode",
+        ],
+    )
+    market_name_series = _combine_columns(
+        df,
+        [
+            "market_name",
+            "MarketCodeName",
+            "marketCodeName",
+            "MarketName",
+            "marketName",
+            "Market",
+            "market",
+            "MarketSegment",
+            "marketSegment",
+        ],
+    )
+
+    if market_code_series is not None:
+        df["market_code"] = market_code_series
+    if market_name_series is not None:
+        df["market_name"] = market_name_series
+
+    market_series = _combine_columns(
+        df,
+        [
+            "market",
+            "market_name",
+            "market_code",
+            "Market",
+            "MarketName",
+            "MarketCodeName",
+            "MarketCode",
+        ],
+    )
+    if market_series is not None:
+        df["market"] = market_series.apply(_normalize_market_value)
+
+    required_cols = ["code", "name", "market"]
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise JQuantsError(f"銘柄マスタに必要なカラムが不足しています: {missing}")
+
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    df = df[required_cols + [c for c in df.columns if c not in required_cols]].copy()
+    df = df.sort_values("code").reset_index(drop=True)
+    return df
 
 
 def _fetch_daily_quotes_paginated(
@@ -590,63 +766,11 @@ def fetch_listed_master() -> pd.DataFrame:
     """上場銘柄一覧を取得し、CSV として保存する。"""
 
     client = _get_client()
-    data = _request_with_token(client, "/v1/listed/info")
-    listed = data.get("info") or data.get("listed") or data.get("listedInfo")
-    if listed is None:
-        raise JQuantsError("listed info がレスポンスに存在しません。")
-
-    df = pd.DataFrame(listed)
+    listed_rows = _fetch_listed_master_paginated(client)
+    df = pd.DataFrame(listed_rows)
     if df.empty:
         raise JQuantsError("銘柄マスタが空でした。")
-
-    col_map = {
-        "Code": "code",
-        "LocalCode": "code",
-        "Name": "name",
-        "Market": "market",
-        "Sector17Code": "sector17",
-        "Sector33Code": "sector33",
-    }
-    for src, dest in col_map.items():
-        if src in df.columns:
-            df[dest] = df[src]
-
-    # 別名・大小文字の揺れに対応
-    name_candidates = [
-        "name",
-        "Name",
-        "CompanyName",
-        "CompanyNameJp",
-        "CompanyNameJapanese",
-    ]
-    market_candidates = [
-        "market",
-        "Market",
-        "MarketCodeName",
-        "MarketName",
-        "MarketCode",
-    ]
-
-    if "name" not in df.columns:
-        for cand in name_candidates:
-            if cand in df.columns:
-                df["name"] = df[cand]
-                break
-
-    if "market" not in df.columns:
-        for cand in market_candidates:
-            if cand in df.columns:
-                df["market"] = df[cand]
-                break
-
-    required_cols = ["code", "name", "market"]
-    missing = [col for col in required_cols if col not in df.columns]
-    if missing:
-        raise JQuantsError(f"銘柄マスタに必要なカラムが不足しています: {missing}")
-
-    df["code"] = df["code"].astype(str).str.zfill(4)
-    df = df[required_cols + [c for c in df.columns if c not in required_cols]].copy()
-    df = df.sort_values("code").reset_index(drop=True)
+    df = _normalize_listed_master(df)
 
     META_DIR.mkdir(parents=True, exist_ok=True)
     out_path = META_DIR / "listed_master.csv"
@@ -671,7 +795,28 @@ def get_all_listed_codes() -> List[str]:
 
 def get_default_universe() -> List[str]:
     df = load_listed_master()
-    universe = df[df["market"].isin(["PRIME", "STANDARD"])]
+    market_source_col = _find_column(
+        df,
+        [
+            "market",
+            "market_name",
+            "market_code",
+            "Market",
+            "MarketName",
+            "MarketCodeName",
+            "MarketCode",
+        ],
+    )
+    if market_source_col is None:
+        logger.warning("市場区分カラムが見つからないため全銘柄を対象にします。")
+        return sorted(df["code"].astype(str).str.zfill(4).tolist())
+
+    market_normalized = df[market_source_col].apply(_normalize_market_value)
+    if market_normalized.isna().all():
+        logger.warning("市場区分の正規化に失敗したため全銘柄を対象にします。")
+        return sorted(df["code"].astype(str).str.zfill(4).tolist())
+
+    universe = df[market_normalized.isin(["PRIME", "STANDARD"])]
     return sorted(universe["code"].astype(str).str.zfill(4).tolist())
 
 

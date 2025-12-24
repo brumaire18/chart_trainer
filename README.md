@@ -47,6 +47,19 @@ python -m app.jquants_fetcher
 実行すると `data/price_csv/{code}.csv` と `data/meta/{code}.json` が順次更新されます。API制限に配慮して銘柄ごとに簡易なウェイトが挿入されます。
 TOPIX を含めて更新すると `data/price_csv/topix.csv` に日足ベースの OHLC が保存されます（コードは `TOPIX` 固定）。
 
+### listed_master.csv の仕様変更について
+
+最新仕様では上場銘柄マスタは `GET /v1/listed/info` で取得され、レスポンスの `listedInfo`（または `info`）にデータが入り、`pagination_key` があればページングされます。市場区分は `MarketCode`（例: `0111`）や `MarketCodeName`（例: `プライム`）で提供されるため、`listed_master.csv` の `market` 列は `PRIME`/`STANDARD`/`GROWTH` に正規化して保存します。あわせて `market_code` と `market_name` も保持します。
+
+既存の `listed_master.csv` が旧仕様のままの場合は、以下のいずれかで再生成してください。
+
+```bash
+rm data/meta/listed_master.csv
+python -m app.jquants_fetcher --use-listed-master
+```
+
+`listed_master.csv` が無い場合は自動的に再取得されます。市場区分の列が旧形式のままでも、可能な限り正規化してプライム＋スタンダードのユニバースを抽出します。
+
 ## アプリの起動
 
 ```bash
