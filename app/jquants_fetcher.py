@@ -27,7 +27,7 @@ from .config import (
     META_DIR,
     PRICE_CSV_DIR,
 )
-from .jquants_client import JQuantsClient, _normalize_token
+from .jquants_client import DAILY_QUOTES_ENDPOINT, JQuantsClient, _normalize_token
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,14 @@ def _extract_error_message(response: requests.Response) -> Optional[str]:
     try:
         payload = response.json()
         if isinstance(payload, dict):
+            if payload.get("errors") and isinstance(payload["errors"], list):
+                first_error = payload["errors"][0]
+                if isinstance(first_error, dict):
+                    message = first_error.get("message") or first_error.get("detail")
+                    if message:
+                        return str(message)
+                if first_error:
+                    return str(first_error)
             for key in ("message", "detail", "error"):
                 if key in payload and payload[key]:
                     return str(payload[key])
@@ -259,45 +267,122 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
 
         try:
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get("errors"):
+                error_message = _extract_error_message(response)
+                raise JQuantsError(
+                    f"J-Quants API エラーが返されました: {error_message or 'unknown error'}"
+                )
+            return payload
         except Exception as exc:  # pragma: no cover - thin wrapper
             logger.exception("J-Quants API リクエストに失敗しました: %s", request_context)
             raise JQuantsError(f"J-Quants API リクエストに失敗しました: {path}") from exc
 
 
+def _extract_pagination_key(payload: Dict[str, Any]) -> Optional[str]:
+    for key in (
+        "pagination_key",
+        "paginationKey",
+        "paginationkey",
+        "next_pagination_key",
+        "nextPaginationKey",
+    ):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _extract_daily_quotes_payload(payload: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    for key in ("dailyQuotes", "daily_quotes", "prices", "quotes"):
+        if key in payload:
+            return payload.get(key)
+    return None
+
+
+def _find_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    return next((col for col in candidates if col in df.columns), None)
+
+
+def _fetch_daily_quotes_paginated(
+    client: JQuantsClient, params: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    all_rows: List[Dict[str, Any]] = []
+    pagination_key: Optional[str] = None
+    while True:
+        request_params = dict(params)
+        if pagination_key:
+            request_params["pagination_key"] = pagination_key
+        data = _request_with_token(client, DAILY_QUOTES_ENDPOINT, params=request_params)
+        rows = _extract_daily_quotes_payload(data)
+        if rows is None:
+            raise JQuantsError("dailyQuotes がレスポンスに存在しません。")
+        all_rows.extend(rows)
+        pagination_key = _extract_pagination_key(data)
+        if not pagination_key:
+            break
+    return all_rows
+
+
 def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     df = df_raw.copy()
 
-    if "Date" in df.columns:
-        df["date"] = pd.to_datetime(df["Date"], errors="coerce")
-    elif "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    date_col = _find_column(df, ["Date", "date", "quoteDate", "datetime", "DateTime"])
+    if date_col:
+        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
     else:
         raise JQuantsError("Date 列が存在しません。")
 
-    market_col = None
-    for candidate in ("Market", "market", "MarketCode"):
-        if candidate in df.columns:
-            market_col = candidate
-            break
+    market_col = _find_column(
+        df,
+        [
+            "Market",
+            "market",
+            "MarketCode",
+            "marketCode",
+            "MarketCodeName",
+            "marketCodeName",
+            "MarketName",
+            "marketName",
+        ],
+    )
     market = df[market_col].iloc[0] if market_col and not df.empty else None
 
-    if all(
-        col in df.columns
-        for col in ["AdjustmentOpen", "AdjustmentHigh", "AdjustmentLow", "AdjustmentClose"]
-    ):
-        open_col, high_col, low_col, close_col = (
-            "AdjustmentOpen",
-            "AdjustmentHigh",
-            "AdjustmentLow",
-            "AdjustmentClose",
-        )
-        vol_col = "AdjustmentVolume" if "AdjustmentVolume" in df.columns else "Volume"
-    else:
-        open_col, high_col, low_col, close_col = ("Open", "High", "Low", "Close")
-        vol_col = "Volume"
+    adjusted_open = _find_column(
+        df, ["AdjustmentOpen", "adjustmentOpen", "AdjustedOpen", "adjustedOpen"]
+    )
+    adjusted_high = _find_column(
+        df, ["AdjustmentHigh", "adjustmentHigh", "AdjustedHigh", "adjustedHigh"]
+    )
+    adjusted_low = _find_column(
+        df, ["AdjustmentLow", "adjustmentLow", "AdjustedLow", "adjustedLow"]
+    )
+    adjusted_close = _find_column(
+        df, ["AdjustmentClose", "adjustmentClose", "AdjustedClose", "adjustedClose"]
+    )
+    adjusted_volume = _find_column(
+        df, ["AdjustmentVolume", "adjustmentVolume", "AdjustedVolume", "adjustedVolume"]
+    )
 
-    if vol_col not in df.columns:
+    if all([adjusted_open, adjusted_high, adjusted_low, adjusted_close]):
+        open_col, high_col, low_col, close_col = (
+            adjusted_open,
+            adjusted_high,
+            adjusted_low,
+            adjusted_close,
+        )
+        vol_col = adjusted_volume or _find_column(df, ["Volume", "volume"])
+    else:
+        open_col = _find_column(df, ["Open", "open"])
+        high_col = _find_column(df, ["High", "high"])
+        low_col = _find_column(df, ["Low", "low"])
+        close_col = _find_column(df, ["Close", "close"])
+        vol_col = _find_column(df, ["Volume", "volume"])
+
+    if not open_col or not high_col or not low_col or not close_col:
+        raise JQuantsError("OHLC 列が存在しません。")
+
+    if not vol_col:
         raise JQuantsError("Volume 列が存在しません。")
 
     normalized = pd.DataFrame(
@@ -324,17 +409,56 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
 def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFrame:
     df = df_raw.copy()
 
-    if "Date" in df.columns:
-        df["date"] = pd.to_datetime(df["Date"], errors="coerce")
-    elif "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    date_col = _find_column(df, ["Date", "date", "quoteDate", "datetime", "DateTime"])
+    if date_col:
+        df["date"] = pd.to_datetime(df[date_col], errors="coerce")
     else:
         raise JQuantsError("Date 列が存在しません。")
 
-    open_col = next((col for col in ("AdjustmentOpen", "Open", "open") if col in df.columns), None)
-    high_col = next((col for col in ("AdjustmentHigh", "High", "high") if col in df.columns), None)
-    low_col = next((col for col in ("AdjustmentLow", "Low", "low") if col in df.columns), None)
-    close_col = next((col for col in ("AdjustmentClose", "Close", "close") if col in df.columns), None)
+    open_col = _find_column(
+        df,
+        [
+            "AdjustmentOpen",
+            "adjustmentOpen",
+            "AdjustedOpen",
+            "adjustedOpen",
+            "Open",
+            "open",
+        ],
+    )
+    high_col = _find_column(
+        df,
+        [
+            "AdjustmentHigh",
+            "adjustmentHigh",
+            "AdjustedHigh",
+            "adjustedHigh",
+            "High",
+            "high",
+        ],
+    )
+    low_col = _find_column(
+        df,
+        [
+            "AdjustmentLow",
+            "adjustmentLow",
+            "AdjustedLow",
+            "adjustedLow",
+            "Low",
+            "low",
+        ],
+    )
+    close_col = _find_column(
+        df,
+        [
+            "AdjustmentClose",
+            "adjustmentClose",
+            "AdjustedClose",
+            "adjustedClose",
+            "Close",
+            "close",
+        ],
+    )
 
     missing_cols = [name for name, col in {
         "open": open_col,
@@ -387,11 +511,7 @@ def _previous_business_day(base_date: date) -> date:
 
 def _fetch_daily_quotes_raw(client: JQuantsClient, target_date: date) -> pd.DataFrame:
     params = {"date": target_date.isoformat()}
-    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
-    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
-    if raw_quotes is None:
-        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
-
+    raw_quotes = _fetch_daily_quotes_paginated(client, params)
     return pd.DataFrame(raw_quotes)
 
 
@@ -450,7 +570,7 @@ def fetch_daily_quotes_for_date(target_date: date | str) -> pd.DataFrame:
         logger.info("%s の全銘柄株価を取得します", resolved_date)
 
     code_col = None
-    for candidate in ("Code", "LocalCode", "code", "Localcode"):
+    for candidate in ("Code", "LocalCode", "code", "Localcode", "symbol", "Symbol"):
         if candidate in df_raw.columns:
             code_col = candidate
             break
@@ -741,13 +861,9 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         logger.info("最新営業日を %s から %s に補正しました", fetch_to, resolved_to)
     fetch_to = resolved_to.isoformat()
 
-    params = {"code": code, "from": fetch_from, "to": fetch_to}
+    params = {"symbol": code, "from": fetch_from, "to": fetch_to}
     logger.info("%s の株価を取得します (from=%s, to=%s)", code, fetch_from, fetch_to)
-    data = _request_with_token(client, "/v1/prices/daily_quotes", params=params)
-    raw_quotes = data.get("daily_quotes") or data.get("dailyQuotes")
-    if raw_quotes is None:
-        raise JQuantsError("daily_quotes がレスポンスに存在しません。")
-
+    raw_quotes = _fetch_daily_quotes_paginated(client, params)
     df_raw = pd.DataFrame(raw_quotes)
     if df_raw.empty:
         logger.info("%s の価格データが空のため前営業日にフォールバックします", code)
@@ -856,7 +972,10 @@ def _append_daily_quotes_for_date(
         logger.info("%s の株価データが空でした。", resolved_date)
         return resolved_date.isoformat(), set(), set()
 
-    code_col = next((col for col in ("code", "LocalCode", "Code") if col in df_raw.columns), None)
+    code_col = next(
+        (col for col in ("code", "LocalCode", "Code", "symbol", "Symbol") if col in df_raw.columns),
+        None,
+    )
     if code_col is None:
         raise JQuantsError("銘柄コードのカラムが見つかりませんでした。")
 
