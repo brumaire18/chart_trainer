@@ -1,14 +1,17 @@
+import tempfile
 import unittest
 from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
+from pathlib import Path
 
 from app.jquants_fetcher import (
     JQuantsError,
     _get_id_token,
     _normalize_daily_quotes,
     _normalize_topix,
+    fetch_listed_master,
     update_symbol,
 )
 
@@ -120,3 +123,47 @@ class NormalizeTopixTests(unittest.TestCase):
 
         self.assertEqual(normalized.loc[0, "code"], "TOPIX")
         self.assertEqual(normalized.loc[0, "close"], 2005)
+
+
+class FetchListedMasterTests(unittest.TestCase):
+    @patch("app.jquants_fetcher._request_with_token")
+    @patch("app.jquants_fetcher._get_client")
+    def test_fetch_listed_master_pagination_and_mapping(
+        self,
+        mock_get_client,
+        mock_request_with_token,
+    ):
+        mock_get_client.return_value = object()
+        mock_request_with_token.side_effect = [
+            {
+                "listedInfo": [
+                    {
+                        "LocalCode": "7203",
+                        "CompanyName": "トヨタ自動車",
+                        "MarketCode": "0111",
+                        "MarketCodeName": "プライム",
+                    }
+                ],
+                "pagination_key": "next",
+            },
+            {
+                "listedInfo": [
+                    {
+                        "LocalCode": "8306",
+                        "Name": "三菱UFJフィナンシャル・グループ",
+                        "MarketCode": "0112",
+                        "MarketCodeName": "スタンダード",
+                    }
+                ]
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.jquants_fetcher.META_DIR", Path(tmpdir)):
+                df = fetch_listed_master()
+
+        self.assertEqual(df.loc[0, "code"], "7203")
+        self.assertEqual(df.loc[0, "name"], "トヨタ自動車")
+        self.assertEqual(df.loc[0, "market"], "PRIME")
+        self.assertEqual(df.loc[1, "code"], "8306")
+        self.assertEqual(df.loc[1, "market"], "STANDARD")
