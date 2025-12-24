@@ -8,7 +8,8 @@
    ```bash
    pip install -r requirements.txt
    ```
-2. `.env` を作成し、J-Quantsのメールアドレス・パスワード・ベースURL、（必要ならリフレッシュトークン）を設定します（ベースURLは未指定ならデフォルトを使用）。
+2. 本ツールは Python 3.8 で動作確認しています。仮想環境などで Python 3.8 を有効化してください。
+3. `.env` を作成し、J-Quantsのリフレッシュトークンを設定します。新仕様では開発者ポータルでクライアントID/シークレットを発行し、トークンを取得してから設定してください（ベースURLは未指定ならデフォルトを使用）。
    ```bash
    cp .env.example .env
    # .env を開いて値を設定してください
@@ -16,16 +17,19 @@
 
 ## 環境変数
 
-- `JQUANTS_REFRESH_TOKEN`: J-Quantsから取得したリフレッシュトークン（未指定の場合、`MAILADDRESS` と `PASSWORD` から毎回取得します）。
+- `JQUANTS_REFRESH_TOKEN`: 新仕様で発行したリフレッシュトークン（推奨・基本は必須）。開発者ポータルでクライアントID/シークレットを使って取得した値を設定します。
 - `JQUANTS_BASE_URL`: J-Quants APIのベースURL（省略時 `https://api.jquants.com`）。
-- `MAILADDRESS`: J-Quantsアカウントのメールアドレス。
-- `PASSWORD`: J-Quantsアカウントのパスワード。
+- `MAILADDRESS`: J-Quantsアカウントのメールアドレス（互換運用用。未設定時はリフレッシュトークンを使用）。
+- `PASSWORD`: J-Quantsアカウントのパスワード（互換運用用）。
+- `JQUANTS_CLIENT_ID`: 開発者ポータルのクライアントID（トークン取得時の控えとして `.env` に保持しても構いません）。
+- `JQUANTS_CLIENT_SECRET`: 開発者ポータルのクライアントシークレット（同上）。
+- `JQUANTS_TOKEN_SCOPE`: トークン発行時に指定したスコープ（例: `read`）。
 
 `app/config.py` で `data/db` と `data/price_csv` ディレクトリが自動で作成されます。
 
 ## データ取得（J-Quants）
 
-サイドバーの「J-Quantsからダウンロード」ボタンから、銘柄コードと日付範囲を指定して最新データを取得できます。トークンが未設定、日付の範囲が不正、またはAPIエラー時にはエラーメッセージが表示されます。
+サイドバーの「J-Quantsからダウンロード」ボタンから、銘柄コードと日付範囲を指定して最新データを取得できます。新仕様ではリフレッシュトークンの設定が前提です。トークンが未設定、日付の範囲が不正、またはAPIエラー時にはエラーメッセージが表示されます。
 
 ### プライム・スタンダード銘柄をまとめて更新する
 
@@ -36,6 +40,7 @@ python -m app.jquants_fetcher
 ```
 
 - 何もオプションを付けない場合は「プライム＋スタンダード」の銘柄を対象に、Freeプランで取得できる期間を増分更新します。
+- 新仕様のリフレッシュトークンは `.env` の `JQUANTS_REFRESH_TOKEN` で設定します（互換運用として `MAILADDRESS`/`PASSWORD` も利用可能）。
 - listed_master.csv に登録されている銘柄を市場区分問わず一括更新したい場合は `--use-listed-master` を付けてください。
 - 毎回すべての取得可能期間を取り直したい場合は `--full-refresh` を付けます。
 - 追加で取得したい銘柄がある場合は `data/meta/custom_symbols.txt` に1行1コードで記載し、`--include-custom` を付けて実行します（`--custom-path` で別ファイルを指定することも可能）。
@@ -67,3 +72,14 @@ streamlit run ui_streamlit.py
 ```
 
 ブラウザに表示されたページで銘柄と表示期間を選択してチャートを表示します。
+
+## 動作確認（簡易チェック）
+
+新仕様のリフレッシュトークンを設定した状態で、CLI経由の取得ができるか確認します。
+
+```bash
+# 例: トヨタ(7203)を直近営業日で追記（YYYY-MM-DDは直近営業日に置き換えてください）
+python -m app.jquants_fetcher --codes 7203 --append-date YYYY-MM-DD
+```
+
+正常に終了すると `data/price_csv/7203.csv` と `data/meta/7203.json` が更新されます。Streamlit側でも同銘柄を選択して表示できることを確認してください。
