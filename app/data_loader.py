@@ -7,9 +7,7 @@ import numpy as np
 
 from .config import (
     JQUANTS_BASE_URL,
-    JQUANTS_MAILADDRESS,
-    JQUANTS_PASSWORD,
-    JQUANTS_REFRESH_TOKEN,
+    JQUANTS_API_KEY,
     PRICE_CSV_DIR,
 )
 from .jquants_client import JQuantsClient
@@ -95,6 +93,10 @@ def _normalize_from_jquants(
 
     # 調整後OHLCVがあればそちらを優先
     adjustment_cols = (
+        "AdjO",
+        "AdjH",
+        "AdjL",
+        "AdjC",
         "AdjustmentOpen",
         "AdjustmentHigh",
         "AdjustmentLow",
@@ -104,29 +106,61 @@ def _normalize_from_jquants(
         "adjustmentLow",
         "adjustmentClose",
     )
-    if all(col in df_raw.columns for col in adjustment_cols[:4]) or all(
-        col in df_raw.columns for col in adjustment_cols[4:]
-    ):
-        open_col = "AdjustmentOpen" if "AdjustmentOpen" in df_raw.columns else "adjustmentOpen"
-        high_col = "AdjustmentHigh" if "AdjustmentHigh" in df_raw.columns else "adjustmentHigh"
-        low_col = "AdjustmentLow" if "AdjustmentLow" in df_raw.columns else "adjustmentLow"
-        close_col = "AdjustmentClose" if "AdjustmentClose" in df_raw.columns else "adjustmentClose"
+    if any(col in df_raw.columns for col in adjustment_cols):
+        open_col = (
+            "AdjO"
+            if "AdjO" in df_raw.columns
+            else "AdjustmentOpen"
+            if "AdjustmentOpen" in df_raw.columns
+            else "adjustmentOpen"
+        )
+        high_col = (
+            "AdjH"
+            if "AdjH" in df_raw.columns
+            else "AdjustmentHigh"
+            if "AdjustmentHigh" in df_raw.columns
+            else "adjustmentHigh"
+        )
+        low_col = (
+            "AdjL"
+            if "AdjL" in df_raw.columns
+            else "AdjustmentLow"
+            if "AdjustmentLow" in df_raw.columns
+            else "adjustmentLow"
+        )
+        close_col = (
+            "AdjC"
+            if "AdjC" in df_raw.columns
+            else "AdjustmentClose"
+            if "AdjustmentClose" in df_raw.columns
+            else "adjustmentClose"
+        )
         vol_col = (
-            "AdjustmentVolume"
+            "AdjVo"
+            if "AdjVo" in df_raw.columns
+            else "AdjustmentVolume"
             if "AdjustmentVolume" in df_raw.columns
             else "adjustmentVolume"
             if "adjustmentVolume" in df_raw.columns
+            else "Vo"
+            if "Vo" in df_raw.columns
             else "Volume"
             if "Volume" in df_raw.columns
             else "volume"
         )
     else:
         # 調整後がなければ素の Open/High/Low/Close/Volume を使う
-        open_col = "Open" if "Open" in df_raw.columns else "open"
-        high_col = "High" if "High" in df_raw.columns else "high"
-        low_col = "Low" if "Low" in df_raw.columns else "low"
-        close_col = "Close" if "Close" in df_raw.columns else "close"
-        vol_col = "Volume" if "Volume" in df_raw.columns else "volume"
+        open_col = "O" if "O" in df_raw.columns else "Open" if "Open" in df_raw.columns else "open"
+        high_col = "H" if "H" in df_raw.columns else "High" if "High" in df_raw.columns else "high"
+        low_col = "L" if "L" in df_raw.columns else "Low" if "Low" in df_raw.columns else "low"
+        close_col = "C" if "C" in df_raw.columns else "Close" if "Close" in df_raw.columns else "close"
+        vol_col = (
+            "Vo"
+            if "Vo" in df_raw.columns
+            else "Volume"
+            if "Volume" in df_raw.columns
+            else "volume"
+        )
 
     df = pd.DataFrame(
         {
@@ -212,10 +246,8 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
     adjusted_start, adjusted_end, _ = enforce_light_plan_window(start_date, end_date)
 
     client = JQuantsClient(
-        refresh_token=JQUANTS_REFRESH_TOKEN,
+        api_key=JQUANTS_API_KEY,
         base_url=JQUANTS_BASE_URL,
-        mailaddress=JQUANTS_MAILADDRESS,
-        password=JQUANTS_PASSWORD,
     )
     df_raw = client.fetch_daily_quotes(symbol, adjusted_start, adjusted_end)
     df_normalized = _normalize_from_jquants(df_raw, symbol=symbol)
