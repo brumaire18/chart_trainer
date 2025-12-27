@@ -1,7 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterable, Optional, Union
+from typing import Dict, Iterable, Optional
 
 
 def _normalize_token(value: Optional[str]) -> Optional[str]:
@@ -16,8 +15,8 @@ import pandas as pd
 import requests
 
 
-DAILY_QUOTES_ENDPOINT = "/v2/prices/daily_quotes"
-TOPIX_ENDPOINT = "/v2/indices/topix"
+DAILY_QUOTES_ENDPOINT = "/v2/equities/bars/daily"
+TOPIX_ENDPOINT = "/v2/indices/bars/daily/topix"
 
 
 def _extract_paginated_rows(payload: Dict, candidate_keys: Iterable[str]) -> Optional[list]:
@@ -51,26 +50,16 @@ class JQuantsClient:
 
     def __init__(
         self,
-        refresh_token: Optional[str] = None,
-        refresh_token_expires_at: Optional[str] = None,
+        api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        mailaddress: Optional[str] = None,
-        password: Optional[str] = None,
     ):
-        self.refresh_token = refresh_token or os.getenv("JQUANTS_REFRESH_TOKEN")
-        self.refresh_token_expires_at = refresh_token_expires_at
-        self.mailaddress = mailaddress or os.getenv("MAILADDRESS")
-        self.password = password or os.getenv("PASSWORD")
+        self.api_key = api_key or os.getenv("JQUANTS_API_KEY")
         self.base_url = (base_url or os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")).rstrip("/")
-        self._id_token: Optional[str] = None
-        self._access_token: Optional[str] = None  # Backward-compat alias for id token
 
         self._debug(
             "initialized client "
             f"base_url={self.base_url} "
-            f"has_mailaddress={bool(self.mailaddress)} "
-            f"has_password={bool(self.password)} "
-            f"has_refresh_token={bool(self.refresh_token)}"
+            f"has_api_key={bool(self.api_key)}"
         )
 
     @staticmethod
@@ -149,170 +138,18 @@ class JQuantsClient:
             except ValueError as exc:  # pragma: no cover - defensive
                 raise ValueError("Failed to parse J-Quants API response as JSON") from exc
 
-    def _parse_refresh_expiry(self, value: Optional[Union[str, int, float]]) -> Optional[datetime]:
-        """Best-effort parsing for refresh token expiration timestamps."""
-
-        if value is None:
-            return None
-
-        try:
-            # Numeric epoch seconds (can arrive as int/float or numeric string)
-            if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().replace(".", "", 1).isdigit()):
-                return datetime.fromtimestamp(float(value), tz=timezone.utc)
-
-            # ISO-8601 strings; "Z" suffix is normalized to UTC
-            normalized = value.strip().replace("Z", "+00:00")
-            return datetime.fromisoformat(normalized)
-        except Exception:
-            return None
-
-    def _refresh_token_is_valid(self) -> bool:
-        """Check whether the cached refresh token is present and unexpired."""
-
-        if not self.refresh_token:
-            return False
-
-        expiry = self._parse_refresh_expiry(self.refresh_token_expires_at)
-        if expiry is None:
-            return True
-
-        return datetime.now(timezone.utc) < expiry
-
-    def _extract_refresh_metadata(self, payload: Dict) -> Dict[str, Optional[str]]:
-        """Normalize refresh token and expiration fields from API responses."""
-
-        refresh_token = _normalize_token(
-            payload.get("refresh_token")
-            or payload.get("refreshToken")
-            or payload.get("refreshtoken")
-        )
-
-        expiry_at_keys = (
-            "refresh_token_expires_at",
-            "refresh_token_expiration",
-            "refreshTokenExpiresAt",
-            "refreshTokenExpiration",
-            "refreshTokenExpires",
-            "refreshTokenExpiresAt",
-        )
-        expiry_in_keys = (
-            "refresh_token_expires_in",
-            "refreshTokenExpiresIn",
-            "refresh_token_expires",
-        )
-
-        refresh_expires_at: Optional[str] = None
-
-        for key in expiry_at_keys:
-            if payload.get(key) is not None:
-                refresh_expires_at = payload.get(key)
-                break
-
-        if refresh_expires_at is None:
-            for key in expiry_in_keys:
-                expires_in_value = payload.get(key)
-                if expires_in_value is None:
-                    continue
-                try:
-                    seconds = float(expires_in_value)
-                    refresh_expires_at = (
-                        datetime.now(timezone.utc) + timedelta(seconds=seconds)
-                    ).isoformat()
-                    break
-                except (TypeError, ValueError):
-                    continue
-
-        return {"refresh_token": refresh_token, "refresh_token_expires_at": refresh_expires_at}
-
-    def create_refresh_token(self) -> str:
-        """Generate and store a refresh token along with its expiration."""
-
-        if not self.mailaddress:
-            raise ValueError("MAILADDRESS is not set.")
-        if not self.password:
-            raise ValueError("PASSWORD is not set.")
-
-        self._debug("creating refresh token using configured mailaddress/password")
-        auth_payload = {"mailaddress": self.mailaddress, "password": self.password}
-        auth_data = self._request("POST", "/v2/token/auth_user", json=auth_payload)
-
-        refresh_metadata = self._extract_refresh_metadata(auth_data)
-        refresh_token = refresh_metadata.get("refresh_token")
-        if not refresh_token:
-            raise ValueError("refresh_token was not returned from J-Quants auth_user endpoint.")
-
-        self.refresh_token = refresh_token
-        self.refresh_token_expires_at = refresh_metadata.get("refresh_token_expires_at")
-
-        preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
-        self._debug(
-            f"obtained new refresh token length={len(refresh_token)} preview={preview} "
-            f"expires_at={self.refresh_token_expires_at}"
-        )
-
-        return refresh_token
-
     def authenticate(self) -> str:
-        """Obtain and cache an id token using the refresh token."""
+        """Return the configured API key."""
 
-        if self._id_token:
-            self._debug("using cached id token")
-            return self._id_token
-
-        refresh_token = _normalize_token(self.refresh_token)
-        if not refresh_token or not self._refresh_token_is_valid():
-            self._debug(
-                "refresh token missing or expired; requesting new one via auth_user"
-            )
-            refresh_token = self.create_refresh_token()
-
-        preview = f"{refresh_token[:4]}...{refresh_token[-4:]}" if len(refresh_token) > 8 else "<short>"
-        self._debug(
-            f"requesting id token via auth_refresh length={len(refresh_token)} "
-            f"preview={preview} expires_at={self.refresh_token_expires_at}"
-        )
-
-        refresh_payload = {"refresh_token": refresh_token}
-        refresh_data = self._request("POST", "/v2/token/auth_refresh", json=refresh_payload)
-
-        refresh_metadata = self._extract_refresh_metadata(refresh_data)
-
-        new_refresh_token = refresh_metadata.get("refresh_token")
-        if new_refresh_token and new_refresh_token != refresh_token:
-            preview_new = (
-                f"{new_refresh_token[:4]}...{new_refresh_token[-4:]}"
-                if len(new_refresh_token) > 8
-                else "<short>"
-            )
-            self._debug(
-                f"refresh token rotated length={len(new_refresh_token)} "
-                f"preview={preview_new}"
-            )
-            self.refresh_token = new_refresh_token
-
-        if refresh_metadata.get("refresh_token_expires_at"):
-            self.refresh_token_expires_at = refresh_metadata["refresh_token_expires_at"]
-
-        self._id_token = _normalize_token(
-            refresh_data.get("id_token")
-            or refresh_data.get("idToken")
-            or refresh_data.get("token")
-        )
-        if not self._id_token:
-            raise ValueError("id_token was not returned from J-Quants auth_refresh endpoint.")
-
-        self._access_token = self._id_token
-        self._debug(
-            f"successfully obtained id token length={len(self._id_token)} preview="
-            f"{self._id_token[:4]}...{self._id_token[-4:]}"
-        )
-
-        return self._id_token
+        api_key = _normalize_token(self.api_key)
+        if not api_key:
+            raise ValueError("JQUANTS_API_KEY is not set.")
+        return api_key
 
     def fetch_daily_quotes(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Retrieve OHLCV daily quotes for the specified code and date range."""
-        id_token = self.authenticate()
-        headers = {"Authorization": f"Bearer {id_token}"}
+        api_key = self.authenticate()
+        headers = {"x-api-key": api_key}
         params = {"symbol": code, "from": start_date, "to": end_date}
 
         all_rows = []
@@ -328,6 +165,7 @@ class JQuantsClient:
             quotes = _extract_paginated_rows(
                 data,
                 (
+                    "data",
                     "dailyQuotes",
                     "daily_quotes",
                     "prices",
@@ -351,8 +189,8 @@ class JQuantsClient:
     def fetch_topix(self, from_date: str, to_date: str) -> pd.DataFrame:
         """TOPIX 指数を指定期間で取得する。"""
 
-        id_token = self.authenticate()
-        headers = {"Authorization": f"Bearer {id_token}"}
+        api_key = self.authenticate()
+        headers = {"x-api-key": api_key}
         base_params = {"from": from_date, "to": to_date}
 
         all_rows = []
@@ -366,6 +204,7 @@ class JQuantsClient:
             rows = _extract_paginated_rows(
                 data,
                 (
+                    "data",
                     "topix",
                     "indices",
                     "indexQuotes",

@@ -21,9 +21,7 @@ import requests
 
 from .config import (
     JQUANTS_BASE_URL,
-    JQUANTS_MAILADDRESS,
-    JQUANTS_PASSWORD,
-    JQUANTS_REFRESH_TOKEN,
+    JQUANTS_API_KEY,
     META_DIR,
     PRICE_CSV_DIR,
 )
@@ -55,7 +53,7 @@ AUTH_ERROR_MAX_RETRIES = 3
 TOPIX_CODE = "TOPIX"
 TOPIX_CSV_PATH = PRICE_CSV_DIR / "topix.csv"
 TOPIX_META_PATH = META_DIR / "topix.json"
-LISTED_MASTER_ENDPOINT = "/v1/listed/info"
+LISTED_MASTER_ENDPOINT = "/v2/equities/master"
 
 LISTED_MASTER_MARKET_CODE_MAP = {
     "0111": "PRIME",
@@ -78,34 +76,28 @@ class FetchResult:
 
 def _get_client() -> JQuantsClient:
     # 可能であれば実行時の環境変数を優先的に利用する
-    runtime_refresh_raw = os.getenv("JQUANTS_REFRESH_TOKEN")
-    runtime_refresh = _normalize_token(runtime_refresh_raw)
-    configured_refresh = _normalize_token(JQUANTS_REFRESH_TOKEN)
+    runtime_api_key_raw = os.getenv("JQUANTS_API_KEY")
+    runtime_api_key = _normalize_token(runtime_api_key_raw)
+    configured_api_key = _normalize_token(JQUANTS_API_KEY)
     runtime_base_url = os.getenv("JQUANTS_BASE_URL")
-    runtime_mail = (os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS or "").strip() or None
-    runtime_password = (os.getenv("PASSWORD") or JQUANTS_PASSWORD or "").strip() or None
 
-    if runtime_refresh_raw and runtime_refresh_raw != runtime_refresh:
+    if runtime_api_key_raw and runtime_api_key_raw != runtime_api_key:
         logger.info(
-            "JQUANTS_REFRESH_TOKEN の前後にある空白を除去しました (len=%s -> len=%s)",
-            len(runtime_refresh_raw),
-            len(runtime_refresh or ""),
+            "JQUANTS_API_KEY の前後にある空白を除去しました (len=%s -> len=%s)",
+            len(runtime_api_key_raw),
+            len(runtime_api_key or ""),
         )
 
     snapshot = {
-        "MAILADDRESS": bool(runtime_mail),
-        "PASSWORD": bool(runtime_password),
-        "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh or configured_refresh),
+        "JQUANTS_API_KEY": bool(runtime_api_key or configured_api_key),
     }
 
     client = JQuantsClient(
         base_url=runtime_base_url or JQUANTS_BASE_URL,
-        refresh_token=runtime_refresh or configured_refresh,
-        mailaddress=runtime_mail,
-        password=runtime_password,
+        api_key=runtime_api_key or configured_api_key,
     )
 
-    if not client.refresh_token and not client.mailaddress:
+    if not client.api_key:
         logger.error("必要な認証情報が見つかりませんでした: %s", snapshot)
     return client
 
@@ -113,13 +105,9 @@ def _get_client() -> JQuantsClient:
 def get_credential_status() -> Dict[str, bool]:
     """利用可能な認証情報の有無を返す。"""
 
-    runtime_refresh = _normalize_token(os.getenv("JQUANTS_REFRESH_TOKEN") or JQUANTS_REFRESH_TOKEN)
-    runtime_mail = (os.getenv("MAILADDRESS") or JQUANTS_MAILADDRESS or "").strip()
-    runtime_password = (os.getenv("PASSWORD") or JQUANTS_PASSWORD or "").strip()
+    runtime_api_key = _normalize_token(os.getenv("JQUANTS_API_KEY") or JQUANTS_API_KEY)
     return {
-        "MAILADDRESS": bool(runtime_mail),
-        "PASSWORD": bool(runtime_password),
-        "JQUANTS_REFRESH_TOKEN": bool(runtime_refresh),
+        "JQUANTS_API_KEY": bool(runtime_api_key),
     }
 
 
@@ -137,25 +125,23 @@ def _token_preview(token: Optional[str]) -> str:
 def _credential_debug_info(client: JQuantsClient) -> Dict[str, str]:
     """現在使用している認証情報の概要を返す（機微情報はマスク）。"""
 
-    runtime_refresh = _normalize_token(os.getenv("JQUANTS_REFRESH_TOKEN"))
-    configured_refresh = _normalize_token(JQUANTS_REFRESH_TOKEN)
-    source = "env" if runtime_refresh else "config" if configured_refresh else "missing"
-    effective_refresh = runtime_refresh or configured_refresh or client.refresh_token
+    runtime_api_key = _normalize_token(os.getenv("JQUANTS_API_KEY"))
+    configured_api_key = _normalize_token(JQUANTS_API_KEY)
+    source = "env" if runtime_api_key else "config" if configured_api_key else "missing"
+    effective_api_key = runtime_api_key or configured_api_key or client.api_key
 
     return {
-        "refresh_token_source": source,
-        "refresh_token_preview": _token_preview(effective_refresh),
-        "client_refresh_token_preview": _token_preview(client.refresh_token),
-        "MAILADDRESS": "set" if client.mailaddress else "missing",
-        "PASSWORD": "set" if client.password else "missing",
+        "api_key_source": source,
+        "api_key_preview": _token_preview(effective_api_key),
+        "client_api_key_preview": _token_preview(client.api_key),
     }
 
 
-def _get_id_token(client: JQuantsClient) -> str:
+def _get_api_key(client: JQuantsClient) -> str:
     try:
         return client.authenticate()
     except Exception as exc:  # pragma: no cover - thin wrapper
-        raise JQuantsError("idToken の取得に失敗しました。") from exc
+        raise JQuantsError("APIキーの取得に失敗しました。") from exc
 
 
 def _extract_error_message(response: requests.Response) -> Optional[str]:
@@ -193,9 +179,9 @@ def _describe_request(path: str, params: Optional[Dict[str, Any]]) -> str:
 
 
 def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    token = _get_id_token(client)
+    api_key = _get_api_key(client)
     url = f"{client.base_url}{path}"
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"x-api-key": api_key}
 
     request_context = _describe_request(path, params)
     retry = 0
@@ -236,10 +222,10 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
 
         if response.status_code in AUTH_ERROR_STATUS_CODES:
             error_message = _extract_error_message(response)
-            if error_message and "token" in error_message.lower() and "invalid" in error_message.lower():
+            if error_message and "api" in error_message.lower() and "key" in error_message.lower():
                 credential_debug = _credential_debug_info(client)
                 logger.error(
-                    "提供されたトークンが無効または期限切れです。JQUANTS_REFRESH_TOKEN を再取得してください"
+                    "提供されたAPIキーが無効です。JQUANTS_API_KEY を再発行してください"
                     " (status=%s, message=%s, credentials=%s, request=%s)",
                     response.status_code,
                     error_message,
@@ -247,7 +233,7 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
                     request_context,
                 )
                 raise JQuantsError(
-                    "認証トークンが無効または期限切れです。JQUANTS_REFRESH_TOKEN を正しい値で再設定してください。"
+                    "APIキーが無効です。JQUANTS_API_KEY を正しい値で再設定してください。"
                 )
 
             auth_retry += 1
@@ -271,8 +257,8 @@ def _request_with_token(client: JQuantsClient, path: str, params: Optional[Dict[
             )
             time.sleep(AUTH_ERROR_WAIT)
 
-            token = _get_id_token(client)
-            headers = {"Authorization": f"Bearer {token}"}
+            api_key = _get_api_key(client)
+            headers = {"x-api-key": api_key}
             continue
 
         try:
@@ -304,7 +290,7 @@ def _extract_pagination_key(payload: Dict[str, Any]) -> Optional[str]:
 
 
 def _extract_daily_quotes_payload(payload: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
-    for key in ("dailyQuotes", "daily_quotes", "prices", "quotes"):
+    for key in ("data", "dailyQuotes", "daily_quotes", "prices", "quotes"):
         if key in payload:
             return payload.get(key)
     return None
@@ -312,12 +298,12 @@ def _extract_daily_quotes_payload(payload: Dict[str, Any]) -> Optional[List[Dict
 
 def _extract_listed_master_payload(payload: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
     for key in (
+        "data",
         "info",
         "listedInfo",
         "listed_info",
         "listed",
         "listed_master",
-        "data",
     ):
         if key in payload:
             return payload.get(key)
@@ -525,19 +511,24 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     market = df[market_col].iloc[0] if market_col and not df.empty else None
 
     adjusted_open = _find_column(
-        df, ["AdjustmentOpen", "adjustmentOpen", "AdjustedOpen", "adjustedOpen"]
+        df,
+        ["AdjO", "AdjustmentOpen", "adjustmentOpen", "AdjustedOpen", "adjustedOpen"],
     )
     adjusted_high = _find_column(
-        df, ["AdjustmentHigh", "adjustmentHigh", "AdjustedHigh", "adjustedHigh"]
+        df,
+        ["AdjH", "AdjustmentHigh", "adjustmentHigh", "AdjustedHigh", "adjustedHigh"],
     )
     adjusted_low = _find_column(
-        df, ["AdjustmentLow", "adjustmentLow", "AdjustedLow", "adjustedLow"]
+        df,
+        ["AdjL", "AdjustmentLow", "adjustmentLow", "AdjustedLow", "adjustedLow"],
     )
     adjusted_close = _find_column(
-        df, ["AdjustmentClose", "adjustmentClose", "AdjustedClose", "adjustedClose"]
+        df,
+        ["AdjC", "AdjustmentClose", "adjustmentClose", "AdjustedClose", "adjustedClose"],
     )
     adjusted_volume = _find_column(
-        df, ["AdjustmentVolume", "adjustmentVolume", "AdjustedVolume", "adjustedVolume"]
+        df,
+        ["AdjVo", "AdjustmentVolume", "adjustmentVolume", "AdjustedVolume", "adjustedVolume"],
     )
 
     if all([adjusted_open, adjusted_high, adjusted_low, adjusted_close]):
@@ -547,13 +538,13 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
             adjusted_low,
             adjusted_close,
         )
-        vol_col = adjusted_volume or _find_column(df, ["Volume", "volume"])
+        vol_col = adjusted_volume or _find_column(df, ["AdjVo", "Volume", "volume", "Vo", "VO"])
     else:
-        open_col = _find_column(df, ["Open", "open"])
-        high_col = _find_column(df, ["High", "high"])
-        low_col = _find_column(df, ["Low", "low"])
-        close_col = _find_column(df, ["Close", "close"])
-        vol_col = _find_column(df, ["Volume", "volume"])
+        open_col = _find_column(df, ["O", "Open", "open"])
+        high_col = _find_column(df, ["H", "High", "high"])
+        low_col = _find_column(df, ["L", "Low", "low"])
+        close_col = _find_column(df, ["C", "Close", "close"])
+        vol_col = _find_column(df, ["Vo", "VO", "Volume", "volume"])
 
     if not open_col or not high_col or not low_col or not close_col:
         raise JQuantsError("OHLC 列が存在しません。")
@@ -594,10 +585,12 @@ def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFra
     open_col = _find_column(
         df,
         [
+            "AdjO",
             "AdjustmentOpen",
             "adjustmentOpen",
             "AdjustedOpen",
             "adjustedOpen",
+            "O",
             "Open",
             "open",
         ],
@@ -605,10 +598,12 @@ def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFra
     high_col = _find_column(
         df,
         [
+            "AdjH",
             "AdjustmentHigh",
             "adjustmentHigh",
             "AdjustedHigh",
             "adjustedHigh",
+            "H",
             "High",
             "high",
         ],
@@ -616,10 +611,12 @@ def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFra
     low_col = _find_column(
         df,
         [
+            "AdjL",
             "AdjustmentLow",
             "adjustmentLow",
             "AdjustedLow",
             "adjustedLow",
+            "L",
             "Low",
             "low",
         ],
@@ -627,10 +624,12 @@ def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFra
     close_col = _find_column(
         df,
         [
+            "AdjC",
             "AdjustmentClose",
             "adjustmentClose",
             "AdjustedClose",
             "adjustedClose",
+            "C",
             "Close",
             "close",
         ],
