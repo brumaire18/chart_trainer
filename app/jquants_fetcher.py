@@ -940,6 +940,29 @@ def _merge_and_save(
     return merged
 
 
+def _merge_and_save_daily_snapshot(code: str, snapshot_df: pd.DataFrame, snapshot_date: str) -> pd.DataFrame:
+    """指定日スナップショットを既存CSVへマージして保存する。"""
+
+    if snapshot_df.empty:
+        raise JQuantsError("指定日のスナップショットが空でした。")
+
+    normalized = snapshot_df.copy()
+    normalized["code"] = str(code).zfill(4)
+
+    if "date" in normalized.columns:
+        normalized["date"] = pd.to_datetime(normalized["date"]).dt.date.astype(str)
+    else:
+        raise JQuantsError("スナップショットに date 列が存在しません。")
+
+    if "datetime" in normalized.columns:
+        normalized["datetime"] = pd.to_datetime(normalized["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        normalized["datetime"] = pd.to_datetime(normalized["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    meta = _load_meta(code)
+    return _merge_and_save(code, normalized, snapshot_date, meta=meta)
+
+
 def _merge_topix_and_save(
     normalized: pd.DataFrame,
     fetch_to: str,
@@ -1005,7 +1028,7 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         logger.info("最新営業日を %s から %s に補正しました", fetch_to, resolved_to)
     fetch_to = resolved_to.isoformat()
 
-    params = {"symbol": code, "from": fetch_from, "to": fetch_to}
+    params = {"code": code, "from": fetch_from, "to": fetch_to}
     logger.info("%s の株価を取得します (from=%s, to=%s)", code, fetch_from, fetch_to)
     raw_quotes = _fetch_daily_quotes_paginated(client, params)
     df_raw = pd.DataFrame(raw_quotes)

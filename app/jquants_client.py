@@ -150,7 +150,7 @@ class JQuantsClient:
         """Retrieve OHLCV daily quotes for the specified code and date range."""
         api_key = self.authenticate()
         headers = {"x-api-key": api_key}
-        params = {"symbol": code, "from": start_date, "to": end_date}
+        params = {"code": code, "from": start_date, "to": end_date}
 
         all_rows = []
         pagination_key: Optional[str] = None
@@ -182,7 +182,7 @@ class JQuantsClient:
 
         df = pd.DataFrame(all_rows)
         if df.empty:
-            raise ValueError("No price data returned for the requested symbol and date range.")
+            raise ValueError("No price data returned for the requested code and date range.")
 
         return df
 
