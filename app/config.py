@@ -39,10 +39,8 @@ DB_DIR = BASE_DIR / "data" / "db"
 DB_PATH = DB_DIR / "trainer.sqlite"
 
 # API settings
-JQUANTS_REFRESH_TOKEN = os.getenv("JQUANTS_REFRESH_TOKEN")
+JQUANTS_API_KEY = os.getenv("JQUANTS_API_KEY")
 JQUANTS_BASE_URL = os.getenv("JQUANTS_BASE_URL", "https://api.jquants.com")
-JQUANTS_MAILADDRESS = os.getenv("MAILADDRESS")
-JQUANTS_PASSWORD = os.getenv("PASSWORD")
 
 # デフォルトの問題長
 DEFAULT_LOOKBACK_BARS = 100  # 過去本数

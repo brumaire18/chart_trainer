@@ -368,11 +368,7 @@ def main():
     with st.sidebar.expander("プライム + スタンダードを一括更新"):
         creds = get_credential_status()
         st.write("認証情報の検知状況:")
-        st.write(f"- JQUANTS_REFRESH_TOKEN: {'✅' if creds['JQUANTS_REFRESH_TOKEN'] else '❌'}")
-        st.write(
-            f"- MAILADDRESS: {'✅' if creds['MAILADDRESS'] else '❌'}"
-            f"  / PASSWORD: {'✅' if creds['PASSWORD'] else '❌'} (互換運用)"
-        )
+        st.write(f"- JQUANTS_API_KEY: {'✅' if creds['JQUANTS_API_KEY'] else '❌'}")
         st.caption("新仕様ではリフレッシュトークンの設定が推奨です。")
 
         include_custom = st.checkbox(
