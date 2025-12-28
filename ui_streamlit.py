@@ -365,6 +365,17 @@ def main():
         "※ ライトプランでは過去約5年分まで取得できます。"
         "指定にかかわらず取得可能な最大範囲（過去5年）に自動調整します。"
     )
+    topix_full_refresh = st.sidebar.checkbox(
+        "TOPIXを全期間で再取得", value=False, key="topix_full_refresh"
+    )
+    if st.sidebar.button("TOPIXを一括ダウンロード", key="download_topix_button"):
+        try:
+            with st.spinner("TOPIXをダウンロードしています..."):
+                update_topix(full_refresh=topix_full_refresh)
+            st.sidebar.success("TOPIXのダウンロードに成功しました。")
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"TOPIXのダウンロードに失敗しました: {exc}")
 
     with st.sidebar.expander("プライム + スタンダードを一括更新"):
         creds = get_credential_status()
