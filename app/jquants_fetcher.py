@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import random
 from dataclasses import dataclass
@@ -670,6 +671,18 @@ def _light_plan_window(client: Optional[JQuantsClient] = None) -> tuple[str, str
     return from_date.isoformat(), latest_trading_day.isoformat()
 
 
+def _extract_subscription_start_date(message: str) -> Optional[str]:
+    """APIエラー文からサブスク開始日(YYYY-MM-DD)を抽出する。"""
+
+    if not message:
+        return None
+
+    match = re.search(r"subscription covers the following dates:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})", message)
+    if not match:
+        return None
+    return match.group(1)
+
+
 def _most_recent_weekday(target_weekday: int) -> date:
     """指定した曜日の直近日付 (同曜日を含む過去) を返す。"""
 
@@ -1091,7 +1104,19 @@ def update_topix(full_refresh: bool = False) -> pd.DataFrame:
     fetch_to = resolved_to.isoformat()
 
     logger.info("TOPIX を取得します (from=%s, to=%s)", fetch_from, fetch_to)
-    df_raw = client.fetch_topix(fetch_from, fetch_to)
+    try:
+        df_raw = client.fetch_topix(fetch_from, fetch_to)
+    except ValueError as exc:
+        subscription_start = _extract_subscription_start_date(str(exc))
+        if subscription_start and subscription_start > fetch_from:
+            logger.info(
+                "TOPIX の取得開始日をサブスク範囲に合わせて補正します (from=%s -> %s)",
+                fetch_from,
+                subscription_start,
+            )
+            df_raw = client.fetch_topix(subscription_start, fetch_to)
+        else:
+            raise
     if df_raw.empty:
         raise JQuantsError("TOPIX の価格データが空でした。")
 
