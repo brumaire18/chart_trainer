@@ -20,6 +20,7 @@ from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
     load_listed_master,
+    update_topix,
     update_universe_with_anchor_day,
     update_universe,
 )
@@ -431,6 +432,10 @@ def main():
                             full_refresh=full_refresh,
                             use_listed_master=universe_source == "listed_all",
                         )
+                    try:
+                        update_topix(full_refresh=full_refresh)
+                    except Exception as exc:
+                        st.warning(f"TOPIX の更新に失敗しました: {exc}")
                 st.success("一括更新が完了しました。")
                 st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
@@ -464,6 +469,10 @@ def main():
                 request_start,
                 request_end,
             )
+            try:
+                update_topix(full_refresh=False)
+            except Exception as exc:
+                st.sidebar.warning(f"TOPIX の更新に失敗しました: {exc}")
             st.sidebar.success("ダウンロードに成功しました。")
             st.rerun()
         except Exception as exc:  # broad catch for user feedback
