@@ -20,6 +20,7 @@ from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
     load_listed_master,
+    update_topix,
     update_universe_with_anchor_day,
     update_universe,
 )
@@ -364,6 +365,17 @@ def main():
         "※ ライトプランでは過去約5年分まで取得できます。"
         "指定にかかわらず取得可能な最大範囲（過去5年）に自動調整します。"
     )
+    topix_full_refresh = st.sidebar.checkbox(
+        "TOPIXを全期間で再取得", value=False, key="topix_full_refresh"
+    )
+    if st.sidebar.button("TOPIXを一括ダウンロード", key="download_topix_button"):
+        try:
+            with st.spinner("TOPIXをダウンロードしています..."):
+                update_topix(full_refresh=topix_full_refresh)
+            st.sidebar.success("TOPIXのダウンロードに成功しました。")
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"TOPIXのダウンロードに失敗しました: {exc}")
 
     with st.sidebar.expander("プライム + スタンダードを一括更新"):
         creds = get_credential_status()
@@ -431,6 +443,10 @@ def main():
                             full_refresh=full_refresh,
                             use_listed_master=universe_source == "listed_all",
                         )
+                    try:
+                        update_topix(full_refresh=full_refresh)
+                    except Exception as exc:
+                        st.warning(f"TOPIX の更新に失敗しました: {exc}")
                 st.success("一括更新が完了しました。")
                 st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
@@ -464,6 +480,10 @@ def main():
                 request_start,
                 request_end,
             )
+            try:
+                update_topix(full_refresh=False)
+            except Exception as exc:
+                st.sidebar.warning(f"TOPIX の更新に失敗しました: {exc}")
             st.sidebar.success("ダウンロードに成功しました。")
             st.rerun()
         except Exception as exc:  # broad catch for user feedback
