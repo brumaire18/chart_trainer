@@ -665,10 +665,10 @@ def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFra
 
 
 def _light_plan_window(client: Optional[JQuantsClient] = None) -> tuple[str, str]:
-    client = client or _get_client()
-    latest_trading_day, _ = _get_latest_trading_day(client)
-    from_date = latest_trading_day - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
-    return from_date.isoformat(), latest_trading_day.isoformat()
+    _ = client
+    today = date.today()
+    from_date = today - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
+    return from_date.isoformat(), today.isoformat()
 
 
 def _extract_subscription_start_date(message: str) -> Optional[str]:
