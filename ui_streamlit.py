@@ -378,7 +378,7 @@ def main():
         except Exception as exc:
             st.sidebar.error(f"TOPIXのダウンロードに失敗しました: {exc}")
 
-    with st.sidebar.expander("プライム + スタンダードを一括更新"):
+    with st.sidebar.expander("市場区分を一括更新"):
         creds = get_credential_status()
         st.write("認証情報の検知状況:")
         st.write(f"- JQUANTS_API_KEY: {'✅' if creds['JQUANTS_API_KEY'] else '❌'}")
@@ -389,8 +389,12 @@ def main():
         )
         universe_source = st.radio(
             "更新対象",
-            options=["prime_standard", "listed_all"],
-            format_func=lambda v: "プライム+スタンダード" if v == "prime_standard" else "listed_masterにある全銘柄",
+            options=["prime_standard", "growth", "listed_all"],
+            format_func=lambda v: {
+                "prime_standard": "プライム+スタンダード",
+                "growth": "グロース",
+                "listed_all": "listed_masterにある全銘柄",
+            }[v],
             index=0,
             key="universe_source",
         )
@@ -429,6 +433,7 @@ def main():
                     target_codes = build_universe(
                         include_custom=include_custom,
                         use_listed_master=universe_source == "listed_all",
+                        market_filter="growth" if universe_source == "growth" else "prime_standard",
                     )
                     if use_anchor_flow:
                         update_universe_with_anchor_day(
@@ -437,12 +442,14 @@ def main():
                             anchor_weekday=anchor_weekday,
                             include_custom=include_custom,
                             use_listed_master=universe_source == "listed_all",
+                            market_filter="growth" if universe_source == "growth" else "prime_standard",
                         )
                     else:
                         update_universe(
                             codes=target_codes,
                             full_refresh=full_refresh,
                             use_listed_master=universe_source == "listed_all",
+                            market_filter="growth" if universe_source == "growth" else "prime_standard",
                         )
                     try:
                         update_topix(full_refresh=full_refresh)

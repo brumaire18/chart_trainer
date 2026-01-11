@@ -12,6 +12,7 @@ from app.jquants_fetcher import (
     _normalize_daily_quotes,
     _normalize_topix,
     fetch_listed_master,
+    get_growth_universe,
     update_symbol,
 )
 
@@ -167,3 +168,18 @@ class FetchListedMasterTests(unittest.TestCase):
         self.assertEqual(df.loc[0, "market"], "PRIME")
         self.assertEqual(df.loc[1, "code"], "8306")
         self.assertEqual(df.loc[1, "market"], "STANDARD")
+
+
+class GetGrowthUniverseTests(unittest.TestCase):
+    @patch("app.jquants_fetcher.load_listed_master")
+    def test_growth_only_filter(self, mock_load_listed_master):
+        mock_load_listed_master.return_value = pd.DataFrame(
+            {
+                "code": ["1", "2", "3"],
+                "market": ["PRIME", "GROWTH", "STANDARD"],
+            }
+        )
+
+        result = get_growth_universe()
+
+        self.assertEqual(result, ["0002"])
