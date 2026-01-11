@@ -1172,6 +1172,7 @@ def main():
             value=1.5,
             step=0.1,
             help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
+        )
         apply_weekly_volume_quartile = st.checkbox(
             "週出来高上位1/4を抽出",
             value=False,
