@@ -1057,6 +1057,17 @@ def update_symbol(code: str, full_refresh: bool = False) -> pd.DataFrame:
         logger.info("最新営業日を %s から %s に補正しました", fetch_to, resolved_to)
     fetch_to = resolved_to.isoformat()
 
+    fetch_from_dt = datetime.fromisoformat(fetch_from).date()
+    fetch_to_dt = datetime.fromisoformat(fetch_to).date()
+    if fetch_from_dt > fetch_to_dt:
+        logger.info(
+            "%s の取得対象期間が逆転しているためスキップします (from=%s, to=%s)",
+            code,
+            fetch_from,
+            fetch_to,
+        )
+        return existing_df if existing_df is not None else pd.DataFrame()
+
     params = {"code": code, "from": fetch_from, "to": fetch_to}
     logger.info("%s の株価を取得します (from=%s, to=%s)", code, fetch_from, fetch_to)
     raw_quotes = _fetch_daily_quotes_paginated(client, params)
@@ -1118,6 +1129,12 @@ def update_topix(full_refresh: bool = False) -> pd.DataFrame:
     if resolved_to.isoformat() != fetch_to:
         logger.info("TOPIX の最新営業日を %s から %s に補正しました", fetch_to, resolved_to)
     fetch_to = resolved_to.isoformat()
+
+    fetch_from_dt = datetime.fromisoformat(fetch_from).date()
+    fetch_to_dt = datetime.fromisoformat(fetch_to).date()
+    if fetch_from_dt > fetch_to_dt:
+        logger.info("TOPIX の取得対象期間が逆転しているためスキップします")
+        return existing_df if existing_df is not None else pd.DataFrame()
 
     logger.info("TOPIX を取得します (from=%s, to=%s)", fetch_from, fetch_to)
     try:
