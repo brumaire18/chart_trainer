@@ -1136,6 +1136,42 @@ def main():
             step=0.1,
             help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
+        apply_canslim_condition = st.checkbox("CAN-SLIMパターン条件を適用", value=False)
+        canslim_recent_days = st.slider(
+            "CAN-SLIMのブレイクアウト判定期間（日）",
+            min_value=5,
+            max_value=120,
+            value=30,
+            help="指定日数以内にカップ/ソーサーウィズハンドルのブレイクアウトがある銘柄を抽出します。",
+        )
+        canslim_cup_window = st.number_input(
+            "カップ判定期間（日）",
+            min_value=20,
+            max_value=120,
+            value=50,
+            step=1,
+        )
+        canslim_saucer_window = st.number_input(
+            "ソーサー判定期間（日）",
+            min_value=40,
+            max_value=180,
+            value=80,
+            step=1,
+        )
+        canslim_handle_window = st.number_input(
+            "ハンドル判定期間（日）",
+            min_value=5,
+            max_value=30,
+            value=10,
+            step=1,
+        )
+        canslim_volume_multiplier = st.number_input(
+            "CAN-SLIM出来高/20日平均の下限 (倍)",
+            min_value=0.0,
+            max_value=10.0,
+            value=1.5,
+            step=0.1,
+            help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
         apply_weekly_volume_quartile = st.checkbox(
             "週出来高上位1/4を抽出",
             value=False,
@@ -1324,6 +1360,34 @@ def main():
                         else:
                             rs_ok = False
 
+                    canslim_ok = True
+                    canslim_pattern = None
+                    canslim_signal_date = None
+                    if apply_canslim_condition:
+                        max_window = max(canslim_cup_window, canslim_saucer_window) + canslim_handle_window
+                        scan_lookahead = 1
+                        scan_window = max_window + scan_lookahead + 5
+                        df_canslim = df_ind_full.tail(scan_window)
+                        signals = scan_canslim_patterns(
+                            df_canslim,
+                            lookahead=scan_lookahead,
+                            return_threshold=0.0,
+                            volume_multiplier=canslim_volume_multiplier,
+                            cup_window=canslim_cup_window,
+                            saucer_window=canslim_saucer_window,
+                            handle_window=canslim_handle_window,
+                        )
+                        if signals:
+                            latest_signal = signals[-1]
+                            if latest_signal.date >= latest["date"] - pd.Timedelta(days=canslim_recent_days):
+                                canslim_pattern = latest_signal.pattern
+                                canslim_signal_date = latest_signal.date
+                            else:
+                                canslim_ok = False
+                        else:
+                            canslim_ok = False
+
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
                     weekly_vol_ok = True
                     weekly_volume = None
                     if apply_weekly_volume_quartile:

@@ -16,9 +16,10 @@ class PatternSignal:
     dataset: str
     breakout_price: float
     breakout_volume_ratio: float
-    future_return: float
+    peak_return: float
     label: str
     indicators: Dict[str, float]
+    pattern_details: Dict[str, float]
 
 
 def split_symbols_randomly(
@@ -160,6 +161,13 @@ def _detect_pattern(
     if not _analyze_handle(handle_prices, base_info["right_peak"], handle_max_depth):
         return None
 
+    handle_low = float(handle_prices.min())
+    handle_high = float(handle_prices.max())
+    handle_depth = (base_info["right_peak"] - handle_low) / base_info["right_peak"]
+    base_info["handle_low"] = handle_low
+    base_info["handle_high"] = handle_high
+    base_info["handle_depth"] = handle_depth
+
     return base_info
 
 
@@ -175,6 +183,9 @@ def scan_canslim_patterns(
     """
     CAN-SLIM のカップウィズハンドル/ソーサーウィズハンドルを探索し、
     出来高を伴った上昇ブレイクを抽出する。
+
+    peak_return はブレイクアウト後に lookahead 本の範囲で付けた
+    最高値ベースの上昇率を返す。
     """
 
     if df.empty:
@@ -230,10 +241,13 @@ def scan_canslim_patterns(
         if breakout_row["close"] <= pattern_info["right_peak"]:
             continue
 
-        future_close = float(df_ind["close"].iloc[idx + lookahead])
         breakout_price = float(breakout_row["close"])
-        future_return = (future_close - breakout_price) / breakout_price
-        label = "up" if future_return >= return_threshold else "down"
+        lookahead_prices = df_ind["close"].iloc[idx + 1 : idx + lookahead + 1]
+        if lookahead_prices.empty:
+            continue
+        peak_price = float(lookahead_prices.max())
+        peak_return = (peak_price - breakout_price) / breakout_price
+        label = "up" if peak_return >= return_threshold else "down"
 
         indicators = {
             "sma20": float(breakout_row.get("sma20", np.nan)),
@@ -244,6 +258,16 @@ def scan_canslim_patterns(
             "macd_hist": float(breakout_row.get("macd_hist", np.nan)),
         }
 
+        pattern_details = {
+            "left_peak": float(pattern_info["left_peak"]),
+            "right_peak": float(pattern_info["right_peak"]),
+            "bottom": float(pattern_info["bottom"]),
+            "depth": float(pattern_info["depth"]),
+            "handle_low": float(pattern_info["handle_low"]),
+            "handle_high": float(pattern_info["handle_high"]),
+            "handle_depth": float(pattern_info["handle_depth"]),
+        }
+
         signals.append(
             PatternSignal(
                 symbol=str(breakout_row.get("code", "")),
@@ -252,9 +276,10 @@ def scan_canslim_patterns(
                 dataset="",
                 breakout_price=breakout_price,
                 breakout_volume_ratio=breakout_volume_ratio,
-                future_return=future_return,
+                peak_return=peak_return,
                 label=label,
                 indicators=indicators,
+                pattern_details=pattern_details,
             )
         )
 
@@ -321,16 +346,17 @@ def run_canslim_backtest(
             "dataset": signal.dataset,
             "breakout_price": signal.breakout_price,
             "breakout_volume_ratio": signal.breakout_volume_ratio,
-            "future_return": signal.future_return,
+            "peak_return": signal.peak_return,
             "label": signal.label,
         }
         record.update(signal.indicators)
+        record.update({f"pattern_{k}": v for k, v in signal.pattern_details.items()})
         records.append(record)
 
     results_df = pd.DataFrame(records)
     summary_df = (
         results_df.groupby(["dataset", "pattern", "label"], as_index=False)
-        .agg(count=("symbol", "count"), avg_return=("future_return", "mean"))
+        .agg(count=("symbol", "count"), avg_return=("peak_return", "mean"))
         .sort_values(["dataset", "pattern", "label"])
         .reset_index(drop=True)
     )
@@ -431,3 +457,49 @@ def optimize_canslim_parameters(
         best_summary[f"best_{key}"] = value
 
     return eval_df, best_summary
+
+
+def _run_cli() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="CAN-SLIM backtest runner")
+    parser.add_argument("--optimize", action="store_true", help="run parameter optimization")
+    parser.add_argument("--lookahead", type=int, default=20)
+    parser.add_argument("--return-threshold", type=float, default=0.03)
+    parser.add_argument("--volume-multiplier", type=float, default=1.5)
+    parser.add_argument("--cup-window", type=int, default=50)
+    parser.add_argument("--saucer-window", type=int, default=80)
+    parser.add_argument("--handle-window", type=int, default=10)
+    parser.add_argument("--max-evals", type=int, default=30)
+    parser.add_argument("--sample-ratio", type=float, default=0.6)
+    args = parser.parse_args()
+
+    if args.optimize:
+        eval_df, best_summary = optimize_canslim_parameters(
+            lookahead=args.lookahead,
+            return_threshold=args.return_threshold,
+            max_evals=args.max_evals,
+            sample_ratio=args.sample_ratio,
+        )
+        print("=== Optimization results ===")
+        print(eval_df.head(20).to_string(index=False))
+        print("=== Best summary ===")
+        print(best_summary.head(20).to_string(index=False))
+    else:
+        results_df, summary_df = run_canslim_backtest(
+            lookahead=args.lookahead,
+            return_threshold=args.return_threshold,
+            volume_multiplier=args.volume_multiplier,
+            cup_window=args.cup_window,
+            saucer_window=args.saucer_window,
+            handle_window=args.handle_window,
+        )
+        print("=== Summary ===")
+        print(summary_df.to_string(index=False))
+        if not results_df.empty:
+            print("=== Sample results ===")
+            print(results_df.head(20).to_string(index=False))
+
+
+if __name__ == "__main__":
+    _run_cli()
