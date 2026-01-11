@@ -693,12 +693,8 @@ def main():
         topix_cache_key = _get_price_cache_key("topix")
 
         with st.expander("4x4グリッド表示", expanded=False):
-            st.caption("週出来高上位1/4の銘柄を週足で最大16銘柄まで表示します。")
-            grid_symbols = st.multiselect(
-                "グリッド表示する銘柄 (最大16)",
-                options=symbols,
-                default=symbols[:32],
-            )
+            st.caption("全銘柄の週出来高上位1/4に該当する銘柄を週足で表示します。")
+            grid_symbols = symbols
             if grid_symbols:
                 weekly_volume_map = {}
                 weekly_volumes = []
@@ -1416,6 +1412,7 @@ def main():
                                 "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                                 "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
+                                "週出来高": int(weekly_volume) if weekly_volume is not None else None,
                                 "CAN-SLIMパターン": canslim_pattern,
                                 "CAN-SLIMシグナル日": canslim_signal_date,
                             }
@@ -1437,6 +1434,11 @@ def main():
                             code_reasons.append("TOPIX RS期間不足")
                         else:
                             code_reasons.append("TOPIX RS条件不合格")
+                    if apply_weekly_volume_quartile and not weekly_vol_ok:
+                        if weekly_volume_threshold is None or weekly_volume is None:
+                            code_reasons.append("週出来高データ不足")
+                        else:
+                            code_reasons.append("週出来高上位条件不合格")
                     if apply_canslim_condition and not canslim_ok:
                         code_reasons.append("CAN-SLIM条件不合格")
 
