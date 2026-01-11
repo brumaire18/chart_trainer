@@ -18,7 +18,7 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
-from app.backtest import scan_canslim_patterns
+from app.backtest import run_canslim_backtest, scan_canslim_patterns
 from app.jquants_fetcher import (
     append_quotes_for_date,
     build_universe,
@@ -686,7 +686,9 @@ def main():
         help="TOPIXとの相対力(RS=株価/ TOPIX)をオシレーター領域に描画します。",
     )
 
-    tab_chart, tab_screen, tab_breadth = st.tabs(["チャート表示", "スクリーナー", "マーケットブレッドス"])
+    tab_chart, tab_screen, tab_backtest, tab_breadth = st.tabs(
+        ["チャート表示", "スクリーナー", "バックテスト", "マーケットブレッドス"]
+    )
 
     with tab_chart:
         # --- チャート表示 ---
@@ -1569,6 +1571,130 @@ def main():
                 )
             else:
                 st.info("条件に合致する銘柄はありませんでした。条件を緩めて再検索してください。")
+
+    with tab_backtest:
+        st.subheader("CAN-SLIM バックテスト")
+        st.caption("CAN-SLIM検出を全銘柄に適用し、ブレイク後のピークリターンで評価します。")
+
+        if "backtest_results" not in st.session_state:
+            st.session_state["backtest_results"] = None
+        if "backtest_summary" not in st.session_state:
+            st.session_state["backtest_summary"] = None
+
+        backtest_col1, backtest_col2 = st.columns(2)
+        with backtest_col1:
+            bt_lookahead = st.number_input("ピーク探索期間（日）", 5, 120, value=20, step=1)
+            bt_return_threshold = st.number_input(
+                "上昇判定の下限（ピークリターン）",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.03,
+                step=0.01,
+            )
+            bt_volume_multiplier = st.number_input(
+                "出来高/20日平均の下限 (倍)",
+                min_value=0.0,
+                max_value=10.0,
+                value=1.5,
+                step=0.1,
+            )
+        with backtest_col2:
+            bt_cup_window = st.number_input("カップ判定期間（日）", 20, 120, value=50, step=1)
+            bt_saucer_window = st.number_input("ソーサー判定期間（日）", 40, 180, value=80, step=1)
+            bt_handle_window = st.number_input("ハンドル判定期間（日）", 5, 30, value=10, step=1)
+
+        run_backtest = st.button("バックテストを実行", type="primary")
+        if run_backtest:
+            with st.spinner("バックテストを実行しています..."):
+                results_df, summary_df = run_canslim_backtest(
+                    lookahead=int(bt_lookahead),
+                    return_threshold=float(bt_return_threshold),
+                    volume_multiplier=float(bt_volume_multiplier),
+                    cup_window=int(bt_cup_window),
+                    saucer_window=int(bt_saucer_window),
+                    handle_window=int(bt_handle_window),
+                )
+                st.session_state["backtest_results"] = results_df
+                st.session_state["backtest_summary"] = summary_df
+
+        backtest_results = st.session_state.get("backtest_results")
+        backtest_summary = st.session_state.get("backtest_summary")
+
+        if backtest_summary is not None and not backtest_summary.empty:
+            st.markdown("#### 集計結果")
+            st.dataframe(backtest_summary, use_container_width=True)
+
+        if backtest_results is not None and not backtest_results.empty:
+            st.markdown("#### シグナル一覧")
+            st.dataframe(backtest_results.head(200), use_container_width=True)
+
+            st.markdown("#### 判定基準の図解")
+            select_options = [
+                f"{row.symbol} | {row.date.date()} | {row.pattern}"
+                for _, row in backtest_results.iterrows()
+            ]
+            selected_label = st.selectbox("図解するシグナルを選択", options=select_options)
+            selected_row = backtest_results.iloc[select_options.index(selected_label)]
+
+            chart_window = st.number_input(
+                "図解表示の前後期間（日）", min_value=20, max_value=200, value=80, step=5
+            )
+            df_price = load_price_csv(selected_row.symbol)
+            df_price = df_price.sort_values("date")
+            start_date = pd.to_datetime(selected_row.date) - pd.Timedelta(days=chart_window)
+            end_date = pd.to_datetime(selected_row.date) + pd.Timedelta(days=chart_window)
+            df_view = df_price[(df_price["date"] >= start_date) & (df_price["date"] <= end_date)].copy()
+            if df_view.empty:
+                st.warning("図解に必要な期間のデータが不足しています。")
+            else:
+                df_view["date_str"] = df_view["date"].dt.strftime("%Y-%m-%d")
+                fig = go.Figure()
+                fig.add_trace(
+                    go.Candlestick(
+                        x=df_view["date_str"],
+                        open=df_view["open"],
+                        high=df_view["high"],
+                        low=df_view["low"],
+                        close=df_view["close"],
+                        name="ローソク足",
+                    )
+                )
+                fig.add_hline(
+                    y=selected_row.pattern_left_peak,
+                    line=dict(color="#1f77b4", dash="dash"),
+                    annotation_text="左ピーク",
+                )
+                fig.add_hline(
+                    y=selected_row.pattern_right_peak,
+                    line=dict(color="#2ca02c", dash="dash"),
+                    annotation_text="右ピーク",
+                )
+                fig.add_hline(
+                    y=selected_row.pattern_bottom,
+                    line=dict(color="#9467bd", dash="dot"),
+                    annotation_text="ボトム",
+                )
+                fig.add_hrect(
+                    y0=selected_row.pattern_handle_low,
+                    y1=selected_row.pattern_handle_high,
+                    fillcolor="rgba(255,127,14,0.2)",
+                    line_width=0,
+                    annotation_text="ハンドル範囲",
+                )
+                fig.add_vline(
+                    x=pd.to_datetime(selected_row.date).strftime("%Y-%m-%d"),
+                    line=dict(color="#d62728", dash="solid"),
+                    annotation_text="ブレイク",
+                )
+                fig.update_layout(
+                    title=f"パターン判定図解: {selected_row.symbol} ({selected_row.pattern})",
+                    xaxis_title="Date",
+                    yaxis_title="Price",
+                    margin=dict(l=20, r=20, t=50, b=20),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        elif backtest_results is not None:
+            st.info("該当するシグナルがありませんでした。")
 
     with tab_breadth:
         st.subheader("マーケットブレッドス")
