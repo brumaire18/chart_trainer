@@ -629,7 +629,9 @@ def main():
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
-    query_symbol = st.experimental_get_query_params().get("symbol", [None])[0]
+    query_symbol = st.query_params.get("symbol")
+    if isinstance(query_symbol, list):
+        query_symbol = query_symbol[0] if query_symbol else None
     if query_symbol and query_symbol in symbols:
         if st.session_state.get("selected_symbol") != query_symbol:
             st.session_state["selected_symbol"] = query_symbol
@@ -788,7 +790,7 @@ def main():
                                 st.plotly_chart(fig, use_container_width=True)
                                 if st.button("詳細を見る", key=f"grid_detail_{symbol}"):
                                     st.session_state["selected_symbol"] = symbol
-                                    st.experimental_set_query_params(symbol=symbol)
+                                    st.query_params.update({"symbol": symbol})
                                     st.rerun()
 
         cache_key = _get_price_cache_key(selected_symbol)
