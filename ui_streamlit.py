@@ -1083,8 +1083,17 @@ def main():
             _ = cache_key
             return compute_breadth_indicators(aggregate_market_breadth())
 
-        price_files = sorted(str(p) for p in PRICE_CSV_DIR.glob("*.csv"))
-        cache_key = "|".join(price_files)
+        price_files = sorted(PRICE_CSV_DIR.glob("*.csv"))
+        cache_key_parts = []
+        for price_path in price_files:
+            try:
+                stat = price_path.stat()
+            except FileNotFoundError:
+                continue
+            cache_key_parts.append(
+                f"{price_path}:{stat.st_mtime_ns}:{stat.st_size}"
+            )
+        cache_key = "|".join(cache_key_parts)
         if recompute:
             st.cache_data.clear()
 
