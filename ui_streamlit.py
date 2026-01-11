@@ -1,5 +1,6 @@
 from collections import Counter
 from datetime import date, timedelta
+import json
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -7,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
+from app.config import DEFAULT_LOOKBACK_BARS, META_DIR, PRICE_CSV_DIR
 from app.data_loader import (
     attach_topix_relative_strength,
     enforce_light_plan_window,
@@ -19,6 +20,7 @@ from app.data_loader import (
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.backtest import run_canslim_backtest, scan_canslim_patterns
 from app.jquants_fetcher import (
+    append_quotes_for_date,
     build_universe,
     get_credential_status,
     load_listed_master,
@@ -29,6 +31,29 @@ from app.jquants_fetcher import (
 
 
 LIGHT_PLAN_YEARS = 5
+
+
+def _load_latest_update_date() -> Optional[date]:
+    meta_files = sorted(META_DIR.glob("*.json"))
+    if not meta_files:
+        return None
+
+    latest: Optional[date] = None
+    for meta_path in meta_files:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        history_end = meta.get("history_end")
+        if not history_end:
+            continue
+        try:
+            candidate = date.fromisoformat(history_end)
+        except ValueError:
+            continue
+        if latest is None or candidate > latest:
+            latest = candidate
+    return latest
 
 
 def _get_price_cache_key(symbol: str) -> str:
@@ -318,6 +343,7 @@ def _calculate_minimum_data_length(
     cup_window: int,
     saucer_window: int,
     handle_window: int,
+    apply_weekly_volume_quartile: bool,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
 
@@ -348,6 +374,9 @@ def _calculate_minimum_data_length(
         required_length = max(required_length, topix_rs_lookback + 1)
         reasons.append(f"TOPIX RSを{topix_rs_lookback}本前と比較するには十分な期間が必要")
 
+    if apply_weekly_volume_quartile:
+        required_length = max(required_length, 5)
+        reasons.append("週出来高判定には最低1週間分(5本程度)のデータが必要")
     if apply_canslim_condition:
         base_window = max(cup_window, saucer_window) + handle_window
         required_length = max(required_length, base_window + 2)
@@ -356,6 +385,37 @@ def _calculate_minimum_data_length(
         )
 
     return required_length, reasons
+
+
+def _build_mini_chart(
+    df: pd.DataFrame, symbol: str, name: str, timeframe: str, lookback: int
+) -> Optional[go.Figure]:
+    df_resampled = _resample_ohlc(df, timeframe)
+    if df_resampled.empty:
+        return None
+    df_resampled = df_resampled.tail(lookback).copy()
+    if df_resampled.empty:
+        return None
+    df_resampled["date_str"] = df_resampled["date"].dt.strftime("%Y-%m-%d")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df_resampled["date_str"],
+            y=df_resampled["close"],
+            mode="lines",
+            line=dict(color="#1f77b4"),
+            name="終値",
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=220,
+        title=f"{symbol} {name}",
+        showlegend=False,
+    )
+    fig.update_xaxes(type="category", title="")
+    fig.update_yaxes(title="")
+    return fig
 
 
 def main():
@@ -401,6 +461,17 @@ def main():
         st.write(f"- JQUANTS_API_KEY: {'✅' if creds['JQUANTS_API_KEY'] else '❌'}")
         st.caption("新仕様ではリフレッシュトークンの設定が推奨です。")
 
+        latest_update_date = _load_latest_update_date()
+        if latest_update_date:
+            st.date_input(
+                "最終更新日 (全体)",
+                value=latest_update_date,
+                disabled=True,
+                key="latest_update_date_display",
+            )
+        else:
+            st.info("最終更新日は未取得です。")
+
         include_custom = st.checkbox(
             "custom_symbols.txt も含める", value=False, key="include_custom_universe"
         )
@@ -444,6 +515,33 @@ def main():
             anchor_date_input = st.date_input(
                 "取得日 (YYYY-MM-DD)", value=date.today(), key="anchor_date_input"
             )
+        st.markdown("---")
+        st.write("日次更新 (指定日)")
+        append_date_input = st.date_input(
+            "日次更新日 (YYYY-MM-DD)",
+            value=date.today(),
+            key="append_date_input",
+        )
+        if st.button("指定日で日次更新", key="append_date_button"):
+            try:
+                with st.spinner("指定日の日次更新を実行しています..."):
+                    target_codes = build_universe(
+                        include_custom=include_custom,
+                        use_listed_master=universe_source == "listed_all",
+                        market_filter="growth" if universe_source == "growth" else "prime_standard",
+                    )
+                    append_quotes_for_date(
+                        append_date_input.isoformat(),
+                        codes=target_codes,
+                    )
+                    try:
+                        update_topix(full_refresh=False)
+                    except Exception as exc:
+                        st.warning(f"TOPIX の更新に失敗しました: {exc}")
+                st.success("指定日の日次更新が完了しました。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"指定日の日次更新に失敗しました: {exc}")
         if st.button("ユニバースを更新", key="update_universe_button"):
             try:
                 with st.spinner("ユニバースを更新しています..."):
@@ -531,8 +629,18 @@ def main():
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
+    query_symbol = st.query_params.get("symbol")
+    if isinstance(query_symbol, list):
+        query_symbol = query_symbol[0] if query_symbol else None
+    if query_symbol and query_symbol in symbols:
+        if st.session_state.get("selected_symbol") != query_symbol:
+            st.session_state["selected_symbol"] = query_symbol
+
     selected_symbol = st.sidebar.selectbox(
-        "銘柄", symbols, format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})"
+        "銘柄",
+        symbols,
+        format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+        key="selected_symbol",
     )
 
     lookback = st.sidebar.number_input(
@@ -584,8 +692,106 @@ def main():
 
     with tab_chart:
         # --- チャート表示 ---
-        cache_key = _get_price_cache_key(selected_symbol)
         topix_cache_key = _get_price_cache_key("topix")
+
+        with st.expander("4x4グリッド表示", expanded=False):
+            st.caption("全銘柄の週出来高上位1/4に該当する銘柄を週足で表示します。")
+            grid_symbols = symbols
+            if grid_symbols:
+                weekly_volume_map = {}
+                weekly_volumes = []
+                for symbol in grid_symbols:
+                    cache_key = _get_price_cache_key(symbol)
+                    try:
+                        grid_df, _, _ = _load_price_with_indicators(
+                            symbol, cache_key, topix_cache_key
+                        )
+                    except Exception:
+                        continue
+                    weekly_df = _resample_ohlc(grid_df, "weekly")
+                    if weekly_df.empty:
+                        continue
+                    latest_weekly_vol = weekly_df.iloc[-1]["volume"]
+                    if pd.notna(latest_weekly_vol):
+                        weekly_volume_map[symbol] = float(latest_weekly_vol)
+                        weekly_volumes.append(float(latest_weekly_vol))
+
+                if weekly_volumes:
+                    threshold = pd.Series(weekly_volumes).quantile(0.75)
+                    filtered_symbols = [
+                        symbol
+                        for symbol in grid_symbols
+                        if weekly_volume_map.get(symbol, 0) >= threshold
+                    ]
+                else:
+                    filtered_symbols = []
+
+                filtered_symbols = sorted(
+                    filtered_symbols,
+                    key=lambda s: weekly_volume_map.get(s, 0),
+                    reverse=True,
+                )
+                total_symbols = len(filtered_symbols)
+                total_pages = max(1, (total_symbols + 15) // 16)
+                if "grid_page" not in st.session_state:
+                    st.session_state["grid_page"] = 0
+                st.session_state["grid_page"] = min(
+                    st.session_state["grid_page"], total_pages - 1
+                )
+
+                nav_cols = st.columns([1, 2, 1])
+                with nav_cols[0]:
+                    if st.button("前の16銘柄", disabled=st.session_state["grid_page"] == 0):
+                        st.session_state["grid_page"] -= 1
+                        st.rerun()
+                with nav_cols[1]:
+                    st.markdown(
+                        f"**{st.session_state['grid_page'] + 1}/{total_pages} ページ**"
+                    )
+                    st.caption(f"全{total_symbols}銘柄のうち上位を表示")
+                with nav_cols[2]:
+                    if st.button(
+                        "次の16銘柄",
+                        disabled=st.session_state["grid_page"] >= total_pages - 1,
+                    ):
+                        st.session_state["grid_page"] += 1
+                        st.rerun()
+
+                start_idx = st.session_state["grid_page"] * 16
+                grid_symbols = filtered_symbols[start_idx:start_idx + 16]
+
+                if not grid_symbols:
+                    st.info("週出来高上位1/4に該当する銘柄がありません。")
+                    grid_symbols = []
+
+                if grid_symbols:
+                    rows = [grid_symbols[i:i + 4] for i in range(0, len(grid_symbols), 4)]
+                    for row_symbols in rows:
+                        cols = st.columns(4)
+                        for col_idx, symbol in enumerate(row_symbols):
+                            with cols[col_idx]:
+                                symbol_name = name_map.get(symbol, "")
+                                cache_key = _get_price_cache_key(symbol)
+                                try:
+                                    grid_df, _, _ = _load_price_with_indicators(
+                                        symbol, cache_key, topix_cache_key
+                                    )
+                                except Exception:
+                                    st.caption(f"{symbol} のデータ取得に失敗しました。")
+                                    continue
+                                fig = _build_mini_chart(
+                                    grid_df, symbol, symbol_name, "weekly", lookback
+                                )
+                                if fig is None:
+                                    st.caption(f"{symbol} のチャートを表示できません。")
+                                    continue
+                                st.plotly_chart(fig, use_container_width=True)
+                                if st.button("詳細を見る", key=f"grid_detail_{symbol}"):
+                                    st.session_state["selected_symbol"] = symbol
+                                    st.query_params.update({"symbol": symbol})
+                                    st.rerun()
+
+        cache_key = _get_price_cache_key(selected_symbol)
         df_daily_trading, removed_rows, topix_info = _load_price_with_indicators(
             selected_symbol, cache_key, topix_cache_key
         )
@@ -965,6 +1171,11 @@ def main():
             step=0.1,
             help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
         )
+        apply_weekly_volume_quartile = st.checkbox(
+            "週出来高上位1/4を抽出",
+            value=False,
+            help="最新の週出来高がユニバースの上位25%に入る銘柄を抽出します。",
+        )
         topix_cache_key = _get_price_cache_key("topix")
 
         run_screening = st.button("スクリーニングを実行", type="primary")
@@ -976,13 +1187,43 @@ def main():
                 macd_debug_logs = [] if macd_debug else None
                 failure_logs = []
                 reason_counter = Counter()
+                weekly_volume_map = {}
+                weekly_volume_threshold = None
+
+                def _market_filter(code_str: str) -> bool:
+                    if not target_markets:
+                        return True
+                    code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
+                    return not code_market.empty and code_market.iloc[0] in target_markets
+
+                if apply_weekly_volume_quartile:
+                    weekly_volumes = []
+                    for code in symbols:
+                        code_str = str(code).strip().zfill(4)
+                        if not _market_filter(code_str):
+                            continue
+                        cache_key = _get_price_cache_key(code_str)
+                        try:
+                            df_ind_full, _, _ = _load_price_with_indicators(
+                                code_str, cache_key, topix_cache_key
+                            )
+                        except Exception:
+                            continue
+                        weekly_df = _resample_ohlc(df_ind_full, "weekly")
+                        if weekly_df.empty:
+                            continue
+                        latest_weekly_vol = weekly_df.iloc[-1]["volume"]
+                        if pd.notna(latest_weekly_vol):
+                            weekly_volume_map[code_str] = float(latest_weekly_vol)
+                            weekly_volumes.append(float(latest_weekly_vol))
+                    if weekly_volumes:
+                        weekly_volume_threshold = pd.Series(weekly_volumes).quantile(0.75)
+
                 for code in symbols:
                     code_str = str(code).strip().zfill(4)
                     code_reasons = []
-                    if target_markets:
-                        code_market = listed_df.loc[listed_df["code"] == code_str, "market"]
-                        if not code_market.empty and code_market.iloc[0] not in target_markets:
-                            continue
+                    if not _market_filter(code_str):
+                        continue
 
                     cache_key = _get_price_cache_key(code_str)
                     try:
@@ -1006,6 +1247,7 @@ def main():
                         apply_volume_condition=apply_volume_condition,
                         apply_topix_rs_condition=apply_topix_rs_condition,
                         topix_rs_lookback=topix_rs_lookback,
+                        apply_weekly_volume_quartile=apply_weekly_volume_quartile,
                         apply_canslim_condition=apply_canslim_condition,
                         cup_window=canslim_cup_window,
                         saucer_window=canslim_saucer_window,
@@ -1145,6 +1387,16 @@ def main():
                             canslim_ok = False
 
                     if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
+                    weekly_vol_ok = True
+                    weekly_volume = None
+                    if apply_weekly_volume_quartile:
+                        weekly_volume = weekly_volume_map.get(code_str)
+                        if weekly_volume_threshold is None or weekly_volume is None:
+                            weekly_vol_ok = False
+                        else:
+                            weekly_vol_ok = weekly_volume >= weekly_volume_threshold
+
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, weekly_vol_ok]):
                         change_pct = (
                             (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
                             if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
@@ -1162,6 +1414,7 @@ def main():
                                 "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                                 "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
+                                "週出来高": int(weekly_volume) if weekly_volume is not None else None,
                                 "CAN-SLIMパターン": canslim_pattern,
                                 "CAN-SLIMシグナル日": canslim_signal_date,
                             }
@@ -1183,6 +1436,11 @@ def main():
                             code_reasons.append("TOPIX RS期間不足")
                         else:
                             code_reasons.append("TOPIX RS条件不合格")
+                    if apply_weekly_volume_quartile and not weekly_vol_ok:
+                        if weekly_volume_threshold is None or weekly_volume is None:
+                            code_reasons.append("週出来高データ不足")
+                        else:
+                            code_reasons.append("週出来高上位条件不合格")
                     if apply_canslim_condition and not canslim_ok:
                         code_reasons.append("CAN-SLIM条件不合格")
 
