@@ -17,6 +17,7 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
+from app.backtest import scan_canslim_patterns
 from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
@@ -313,6 +314,10 @@ def _calculate_minimum_data_length(
     apply_volume_condition: bool,
     apply_topix_rs_condition: bool,
     topix_rs_lookback: int,
+    apply_canslim_condition: bool,
+    cup_window: int,
+    saucer_window: int,
+    handle_window: int,
     apply_weekly_volume_quartile: bool,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
@@ -347,6 +352,12 @@ def _calculate_minimum_data_length(
     if apply_weekly_volume_quartile:
         required_length = max(required_length, 5)
         reasons.append("週出来高判定には最低1週間分(5本程度)のデータが必要")
+    if apply_canslim_condition:
+        base_window = max(cup_window, saucer_window) + handle_window
+        required_length = max(required_length, base_window + 2)
+        reasons.append(
+            f"CAN-SLIM判定にはカップ/ソーサー({base_window}本以上)のデータが必要"
+        )
 
     return required_length, reasons
 
@@ -392,6 +403,11 @@ def main():
     st.sidebar.subheader("J-Quants からデータ取得")
     available_symbols = get_available_symbols()
     default_symbol = available_symbols[0] if available_symbols else ""
+    query_symbol = st.query_params.get("symbol")
+    if isinstance(query_symbol, list):
+        query_symbol = query_symbol[0] if query_symbol else None
+    if query_symbol:
+        default_symbol = str(query_symbol)
 
     download_symbol = st.sidebar.text_input(
         "銘柄コード (例: 7203)", value=default_symbol
@@ -1132,6 +1148,10 @@ def main():
                         apply_topix_rs_condition=apply_topix_rs_condition,
                         topix_rs_lookback=topix_rs_lookback,
                         apply_weekly_volume_quartile=apply_weekly_volume_quartile,
+                        apply_canslim_condition=apply_canslim_condition,
+                        cup_window=canslim_cup_window,
+                        saucer_window=canslim_saucer_window,
+                        handle_window=canslim_handle_window,
                     )
 
                     if len(df_ind_full) < required_length:
@@ -1266,7 +1286,8 @@ def main():
                                 "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                                 "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
-                                "週出来高": int(weekly_volume) if weekly_volume is not None else None,
+                                "CAN-SLIMパターン": canslim_pattern,
+                                "CAN-SLIMシグナル日": canslim_signal_date,
                             }
                         )
                         continue
@@ -1286,11 +1307,8 @@ def main():
                             code_reasons.append("TOPIX RS期間不足")
                         else:
                             code_reasons.append("TOPIX RS条件不合格")
-                    if apply_weekly_volume_quartile and not weekly_vol_ok:
-                        if weekly_volume_threshold is None or weekly_volume is None:
-                            code_reasons.append("週出来高データ不足")
-                        else:
-                            code_reasons.append("週出来高上位条件不合格")
+                    if apply_canslim_condition and not canslim_ok:
+                        code_reasons.append("CAN-SLIM条件不合格")
 
                     if code_reasons:
                         failure_logs.append(
