@@ -1,5 +1,6 @@
 from collections import Counter
 from datetime import date, timedelta
+import json
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -7,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
+from app.config import DEFAULT_LOOKBACK_BARS, META_DIR, PRICE_CSV_DIR
 from app.data_loader import (
     attach_topix_relative_strength,
     enforce_light_plan_window,
@@ -17,7 +18,9 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
+from app.backtest import scan_canslim_patterns
 from app.jquants_fetcher import (
+    append_quotes_for_date,
     build_universe,
     get_credential_status,
     load_listed_master,
@@ -28,6 +31,29 @@ from app.jquants_fetcher import (
 
 
 LIGHT_PLAN_YEARS = 5
+
+
+def _load_latest_update_date() -> Optional[date]:
+    meta_files = sorted(META_DIR.glob("*.json"))
+    if not meta_files:
+        return None
+
+    latest: Optional[date] = None
+    for meta_path in meta_files:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        history_end = meta.get("history_end")
+        if not history_end:
+            continue
+        try:
+            candidate = date.fromisoformat(history_end)
+        except ValueError:
+            continue
+        if latest is None or candidate > latest:
+            latest = candidate
+    return latest
 
 
 def _get_price_cache_key(symbol: str) -> str:
@@ -313,6 +339,10 @@ def _calculate_minimum_data_length(
     apply_volume_condition: bool,
     apply_topix_rs_condition: bool,
     topix_rs_lookback: int,
+    apply_canslim_condition: bool,
+    cup_window: int,
+    saucer_window: int,
+    handle_window: int,
     apply_weekly_volume_quartile: bool,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
@@ -347,6 +377,12 @@ def _calculate_minimum_data_length(
     if apply_weekly_volume_quartile:
         required_length = max(required_length, 5)
         reasons.append("週出来高判定には最低1週間分(5本程度)のデータが必要")
+    if apply_canslim_condition:
+        base_window = max(cup_window, saucer_window) + handle_window
+        required_length = max(required_length, base_window + 2)
+        reasons.append(
+            f"CAN-SLIM判定にはカップ/ソーサー({base_window}本以上)のデータが必要"
+        )
 
     return required_length, reasons
 
@@ -392,6 +428,11 @@ def main():
     st.sidebar.subheader("J-Quants からデータ取得")
     available_symbols = get_available_symbols()
     default_symbol = available_symbols[0] if available_symbols else ""
+    query_symbol = st.query_params.get("symbol")
+    if isinstance(query_symbol, list):
+        query_symbol = query_symbol[0] if query_symbol else None
+    if query_symbol:
+        default_symbol = str(query_symbol)
 
     download_symbol = st.sidebar.text_input(
         "銘柄コード (例: 7203)", value=default_symbol
@@ -419,6 +460,17 @@ def main():
         st.write("認証情報の検知状況:")
         st.write(f"- JQUANTS_API_KEY: {'✅' if creds['JQUANTS_API_KEY'] else '❌'}")
         st.caption("新仕様ではリフレッシュトークンの設定が推奨です。")
+
+        latest_update_date = _load_latest_update_date()
+        if latest_update_date:
+            st.date_input(
+                "最終更新日 (全体)",
+                value=latest_update_date,
+                disabled=True,
+                key="latest_update_date_display",
+            )
+        else:
+            st.info("最終更新日は未取得です。")
 
         include_custom = st.checkbox(
             "custom_symbols.txt も含める", value=False, key="include_custom_universe"
@@ -463,6 +515,33 @@ def main():
             anchor_date_input = st.date_input(
                 "取得日 (YYYY-MM-DD)", value=date.today(), key="anchor_date_input"
             )
+        st.markdown("---")
+        st.write("日次更新 (指定日)")
+        append_date_input = st.date_input(
+            "日次更新日 (YYYY-MM-DD)",
+            value=date.today(),
+            key="append_date_input",
+        )
+        if st.button("指定日で日次更新", key="append_date_button"):
+            try:
+                with st.spinner("指定日の日次更新を実行しています..."):
+                    target_codes = build_universe(
+                        include_custom=include_custom,
+                        use_listed_master=universe_source == "listed_all",
+                        market_filter="growth" if universe_source == "growth" else "prime_standard",
+                    )
+                    append_quotes_for_date(
+                        append_date_input.isoformat(),
+                        codes=target_codes,
+                    )
+                    try:
+                        update_topix(full_refresh=False)
+                    except Exception as exc:
+                        st.warning(f"TOPIX の更新に失敗しました: {exc}")
+                st.success("指定日の日次更新が完了しました。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"指定日の日次更新に失敗しました: {exc}")
         if st.button("ユニバースを更新", key="update_universe_button"):
             try:
                 with st.spinner("ユニバースを更新しています..."):
@@ -550,7 +629,9 @@ def main():
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
         return
 
-    query_symbol = st.experimental_get_query_params().get("symbol", [None])[0]
+    query_symbol = st.query_params.get("symbol")
+    if isinstance(query_symbol, list):
+        query_symbol = query_symbol[0] if query_symbol else None
     if query_symbol and query_symbol in symbols:
         if st.session_state.get("selected_symbol") != query_symbol:
             st.session_state["selected_symbol"] = query_symbol
@@ -705,7 +786,7 @@ def main():
                                 st.plotly_chart(fig, use_container_width=True)
                                 if st.button("詳細を見る", key=f"grid_detail_{symbol}"):
                                     st.session_state["selected_symbol"] = symbol
-                                    st.experimental_set_query_params(symbol=symbol)
+                                    st.query_params.update({"symbol": symbol})
                                     st.rerun()
 
         cache_key = _get_price_cache_key(selected_symbol)
@@ -1051,6 +1132,43 @@ def main():
             step=0.1,
             help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
+        apply_canslim_condition = st.checkbox("CAN-SLIMパターン条件を適用", value=False)
+        canslim_recent_days = st.slider(
+            "CAN-SLIMのブレイクアウト判定期間（日）",
+            min_value=5,
+            max_value=120,
+            value=30,
+            help="指定日数以内にカップ/ソーサーウィズハンドルのブレイクアウトがある銘柄を抽出します。",
+        )
+        canslim_cup_window = st.number_input(
+            "カップ判定期間（日）",
+            min_value=20,
+            max_value=120,
+            value=50,
+            step=1,
+        )
+        canslim_saucer_window = st.number_input(
+            "ソーサー判定期間（日）",
+            min_value=40,
+            max_value=180,
+            value=80,
+            step=1,
+        )
+        canslim_handle_window = st.number_input(
+            "ハンドル判定期間（日）",
+            min_value=5,
+            max_value=30,
+            value=10,
+            step=1,
+        )
+        canslim_volume_multiplier = st.number_input(
+            "CAN-SLIM出来高/20日平均の下限 (倍)",
+            min_value=0.0,
+            max_value=10.0,
+            value=1.5,
+            step=0.1,
+            help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
+        )
         apply_weekly_volume_quartile = st.checkbox(
             "週出来高上位1/4を抽出",
             value=False,
@@ -1128,6 +1246,10 @@ def main():
                         apply_topix_rs_condition=apply_topix_rs_condition,
                         topix_rs_lookback=topix_rs_lookback,
                         apply_weekly_volume_quartile=apply_weekly_volume_quartile,
+                        apply_canslim_condition=apply_canslim_condition,
+                        cup_window=canslim_cup_window,
+                        saucer_window=canslim_saucer_window,
+                        handle_window=canslim_handle_window,
                     )
 
                     if len(df_ind_full) < required_length:
@@ -1235,6 +1357,34 @@ def main():
                         else:
                             rs_ok = False
 
+                    canslim_ok = True
+                    canslim_pattern = None
+                    canslim_signal_date = None
+                    if apply_canslim_condition:
+                        max_window = max(canslim_cup_window, canslim_saucer_window) + canslim_handle_window
+                        scan_lookahead = 1
+                        scan_window = max_window + scan_lookahead + 5
+                        df_canslim = df_ind_full.tail(scan_window)
+                        signals = scan_canslim_patterns(
+                            df_canslim,
+                            lookahead=scan_lookahead,
+                            return_threshold=0.0,
+                            volume_multiplier=canslim_volume_multiplier,
+                            cup_window=canslim_cup_window,
+                            saucer_window=canslim_saucer_window,
+                            handle_window=canslim_handle_window,
+                        )
+                        if signals:
+                            latest_signal = signals[-1]
+                            if latest_signal.date >= latest["date"] - pd.Timedelta(days=canslim_recent_days):
+                                canslim_pattern = latest_signal.pattern
+                                canslim_signal_date = latest_signal.date
+                            else:
+                                canslim_ok = False
+                        else:
+                            canslim_ok = False
+
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
                     weekly_vol_ok = True
                     weekly_volume = None
                     if apply_weekly_volume_quartile:
@@ -1263,6 +1413,8 @@ def main():
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                                 "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
                                 "週出来高": int(weekly_volume) if weekly_volume is not None else None,
+                                "CAN-SLIMパターン": canslim_pattern,
+                                "CAN-SLIMシグナル日": canslim_signal_date,
                             }
                         )
                         continue
@@ -1287,6 +1439,8 @@ def main():
                             code_reasons.append("週出来高データ不足")
                         else:
                             code_reasons.append("週出来高上位条件不合格")
+                    if apply_canslim_condition and not canslim_ok:
+                        code_reasons.append("CAN-SLIM条件不合格")
 
                     if code_reasons:
                         failure_logs.append(
