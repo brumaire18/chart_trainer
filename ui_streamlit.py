@@ -1,5 +1,6 @@
 from collections import Counter
 from datetime import date, timedelta
+import json
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -7,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from app.config import DEFAULT_LOOKBACK_BARS, PRICE_CSV_DIR
+from app.config import DEFAULT_LOOKBACK_BARS, META_DIR, PRICE_CSV_DIR
 from app.data_loader import (
     attach_topix_relative_strength,
     enforce_light_plan_window,
@@ -19,6 +20,7 @@ from app.data_loader import (
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.backtest import scan_canslim_patterns
 from app.jquants_fetcher import (
+    append_quotes_for_date,
     build_universe,
     get_credential_status,
     load_listed_master,
@@ -29,6 +31,29 @@ from app.jquants_fetcher import (
 
 
 LIGHT_PLAN_YEARS = 5
+
+
+def _load_latest_update_date() -> Optional[date]:
+    meta_files = sorted(META_DIR.glob("*.json"))
+    if not meta_files:
+        return None
+
+    latest: Optional[date] = None
+    for meta_path in meta_files:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        history_end = meta.get("history_end")
+        if not history_end:
+            continue
+        try:
+            candidate = date.fromisoformat(history_end)
+        except ValueError:
+            continue
+        if latest is None or candidate > latest:
+            latest = candidate
+    return latest
 
 
 def _get_price_cache_key(symbol: str) -> str:
@@ -436,6 +461,17 @@ def main():
         st.write(f"- JQUANTS_API_KEY: {'✅' if creds['JQUANTS_API_KEY'] else '❌'}")
         st.caption("新仕様ではリフレッシュトークンの設定が推奨です。")
 
+        latest_update_date = _load_latest_update_date()
+        if latest_update_date:
+            st.date_input(
+                "最終更新日 (全体)",
+                value=latest_update_date,
+                disabled=True,
+                key="latest_update_date_display",
+            )
+        else:
+            st.info("最終更新日は未取得です。")
+
         include_custom = st.checkbox(
             "custom_symbols.txt も含める", value=False, key="include_custom_universe"
         )
@@ -479,6 +515,33 @@ def main():
             anchor_date_input = st.date_input(
                 "取得日 (YYYY-MM-DD)", value=date.today(), key="anchor_date_input"
             )
+        st.markdown("---")
+        st.write("日次更新 (指定日)")
+        append_date_input = st.date_input(
+            "日次更新日 (YYYY-MM-DD)",
+            value=date.today(),
+            key="append_date_input",
+        )
+        if st.button("指定日で日次更新", key="append_date_button"):
+            try:
+                with st.spinner("指定日の日次更新を実行しています..."):
+                    target_codes = build_universe(
+                        include_custom=include_custom,
+                        use_listed_master=universe_source == "listed_all",
+                        market_filter="growth" if universe_source == "growth" else "prime_standard",
+                    )
+                    append_quotes_for_date(
+                        append_date_input.isoformat(),
+                        codes=target_codes,
+                    )
+                    try:
+                        update_topix(full_refresh=False)
+                    except Exception as exc:
+                        st.warning(f"TOPIX の更新に失敗しました: {exc}")
+                st.success("指定日の日次更新が完了しました。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"指定日の日次更新に失敗しました: {exc}")
         if st.button("ユニバースを更新", key="update_universe_button"):
             try:
                 with st.spinner("ユニバースを更新しています..."):
