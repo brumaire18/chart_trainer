@@ -14,6 +14,7 @@ from app.data_loader import (
     fetch_and_save_price_csv,
     get_available_symbols,
     load_price_csv,
+    load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.jquants_fetcher import (
@@ -1217,7 +1218,7 @@ def main():
 
     with tab_breadth:
         st.subheader("マーケットブレッドス")
-        st.caption("騰落銘柄数やTRIN、マクレラン指標を可視化します。")
+        st.caption("騰落銘柄数やTRIN、マクレラン指標に加えてTOPIX推移を可視化します。")
 
         breadth_period = st.radio(
             "対象期間",
@@ -1257,6 +1258,37 @@ def main():
         if df_breadth.empty:
             st.warning("指定期間にデータがありません。期間を広げてください。")
             return
+
+        df_topix = None
+        try:
+            df_topix = load_topix_csv()
+        except FileNotFoundError:
+            st.info("TOPIXデータがないため、マーケットブレッドスではTOPIXの表示をスキップします。")
+        except ValueError as exc:
+            st.warning(f"TOPIXデータの読み込みに失敗しました: {exc}")
+
+        if df_topix is not None:
+            df_topix["date"] = pd.to_datetime(df_topix["date"])
+            if breadth_period == "1y":
+                cutoff = pd.to_datetime(date.today() - timedelta(days=365))
+                df_topix = df_topix[df_topix["date"] >= cutoff]
+            if df_topix.empty:
+                st.info("指定期間にTOPIXデータがありません。")
+            else:
+                df_topix["date_str"] = df_topix["date"].dt.strftime("%Y-%m-%d")
+                st.markdown("### TOPIX 終値")
+                fig_topix = go.Figure()
+                fig_topix.add_trace(
+                    go.Scatter(
+                        x=df_topix["date_str"],
+                        y=df_topix["close"],
+                        mode="lines",
+                        name="TOPIX",
+                    )
+                )
+                fig_topix.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300)
+                fig_topix.update_xaxes(type="category")
+                st.plotly_chart(fig_topix, use_container_width=True)
 
         df_breadth["date_str"] = pd.to_datetime(df_breadth["date"]).dt.strftime("%Y-%m-%d")
 
