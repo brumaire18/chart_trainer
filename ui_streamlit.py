@@ -349,6 +349,9 @@ def _calculate_minimum_data_length(
         required_length = max(required_length, topix_rs_lookback + 1)
         reasons.append(f"TOPIX RSを{topix_rs_lookback}本前と比較するには十分な期間が必要")
 
+    if apply_weekly_volume_quartile:
+        required_length = max(required_length, 5)
+        reasons.append("週出来高判定には最低1週間分(5本程度)のデータが必要")
     if apply_canslim_condition:
         base_window = max(cup_window, saucer_window) + handle_window
         required_length = max(required_length, base_window + 2)
@@ -625,42 +628,105 @@ def main():
         topix_cache_key = _get_price_cache_key("topix")
 
         with st.expander("4x4グリッド表示", expanded=False):
-            st.caption("最大16銘柄の概要チャートを一括表示します。")
+            st.caption("週出来高上位1/4の銘柄を週足で最大16銘柄まで表示します。")
             grid_symbols = st.multiselect(
                 "グリッド表示する銘柄 (最大16)",
                 options=symbols,
-                default=symbols[:16],
+                default=symbols[:32],
             )
-            if len(grid_symbols) > 16:
-                st.warning("16銘柄までに絞ってください。")
-                grid_symbols = grid_symbols[:16]
-
             if grid_symbols:
-                rows = [grid_symbols[i:i + 4] for i in range(0, len(grid_symbols), 4)]
-                for row_symbols in rows:
-                    cols = st.columns(4)
-                    for col_idx, symbol in enumerate(row_symbols):
-                        with cols[col_idx]:
-                            symbol_name = name_map.get(symbol, "")
-                            cache_key = _get_price_cache_key(symbol)
-                            try:
-                                grid_df, _, _ = _load_price_with_indicators(
-                                    symbol, cache_key, topix_cache_key
+                weekly_volume_map = {}
+                weekly_volumes = []
+                for symbol in grid_symbols:
+                    cache_key = _get_price_cache_key(symbol)
+                    try:
+                        grid_df, _, _ = _load_price_with_indicators(
+                            symbol, cache_key, topix_cache_key
+                        )
+                    except Exception:
+                        continue
+                    weekly_df = _resample_ohlc(grid_df, "weekly")
+                    if weekly_df.empty:
+                        continue
+                    latest_weekly_vol = weekly_df.iloc[-1]["volume"]
+                    if pd.notna(latest_weekly_vol):
+                        weekly_volume_map[symbol] = float(latest_weekly_vol)
+                        weekly_volumes.append(float(latest_weekly_vol))
+
+                if weekly_volumes:
+                    threshold = pd.Series(weekly_volumes).quantile(0.75)
+                    filtered_symbols = [
+                        symbol
+                        for symbol in grid_symbols
+                        if weekly_volume_map.get(symbol, 0) >= threshold
+                    ]
+                else:
+                    filtered_symbols = []
+
+                filtered_symbols = sorted(
+                    filtered_symbols,
+                    key=lambda s: weekly_volume_map.get(s, 0),
+                    reverse=True,
+                )
+                total_symbols = len(filtered_symbols)
+                total_pages = max(1, (total_symbols + 15) // 16)
+                if "grid_page" not in st.session_state:
+                    st.session_state["grid_page"] = 0
+                st.session_state["grid_page"] = min(
+                    st.session_state["grid_page"], total_pages - 1
+                )
+
+                nav_cols = st.columns([1, 2, 1])
+                with nav_cols[0]:
+                    if st.button("前の16銘柄", disabled=st.session_state["grid_page"] == 0):
+                        st.session_state["grid_page"] -= 1
+                        st.rerun()
+                with nav_cols[1]:
+                    st.markdown(
+                        f"**{st.session_state['grid_page'] + 1}/{total_pages} ページ**"
+                    )
+                    st.caption(f"全{total_symbols}銘柄のうち上位を表示")
+                with nav_cols[2]:
+                    if st.button(
+                        "次の16銘柄",
+                        disabled=st.session_state["grid_page"] >= total_pages - 1,
+                    ):
+                        st.session_state["grid_page"] += 1
+                        st.rerun()
+
+                start_idx = st.session_state["grid_page"] * 16
+                grid_symbols = filtered_symbols[start_idx:start_idx + 16]
+
+                if not grid_symbols:
+                    st.info("週出来高上位1/4に該当する銘柄がありません。")
+                    grid_symbols = []
+
+                if grid_symbols:
+                    rows = [grid_symbols[i:i + 4] for i in range(0, len(grid_symbols), 4)]
+                    for row_symbols in rows:
+                        cols = st.columns(4)
+                        for col_idx, symbol in enumerate(row_symbols):
+                            with cols[col_idx]:
+                                symbol_name = name_map.get(symbol, "")
+                                cache_key = _get_price_cache_key(symbol)
+                                try:
+                                    grid_df, _, _ = _load_price_with_indicators(
+                                        symbol, cache_key, topix_cache_key
+                                    )
+                                except Exception:
+                                    st.caption(f"{symbol} のデータ取得に失敗しました。")
+                                    continue
+                                fig = _build_mini_chart(
+                                    grid_df, symbol, symbol_name, "weekly", lookback
                                 )
-                            except Exception:
-                                st.caption(f"{symbol} のデータ取得に失敗しました。")
-                                continue
-                            fig = _build_mini_chart(
-                                grid_df, symbol, symbol_name, timeframe, lookback
-                            )
-                            if fig is None:
-                                st.caption(f"{symbol} のチャートを表示できません。")
-                                continue
-                            st.plotly_chart(fig, use_container_width=True)
-                            if st.button("詳細を見る", key=f"grid_detail_{symbol}"):
-                                st.session_state["selected_symbol"] = symbol
-                                st.experimental_set_query_params(symbol=symbol)
-                                st.rerun()
+                                if fig is None:
+                                    st.caption(f"{symbol} のチャートを表示できません。")
+                                    continue
+                                st.plotly_chart(fig, use_container_width=True)
+                                if st.button("詳細を見る", key=f"grid_detail_{symbol}"):
+                                    st.session_state["selected_symbol"] = symbol
+                                    st.experimental_set_query_params(symbol=symbol)
+                                    st.rerun()
 
         cache_key = _get_price_cache_key(selected_symbol)
         df_daily_trading, removed_rows, topix_info = _load_price_with_indicators(
@@ -1005,42 +1071,10 @@ def main():
             step=0.1,
             help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
-        apply_canslim_condition = st.checkbox("CAN-SLIMパターン条件を適用", value=False)
-        canslim_recent_days = st.slider(
-            "CAN-SLIMのブレイクアウト判定期間（日）",
-            min_value=5,
-            max_value=120,
-            value=30,
-            help="指定日数以内にカップ/ソーサーウィズハンドルのブレイクアウトがある銘柄を抽出します。",
-        )
-        canslim_cup_window = st.number_input(
-            "カップ判定期間（日）",
-            min_value=20,
-            max_value=120,
-            value=50,
-            step=1,
-        )
-        canslim_saucer_window = st.number_input(
-            "ソーサー判定期間（日）",
-            min_value=40,
-            max_value=180,
-            value=80,
-            step=1,
-        )
-        canslim_handle_window = st.number_input(
-            "ハンドル判定期間（日）",
-            min_value=5,
-            max_value=30,
-            value=10,
-            step=1,
-        )
-        canslim_volume_multiplier = st.number_input(
-            "CAN-SLIM出来高/20日平均の下限 (倍)",
-            min_value=0.0,
-            max_value=10.0,
-            value=1.5,
-            step=0.1,
-            help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
+        apply_weekly_volume_quartile = st.checkbox(
+            "週出来高上位1/4を抽出",
+            value=False,
+            help="最新の週出来高がユニバースの上位25%に入る銘柄を抽出します。",
         )
         topix_cache_key = _get_price_cache_key("topix")
 
@@ -1113,6 +1147,7 @@ def main():
                         apply_volume_condition=apply_volume_condition,
                         apply_topix_rs_condition=apply_topix_rs_condition,
                         topix_rs_lookback=topix_rs_lookback,
+                        apply_weekly_volume_quartile=apply_weekly_volume_quartile,
                         apply_canslim_condition=apply_canslim_condition,
                         cup_window=canslim_cup_window,
                         saucer_window=canslim_saucer_window,
@@ -1224,34 +1259,16 @@ def main():
                         else:
                             rs_ok = False
 
-                    canslim_ok = True
-                    canslim_pattern = None
-                    canslim_signal_date = None
-                    if apply_canslim_condition:
-                        max_window = max(canslim_cup_window, canslim_saucer_window) + canslim_handle_window
-                        scan_lookahead = 1
-                        scan_window = max_window + scan_lookahead + 5
-                        df_canslim = df_ind_full.tail(scan_window)
-                        signals = scan_canslim_patterns(
-                            df_canslim,
-                            lookahead=scan_lookahead,
-                            return_threshold=0.0,
-                            volume_multiplier=canslim_volume_multiplier,
-                            cup_window=canslim_cup_window,
-                            saucer_window=canslim_saucer_window,
-                            handle_window=canslim_handle_window,
-                        )
-                        if signals:
-                            latest_signal = signals[-1]
-                            if latest_signal.date >= latest["date"] - pd.Timedelta(days=canslim_recent_days):
-                                canslim_pattern = latest_signal.pattern
-                                canslim_signal_date = latest_signal.date
-                            else:
-                                canslim_ok = False
+                    weekly_vol_ok = True
+                    weekly_volume = None
+                    if apply_weekly_volume_quartile:
+                        weekly_volume = weekly_volume_map.get(code_str)
+                        if weekly_volume_threshold is None or weekly_volume is None:
+                            weekly_vol_ok = False
                         else:
-                            canslim_ok = False
+                            weekly_vol_ok = weekly_volume >= weekly_volume_threshold
 
-                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, weekly_vol_ok]):
                         change_pct = (
                             (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
                             if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
