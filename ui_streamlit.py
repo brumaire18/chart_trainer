@@ -14,12 +14,14 @@ from app.data_loader import (
     fetch_and_save_price_csv,
     get_available_symbols,
     load_price_csv,
+    load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
     load_listed_master,
+    update_topix,
     update_universe_with_anchor_day,
     update_universe,
 )
@@ -364,6 +366,17 @@ def main():
         "※ ライトプランでは過去約5年分まで取得できます。"
         "指定にかかわらず取得可能な最大範囲（過去5年）に自動調整します。"
     )
+    topix_full_refresh = st.sidebar.checkbox(
+        "TOPIXを全期間で再取得", value=False, key="topix_full_refresh"
+    )
+    if st.sidebar.button("TOPIXを一括ダウンロード", key="download_topix_button"):
+        try:
+            with st.spinner("TOPIXをダウンロードしています..."):
+                update_topix(full_refresh=topix_full_refresh)
+            st.sidebar.success("TOPIXのダウンロードに成功しました。")
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"TOPIXのダウンロードに失敗しました: {exc}")
 
     with st.sidebar.expander("プライム + スタンダードを一括更新"):
         creds = get_credential_status()
@@ -431,6 +444,10 @@ def main():
                             full_refresh=full_refresh,
                             use_listed_master=universe_source == "listed_all",
                         )
+                    try:
+                        update_topix(full_refresh=full_refresh)
+                    except Exception as exc:
+                        st.warning(f"TOPIX の更新に失敗しました: {exc}")
                 st.success("一括更新が完了しました。")
                 st.rerun()
             except Exception as exc:  # ユーザー向けに簡易表示
@@ -464,6 +481,10 @@ def main():
                 request_start,
                 request_end,
             )
+            try:
+                update_topix(full_refresh=False)
+            except Exception as exc:
+                st.sidebar.warning(f"TOPIX の更新に失敗しました: {exc}")
             st.sidebar.success("ダウンロードに成功しました。")
             st.rerun()
         except Exception as exc:  # broad catch for user feedback
@@ -1197,7 +1218,7 @@ def main():
 
     with tab_breadth:
         st.subheader("マーケットブレッドス")
-        st.caption("騰落銘柄数やTRIN、マクレラン指標を可視化します。")
+        st.caption("騰落銘柄数やTRIN、マクレラン指標に加えてTOPIX推移を可視化します。")
 
         breadth_period = st.radio(
             "対象期間",
@@ -1237,6 +1258,37 @@ def main():
         if df_breadth.empty:
             st.warning("指定期間にデータがありません。期間を広げてください。")
             return
+
+        df_topix = None
+        try:
+            df_topix = load_topix_csv()
+        except FileNotFoundError:
+            st.info("TOPIXデータがないため、マーケットブレッドスではTOPIXの表示をスキップします。")
+        except ValueError as exc:
+            st.warning(f"TOPIXデータの読み込みに失敗しました: {exc}")
+
+        if df_topix is not None:
+            df_topix["date"] = pd.to_datetime(df_topix["date"])
+            if breadth_period == "1y":
+                cutoff = pd.to_datetime(date.today() - timedelta(days=365))
+                df_topix = df_topix[df_topix["date"] >= cutoff]
+            if df_topix.empty:
+                st.info("指定期間にTOPIXデータがありません。")
+            else:
+                df_topix["date_str"] = df_topix["date"].dt.strftime("%Y-%m-%d")
+                st.markdown("### TOPIX 終値")
+                fig_topix = go.Figure()
+                fig_topix.add_trace(
+                    go.Scatter(
+                        x=df_topix["date_str"],
+                        y=df_topix["close"],
+                        mode="lines",
+                        name="TOPIX",
+                    )
+                )
+                fig_topix.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300)
+                fig_topix.update_xaxes(type="category")
+                st.plotly_chart(fig_topix, use_container_width=True)
 
         df_breadth["date_str"] = pd.to_datetime(df_breadth["date"]).dt.strftime("%Y-%m-%d")
 
