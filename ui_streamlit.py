@@ -17,6 +17,7 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
+from app.backtest import scan_canslim_patterns
 from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
@@ -313,6 +314,10 @@ def _calculate_minimum_data_length(
     apply_volume_condition: bool,
     apply_topix_rs_condition: bool,
     topix_rs_lookback: int,
+    apply_canslim_condition: bool,
+    cup_window: int,
+    saucer_window: int,
+    handle_window: int,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
 
@@ -343,6 +348,13 @@ def _calculate_minimum_data_length(
         required_length = max(required_length, topix_rs_lookback + 1)
         reasons.append(f"TOPIX RSを{topix_rs_lookback}本前と比較するには十分な期間が必要")
 
+    if apply_canslim_condition:
+        base_window = max(cup_window, saucer_window) + handle_window
+        required_length = max(required_length, base_window + 2)
+        reasons.append(
+            f"CAN-SLIM判定にはカップ/ソーサー({base_window}本以上)のデータが必要"
+        )
+
     return required_length, reasons
 
 
@@ -356,6 +368,11 @@ def main():
     st.sidebar.subheader("J-Quants からデータ取得")
     available_symbols = get_available_symbols()
     default_symbol = available_symbols[0] if available_symbols else ""
+    query_symbol = st.query_params.get("symbol")
+    if isinstance(query_symbol, list):
+        query_symbol = query_symbol[0] if query_symbol else None
+    if query_symbol:
+        default_symbol = str(query_symbol)
 
     download_symbol = st.sidebar.text_input(
         "銘柄コード (例: 7203)", value=default_symbol
@@ -909,6 +926,43 @@ def main():
             step=0.1,
             help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
         )
+        apply_canslim_condition = st.checkbox("CAN-SLIMパターン条件を適用", value=False)
+        canslim_recent_days = st.slider(
+            "CAN-SLIMのブレイクアウト判定期間（日）",
+            min_value=5,
+            max_value=120,
+            value=30,
+            help="指定日数以内にカップ/ソーサーウィズハンドルのブレイクアウトがある銘柄を抽出します。",
+        )
+        canslim_cup_window = st.number_input(
+            "カップ判定期間（日）",
+            min_value=20,
+            max_value=120,
+            value=50,
+            step=1,
+        )
+        canslim_saucer_window = st.number_input(
+            "ソーサー判定期間（日）",
+            min_value=40,
+            max_value=180,
+            value=80,
+            step=1,
+        )
+        canslim_handle_window = st.number_input(
+            "ハンドル判定期間（日）",
+            min_value=5,
+            max_value=30,
+            value=10,
+            step=1,
+        )
+        canslim_volume_multiplier = st.number_input(
+            "CAN-SLIM出来高/20日平均の下限 (倍)",
+            min_value=0.0,
+            max_value=10.0,
+            value=1.5,
+            step=0.1,
+            help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
+        )
         topix_cache_key = _get_price_cache_key("topix")
 
         run_screening = st.button("スクリーニングを実行", type="primary")
@@ -950,6 +1004,10 @@ def main():
                         apply_volume_condition=apply_volume_condition,
                         apply_topix_rs_condition=apply_topix_rs_condition,
                         topix_rs_lookback=topix_rs_lookback,
+                        apply_canslim_condition=apply_canslim_condition,
+                        cup_window=canslim_cup_window,
+                        saucer_window=canslim_saucer_window,
+                        handle_window=canslim_handle_window,
                     )
 
                     if len(df_ind_full) < required_length:
@@ -1057,7 +1115,34 @@ def main():
                         else:
                             rs_ok = False
 
-                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok]):
+                    canslim_ok = True
+                    canslim_pattern = None
+                    canslim_signal_date = None
+                    if apply_canslim_condition:
+                        max_window = max(canslim_cup_window, canslim_saucer_window) + canslim_handle_window
+                        scan_lookahead = 1
+                        scan_window = max_window + scan_lookahead + 5
+                        df_canslim = df_ind_full.tail(scan_window)
+                        signals = scan_canslim_patterns(
+                            df_canslim,
+                            lookahead=scan_lookahead,
+                            return_threshold=0.0,
+                            volume_multiplier=canslim_volume_multiplier,
+                            cup_window=canslim_cup_window,
+                            saucer_window=canslim_saucer_window,
+                            handle_window=canslim_handle_window,
+                        )
+                        if signals:
+                            latest_signal = signals[-1]
+                            if latest_signal.date >= latest["date"] - pd.Timedelta(days=canslim_recent_days):
+                                canslim_pattern = latest_signal.pattern
+                                canslim_signal_date = latest_signal.date
+                            else:
+                                canslim_ok = False
+                        else:
+                            canslim_ok = False
+
+                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
                         change_pct = (
                             (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
                             if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
@@ -1075,6 +1160,8 @@ def main():
                                 "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                                 "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
+                                "CAN-SLIMパターン": canslim_pattern,
+                                "CAN-SLIMシグナル日": canslim_signal_date,
                             }
                         )
                         continue
@@ -1094,6 +1181,8 @@ def main():
                             code_reasons.append("TOPIX RS期間不足")
                         else:
                             code_reasons.append("TOPIX RS条件不合格")
+                    if apply_canslim_condition and not canslim_ok:
+                        code_reasons.append("CAN-SLIM条件不合格")
 
                     if code_reasons:
                         failure_logs.append(
