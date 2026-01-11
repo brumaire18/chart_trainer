@@ -665,10 +665,10 @@ def _normalize_topix(df_raw: pd.DataFrame, code: str = TOPIX_CODE) -> pd.DataFra
 
 
 def _light_plan_window(client: Optional[JQuantsClient] = None) -> tuple[str, str]:
-    client = client or _get_client()
-    latest_trading_day, _ = _get_latest_trading_day(client)
-    from_date = latest_trading_day - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
-    return from_date.isoformat(), latest_trading_day.isoformat()
+    _ = client
+    today = date.today()
+    from_date = today - timedelta(days=LIGHT_PLAN_WINDOW_DAYS)
+    return from_date.isoformat(), today.isoformat()
 
 
 def _extract_subscription_start_date(message: str) -> Optional[str]:
@@ -805,7 +805,7 @@ def get_all_listed_codes() -> List[str]:
     return sorted(df["code"].astype(str).str.zfill(4).tolist())
 
 
-def get_default_universe() -> List[str]:
+def _get_market_universe(markets: List[str]) -> List[str]:
     df = load_listed_master()
     market_source_col = _find_column(
         df,
@@ -828,14 +828,23 @@ def get_default_universe() -> List[str]:
         logger.warning("市場区分の正規化に失敗したため全銘柄を対象にします。")
         return sorted(df["code"].astype(str).str.zfill(4).tolist())
 
-    universe = df[market_normalized.isin(["PRIME", "STANDARD"])]
+    universe = df[market_normalized.isin(markets)]
     return sorted(universe["code"].astype(str).str.zfill(4).tolist())
+
+
+def get_default_universe() -> List[str]:
+    return _get_market_universe(["PRIME", "STANDARD"])
+
+
+def get_growth_universe() -> List[str]:
+    return _get_market_universe(["GROWTH"])
 
 
 def build_universe(
     include_custom: bool = False,
     custom_path: Optional[Path] = None,
     use_listed_master: bool = False,
+    market_filter: str = "prime_standard",
 ) -> List[str]:
     """ユニバースを組み立てる。
 
@@ -846,12 +855,19 @@ def build_universe(
             配下の ``custom_symbols.txt`` を参照する。
         use_listed_master: True の場合は listed_master.csv に記載の全銘柄
             を対象にする（市場区分での絞り込みなし）。
+        market_filter: use_listed_master が False の場合に適用する市場区分。
+            ``prime_standard`` または ``growth`` を指定する。
     """
 
     if use_listed_master:
         codes: List[str] = get_all_listed_codes()
     else:
-        codes = get_default_universe()
+        if market_filter == "growth":
+            codes = get_growth_universe()
+        elif market_filter == "prime_standard":
+            codes = get_default_universe()
+        else:
+            raise ValueError(f"不明な market_filter です: {market_filter}")
     if include_custom:
         codes += load_custom_symbols(path=custom_path)
     # zfill(4) 済みのため重複のみ除去
@@ -1206,6 +1222,7 @@ def update_universe_with_anchor_day(
     include_custom: bool = False,
     custom_path: Optional[Path] = None,
     use_listed_master: bool = False,
+    market_filter: str = "prime_standard",
 ) -> None:
     """指定曜日のスナップショットを反映したうえで日次データを最新化する。"""
 
@@ -1213,6 +1230,7 @@ def update_universe_with_anchor_day(
         include_custom=include_custom,
         custom_path=custom_path,
         use_listed_master=use_listed_master,
+        market_filter=market_filter,
     )
     target_codes = [str(code).zfill(4) for code in target_codes]
 
@@ -1251,8 +1269,12 @@ def update_universe(
     full_refresh: bool = False,
     use_listed_master: bool = False,
     append_date: Optional[str] = None,
+    market_filter: str = "prime_standard",
 ) -> None:
-    target_codes = codes or build_universe(use_listed_master=use_listed_master)
+    target_codes = codes or build_universe(
+        use_listed_master=use_listed_master,
+        market_filter=market_filter,
+    )
     target_codes = [str(code).zfill(4) for code in target_codes]
 
     bulk_updated: Set[str] = set()
@@ -1359,6 +1381,12 @@ if __name__ == "__main__":
         help="listed_master.csv に記載の全銘柄を一括更新する",
     )
     parser.add_argument(
+        "--market",
+        choices=["prime_standard", "growth"],
+        default="prime_standard",
+        help="更新対象の市場区分 (prime_standard/growth)",
+    )
+    parser.add_argument(
         "--append-date",
         help="全銘柄の当日株価を追記する日付 (YYYY-MM-DD)",
     )
@@ -1377,6 +1405,7 @@ if __name__ == "__main__":
             include_custom=args.include_custom,
             custom_path=args.custom_path,
             use_listed_master=args.use_listed_master,
+            market_filter=args.market,
         )
 
     update_universe(
@@ -1384,6 +1413,7 @@ if __name__ == "__main__":
         full_refresh=args.full_refresh,
         use_listed_master=args.use_listed_master,
         append_date=args.append_date,
+        market_filter=args.market,
     )
 
     if args.include_topix:
