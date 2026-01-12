@@ -1777,10 +1777,16 @@ def main():
             _ = cache_key
             return compute_breadth_indicators(aggregate_market_breadth())
 
+        if "breadth_cache_version" not in st.session_state:
+            st.session_state["breadth_cache_version"] = 0
+
         price_files = sorted(str(p) for p in PRICE_CSV_DIR.glob("*.csv"))
-        cache_key = "|".join(price_files)
         if recompute:
-            st.cache_data.clear()
+            st.session_state["breadth_cache_version"] += 1
+
+        cache_key = "|".join(
+            [str(st.session_state["breadth_cache_version"]), *price_files]
+        )
 
         df_breadth = _load_breadth_data(cache_key)
 
