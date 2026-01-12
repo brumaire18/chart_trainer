@@ -528,7 +528,11 @@ def _build_mini_chart(
 
 
 def _build_mini_chart_from_resampled(
-    df_resampled: pd.DataFrame, symbol: str, name: str, lookback: int
+    df_resampled: pd.DataFrame,
+    symbol: str,
+    name: str,
+    lookback: int,
+    show_title: bool = True,
 ) -> Optional[go.Figure]:
     if df_resampled.empty:
         return None
