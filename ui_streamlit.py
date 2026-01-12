@@ -388,7 +388,12 @@ def _calculate_minimum_data_length(
 
 
 def _build_mini_chart(
-    df: pd.DataFrame, symbol: str, name: str, timeframe: str, lookback: int
+    df: pd.DataFrame,
+    symbol: str,
+    name: str,
+    timeframe: str,
+    lookback: int,
+    show_title: bool = True,
 ) -> Optional[go.Figure]:
     df_resampled = _resample_ohlc(df, timeframe)
     if df_resampled.empty:
@@ -407,10 +412,11 @@ def _build_mini_chart(
             name="終値",
         )
     )
+    title_text = f"{symbol} {name}" if show_title else ""
     fig.update_layout(
         margin=dict(l=10, r=10, t=30, b=10),
         height=220,
-        title=f"{symbol} {name}",
+        title=title_text,
         showlegend=False,
     )
     fig.update_xaxes(type="category", title="")
@@ -779,17 +785,19 @@ def main():
                                 except Exception:
                                     st.caption(f"{symbol} のデータ取得に失敗しました。")
                                     continue
+                                st.markdown(f"[{symbol} {symbol_name}](?symbol={symbol})")
                                 fig = _build_mini_chart(
-                                    grid_df, symbol, symbol_name, "weekly", lookback
+                                    grid_df,
+                                    symbol,
+                                    symbol_name,
+                                    "weekly",
+                                    lookback,
+                                    show_title=False,
                                 )
                                 if fig is None:
                                     st.caption(f"{symbol} のチャートを表示できません。")
                                     continue
                                 st.plotly_chart(fig, use_container_width=True)
-                                if st.button("詳細を見る", key=f"grid_detail_{symbol}"):
-                                    st.session_state["selected_symbol"] = symbol
-                                    st.query_params.update({"symbol": symbol})
-                                    st.rerun()
 
         cache_key = _get_price_cache_key(selected_symbol)
         df_daily_trading, removed_rows, topix_info = _load_price_with_indicators(
