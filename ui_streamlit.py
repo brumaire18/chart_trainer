@@ -97,6 +97,19 @@ def _load_price_with_indicators(
     return df_ind, removed_rows, topix_info
 
 
+@st.cache_data(show_spinner=False)
+def _load_price_for_grid(symbol: str, cache_key: str) -> pd.DataFrame:
+    """
+    グリッド表示向けに軽量な価格データを読み込む。
+
+    cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
+    """
+
+    _ = cache_key  # キャッシュ用に参照だけ行う
+    df_daily = load_price_csv(symbol)
+    return df_daily.loc[:, ["date", "close", "volume"]].copy()
+
+
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """主要なテクニカル指標を事前計算する。"""
 
@@ -151,25 +164,27 @@ def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         return df.copy()
 
     df_idx = df.set_index("date")
-    agg_map = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
+    agg_map = {}
+    if "open" in df.columns:
+        agg_map["open"] = "first"
+    if "high" in df.columns:
+        agg_map["high"] = "max"
+    if "low" in df.columns:
+        agg_map["low"] = "min"
+    if "close" in df.columns:
+        agg_map["close"] = "last"
+    if "volume" in df.columns:
+        agg_map["volume"] = "sum"
     if "topix_close" in df.columns:
         agg_map["topix_close"] = "last"
     if "topix_rs" in df.columns:
         agg_map["topix_rs"] = "last"
     if "topix_rs_log" in df.columns:
         agg_map["topix_rs_log"] = "last"
-    resampled = (
-        df_idx.resample(rule)
-        .agg(agg_map)
-        .dropna()
-        .reset_index()
-    )
+    if not agg_map:
+        return df.copy()
+
+    resampled = df_idx.resample(rule).agg(agg_map).dropna().reset_index()
     return resampled
 
 
@@ -396,6 +411,36 @@ def _build_mini_chart(
     show_title: bool = True,
 ) -> Optional[go.Figure]:
     df_resampled = _resample_ohlc(df, timeframe)
+    if df_resampled.empty:
+        return None
+    df_resampled = df_resampled.tail(lookback).copy()
+    if df_resampled.empty:
+        return None
+    df_resampled["date_str"] = df_resampled["date"].dt.strftime("%y/%m/%d")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df_resampled["date"],
+            y=df_resampled["close"],
+            mode="lines",
+            line=dict(color="#1f77b4"),
+            name="終値",
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=220,
+        title=f"{symbol} {name}",
+        showlegend=False,
+    )
+    fig.update_xaxes(tickformat="%y/%m/%d", nticks=6, title="")
+    fig.update_yaxes(title="")
+    return fig
+
+
+def _build_mini_chart_from_resampled(
+    df_resampled: pd.DataFrame, symbol: str, name: str, lookback: int
+) -> Optional[go.Figure]:
     if df_resampled.empty:
         return None
     df_resampled = df_resampled.tail(lookback).copy()
@@ -705,18 +750,18 @@ def main():
             grid_symbols = symbols
             if grid_symbols:
                 weekly_volume_map = {}
+                weekly_df_map = {}
                 weekly_volumes = []
                 for symbol in grid_symbols:
                     cache_key = _get_price_cache_key(symbol)
                     try:
-                        grid_df, _, _ = _load_price_with_indicators(
-                            symbol, cache_key, topix_cache_key
-                        )
+                        grid_df = _load_price_for_grid(symbol, cache_key)
                     except Exception:
                         continue
                     weekly_df = _resample_ohlc(grid_df, "weekly")
                     if weekly_df.empty:
                         continue
+                    weekly_df_map[symbol] = weekly_df
                     latest_weekly_vol = weekly_df.iloc[-1]["volume"]
                     if pd.notna(latest_weekly_vol):
                         weekly_volume_map[symbol] = float(latest_weekly_vol)
@@ -777,12 +822,8 @@ def main():
                         for col_idx, symbol in enumerate(row_symbols):
                             with cols[col_idx]:
                                 symbol_name = name_map.get(symbol, "")
-                                cache_key = _get_price_cache_key(symbol)
-                                try:
-                                    grid_df, _, _ = _load_price_with_indicators(
-                                        symbol, cache_key, topix_cache_key
-                                    )
-                                except Exception:
+                                weekly_df = weekly_df_map.get(symbol)
+                                if weekly_df is None:
                                     st.caption(f"{symbol} のデータ取得に失敗しました。")
                                     continue
                                 st.markdown(f"[{symbol} {symbol_name}](?symbol={symbol})")
@@ -793,6 +834,8 @@ def main():
                                     "weekly",
                                     lookback,
                                     show_title=False,
+                                fig = _build_mini_chart_from_resampled(
+                                    weekly_df, symbol, symbol_name, lookback
                                 )
                                 if fig is None:
                                     st.caption(f"{symbol} のチャートを表示できません。")
@@ -835,7 +878,7 @@ def main():
         lookback_window = min(lookback, len(df_resampled))
         df_problem = df_resampled.tail(lookback_window).copy()
         df_problem = _compute_indicators(df_problem)
-        df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
+        df_problem["date_str"] = df_problem["date"].dt.strftime("%y/%m/%d")
 
         title_name = name_map.get(selected_symbol, "")
         title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
@@ -857,7 +900,7 @@ def main():
         if chart_type == "candlestick":
             price_fig.add_trace(
                 go.Candlestick(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     open=df_problem["open"],
                     high=df_problem["high"],
                     low=df_problem["low"],
@@ -892,7 +935,7 @@ def main():
         else:
             price_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["close"],
                     name="Close",
                 ),
@@ -904,7 +947,7 @@ def main():
             if show_sma20:
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["sma20"],
                         name="SMA 20",
                         line=dict(dash="dash"),
@@ -915,7 +958,7 @@ def main():
             if show_sma50:
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["sma50"],
                         name="SMA 50",
                         line=dict(dash="dot"),
@@ -926,7 +969,7 @@ def main():
             if show_bbands:
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["bb_upper"],
                         name="BB Upper",
                         line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
@@ -936,7 +979,7 @@ def main():
                 )
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["bb_lower"],
                         name="BB Lower",
                         line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
@@ -950,7 +993,7 @@ def main():
             if show_volume:
                 price_fig.add_trace(
                     go.Bar(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["volume"],
                         name="出来高",
                         marker_color="rgba(100,149,237,0.6)",
@@ -968,7 +1011,7 @@ def main():
                 xaxis_title="Date",
                 margin=dict(l=10, r=10, t=40, b=10),
             )
-            price_fig.update_xaxes(type="category")
+            price_fig.update_xaxes(tickformat="%y/%m/%d", nticks=6)
 
         if chart_type == "pnf":
             price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
@@ -979,7 +1022,7 @@ def main():
         if show_rsi:
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["rsi14"],
                     name="RSI 14",
                     line=dict(color="#2ca02c"),
@@ -991,7 +1034,7 @@ def main():
         if show_stoch:
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["stoch_k"],
                     name="%K",
                     line=dict(color="#1f77b4"),
@@ -1000,7 +1043,7 @@ def main():
             )
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["stoch_d"],
                     name="%D",
                     line=dict(color="#ff7f0e", dash="dot"),
@@ -1010,7 +1053,7 @@ def main():
         if show_macd:
             osc_fig.add_trace(
                 go.Bar(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["macd_hist"],
                     name="MACD Hist",
                     marker_color="rgba(100,100,100,0.4)",
@@ -1019,7 +1062,7 @@ def main():
             )
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["macd"],
                     name="MACD",
                     line=dict(color="#d62728"),
@@ -1028,7 +1071,7 @@ def main():
             )
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["macd_signal"],
                     name="Signal",
                     line=dict(color="#9467bd", dash="dash"),
@@ -1038,7 +1081,7 @@ def main():
         if show_obv:
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["obv"],
                     name="OBV",
                     line=dict(color="#8c564b"),
@@ -1049,7 +1092,7 @@ def main():
             if "topix_rs" in df_problem.columns:
                 osc_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["topix_rs"],
                         name="TOPIX RS",
                         line=dict(color="#111111", dash="solid"),
@@ -1065,9 +1108,8 @@ def main():
             margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(orientation="h"),
         )
+        osc_fig.update_xaxes(tickformat="%y/%m/%d", nticks=6)
         osc_fig.update_yaxes(title_text="MACD / RS", secondary_y=True)
-        osc_fig.update_xaxes(type="category")
-
         st.plotly_chart(osc_fig, use_container_width=True)
 
     with tab_screen:
