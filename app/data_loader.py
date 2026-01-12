@@ -183,7 +183,7 @@ def _normalize_from_jquants(
     return df
 
 
-def load_price_csv(symbol: str) -> pd.DataFrame:
+def load_price_csv(symbol: str, tail_rows: Optional[int] = None) -> pd.DataFrame:
     """
     シンボルに対応するCSVを読み込んで、
     date, open, high, low, close, volume の6列を持つDataFrameを返す。
@@ -191,9 +191,24 @@ def load_price_csv(symbol: str) -> pd.DataFrame:
     - 既にその形式になっているCSV
     - J-Quants daily_quotes 形式のCSV
     の両方をサポートする。
+
+    tail_rows を指定した場合は、CSVが日付昇順で保存されている前提で
+    末尾の行だけを読み込む。
     """
     csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
-    df_raw = pd.read_csv(csv_path)
+    if tail_rows is None:
+        df_raw = pd.read_csv(csv_path)
+    elif tail_rows <= 0:
+        df_raw = pd.read_csv(csv_path, nrows=0)
+    else:
+        with csv_path.open("r", encoding="utf-8") as csv_file:
+            total_lines = sum(1 for _ in csv_file)
+        total_rows = max(total_lines - 1, 0)
+        if total_rows <= tail_rows:
+            df_raw = pd.read_csv(csv_path)
+        else:
+            skip_count = total_rows - tail_rows
+            df_raw = pd.read_csv(csv_path, skiprows=range(1, skip_count + 1))
 
     # パターン1: すでに整形済み
     normalized_cols = ["date", "open", "high", "low", "close", "volume"]
