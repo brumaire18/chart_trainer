@@ -1637,9 +1637,30 @@ def main():
                 step=0.1,
             )
         with backtest_col2:
-            bt_cup_window = st.number_input("カップ判定期間（日）", 20, 120, value=50, step=1)
-            bt_saucer_window = st.number_input("ソーサー判定期間（日）", 40, 180, value=80, step=1)
-            bt_handle_window = st.number_input("ハンドル判定期間（日）", 5, 30, value=10, step=1)
+            bt_cup_window = st.number_input(
+                "カップ判定期間（日）",
+                min_value=20,
+                max_value=120,
+                value=50,
+                step=1,
+                key="bt_cup_window",
+            )
+            bt_saucer_window = st.number_input(
+                "ソーサー判定期間（日）",
+                min_value=40,
+                max_value=180,
+                value=80,
+                step=1,
+                key="bt_saucer_window",
+            )
+            bt_handle_window = st.number_input(
+                "ハンドル判定期間（日）",
+                min_value=5,
+                max_value=30,
+                value=10,
+                step=1,
+                key="bt_handle_window",
+            )
 
         run_backtest = st.button("バックテストを実行", type="primary")
         if run_backtest:
