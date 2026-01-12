@@ -117,19 +117,31 @@ def _load_listed_master_cached(cache_key: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def _load_price_with_indicators(
-    symbol: str, cache_key: str, topix_cache_key: Optional[str] = None
+    symbol: str,
+    cache_key: str,
+    topix_cache_key: Optional[str] = None,
+    lookback: Optional[int] = None,
+    compute_indicators: bool = True,
 ) -> Tuple[pd.DataFrame, int, Optional[dict]]:
     """
     日足データを読み込み、出来高0を除外したうえでインジケーターを計算する。
 
     cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
+    lookback を指定した場合は、指標計算に必要な本数だけ末尾を使用する。
     """
 
     _ = (cache_key, topix_cache_key)  # キャッシュ用に参照だけ行う
-    df_daily = load_price_csv(symbol)
+    indicator_padding = 60
+    tail_rows = lookback + indicator_padding if lookback is not None else None
+    df_daily = load_price_csv(symbol, tail_rows=tail_rows)
     df_daily_trading = df_daily[df_daily["volume"].fillna(0) > 0].copy()
     removed_rows = len(df_daily) - len(df_daily_trading)
-    df_ind = _compute_indicators(df_daily_trading)
+    if lookback is not None:
+        df_daily_trading = df_daily_trading.tail(lookback + indicator_padding)
+    if compute_indicators:
+        df_ind = _compute_indicators(df_daily_trading)
+    else:
+        df_ind = df_daily_trading.copy()
     topix_info = None
     try:
         df_ind, topix_info = attach_topix_relative_strength(df_ind)
@@ -258,6 +270,11 @@ def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
     resampled = df_idx.resample(rule).agg(agg_map).dropna().reset_index()
     return resampled
+
+
+def _estimate_daily_lookback(lookback: int, timeframe: str) -> int:
+    multiplier = {"weekly": 5, "monthly": 22}.get(timeframe, 1)
+    return lookback * multiplier
 
 
 def _point_and_figure(
@@ -905,8 +922,13 @@ def main():
                 st.info("「計算を開始」を押すと週出来高の集計を開始します。")
 
         cache_key = _get_price_cache_key(selected_symbol)
+        daily_lookback = _estimate_daily_lookback(lookback, timeframe)
         df_daily_trading, removed_rows, topix_info = _load_price_with_indicators(
-            selected_symbol, cache_key, topix_cache_key
+            selected_symbol,
+            cache_key,
+            topix_cache_key,
+            lookback=daily_lookback,
+            compute_indicators=False,
         )
         if removed_rows > 0:
             st.sidebar.info(
