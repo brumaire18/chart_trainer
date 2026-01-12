@@ -827,13 +827,6 @@ def main():
                                     st.caption(f"{symbol} のデータ取得に失敗しました。")
                                     continue
                                 st.markdown(f"[{symbol} {symbol_name}](?symbol={symbol})")
-                                fig = _build_mini_chart(
-                                    grid_df,
-                                    symbol,
-                                    symbol_name,
-                                    "weekly",
-                                    lookback,
-                                    show_title=False,
                                 fig = _build_mini_chart_from_resampled(
                                     weekly_df, symbol, symbol_name, lookback
                                 )
