@@ -845,7 +845,7 @@ def main():
                 st.session_state["grid_compute"] = True
 
             if grid_symbols and st.session_state["grid_compute"]:
-                cache_key = _get_price_dir_cache_key()
+                cache_key = _get_price_csv_dir_cache_key()
                 weekly_volume_map, weekly_df_map = _compute_weekly_volume_map(
                     grid_symbols, cache_key
                 )
