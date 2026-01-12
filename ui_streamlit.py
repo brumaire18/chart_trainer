@@ -72,6 +72,18 @@ def _get_price_cache_key(symbol: str) -> str:
         return "missing"
 
 
+def _get_price_dir_cache_key() -> str:
+    """
+    PRICE_CSV_DIR の更新時刻でキャッシュを無効化するためのキー。
+    """
+
+    try:
+        stat = PRICE_CSV_DIR.stat()
+        return f"{stat.st_mtime_ns}"
+    except FileNotFoundError:
+        return "missing"
+
+
 @st.cache_data(show_spinner=False)
 def _load_price_with_indicators(
     symbol: str, cache_key: str, topix_cache_key: Optional[str] = None
@@ -108,6 +120,35 @@ def _load_price_for_grid(symbol: str, cache_key: str) -> pd.DataFrame:
     _ = cache_key  # キャッシュ用に参照だけ行う
     df_daily = load_price_csv(symbol)
     return df_daily.loc[:, ["date", "close", "volume"]].copy()
+
+
+@st.cache_data(show_spinner=False)
+def _compute_weekly_volume_map(
+    symbols: List[str], cache_key: str
+) -> Tuple[dict, dict]:
+    """
+    週足出来高の最新値と週足データをまとめて計算する。
+
+    cache_key を引数に含めることで、PRICE_CSV_DIR 更新時にキャッシュが破棄される。
+    """
+
+    _ = cache_key  # キャッシュ用に参照だけ行う
+    weekly_volume_map = {}
+    weekly_df_map = {}
+    for symbol in symbols:
+        price_cache_key = _get_price_cache_key(symbol)
+        try:
+            grid_df = _load_price_for_grid(symbol, price_cache_key)
+        except Exception:
+            continue
+        weekly_df = _resample_ohlc(grid_df, "weekly")
+        if weekly_df.empty:
+            continue
+        weekly_df_map[symbol] = weekly_df
+        latest_weekly_vol = weekly_df.iloc[-1]["volume"]
+        if pd.notna(latest_weekly_vol):
+            weekly_volume_map[symbol] = float(latest_weekly_vol)
+    return weekly_volume_map, weekly_df_map
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -748,24 +789,17 @@ def main():
         with st.expander("4x4グリッド表示", expanded=False):
             st.caption("全銘柄の週出来高上位1/4に該当する銘柄を週足で表示します。")
             grid_symbols = symbols
-            if grid_symbols:
-                weekly_volume_map = {}
-                weekly_df_map = {}
-                weekly_volumes = []
-                for symbol in grid_symbols:
-                    cache_key = _get_price_cache_key(symbol)
-                    try:
-                        grid_df = _load_price_for_grid(symbol, cache_key)
-                    except Exception:
-                        continue
-                    weekly_df = _resample_ohlc(grid_df, "weekly")
-                    if weekly_df.empty:
-                        continue
-                    weekly_df_map[symbol] = weekly_df
-                    latest_weekly_vol = weekly_df.iloc[-1]["volume"]
-                    if pd.notna(latest_weekly_vol):
-                        weekly_volume_map[symbol] = float(latest_weekly_vol)
-                        weekly_volumes.append(float(latest_weekly_vol))
+            if "grid_compute" not in st.session_state:
+                st.session_state["grid_compute"] = False
+            if st.button("計算を開始", key="grid_compute_start"):
+                st.session_state["grid_compute"] = True
+
+            if grid_symbols and st.session_state["grid_compute"]:
+                cache_key = _get_price_dir_cache_key()
+                weekly_volume_map, weekly_df_map = _compute_weekly_volume_map(
+                    grid_symbols, cache_key
+                )
+                weekly_volumes = list(weekly_volume_map.values())
 
                 if weekly_volumes:
                     threshold = pd.Series(weekly_volumes).quantile(0.75)
@@ -834,6 +868,8 @@ def main():
                                     st.caption(f"{symbol} のチャートを表示できません。")
                                     continue
                                 st.plotly_chart(fig, use_container_width=True)
+            elif grid_symbols:
+                st.info("「計算を開始」を押すと週出来高の集計を開始します。")
 
         cache_key = _get_price_cache_key(selected_symbol)
         df_daily_trading, removed_rows, topix_info = _load_price_with_indicators(
