@@ -411,11 +411,11 @@ def _build_mini_chart(
     df_resampled = df_resampled.tail(lookback).copy()
     if df_resampled.empty:
         return None
-    df_resampled["date_str"] = df_resampled["date"].dt.strftime("%Y-%m-%d")
+    df_resampled["date_str"] = df_resampled["date"].dt.strftime("%y/%m/%d")
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=df_resampled["date_str"],
+            x=df_resampled["date"],
             y=df_resampled["close"],
             mode="lines",
             line=dict(color="#1f77b4"),
@@ -428,7 +428,7 @@ def _build_mini_chart(
         title=f"{symbol} {name}",
         showlegend=False,
     )
-    fig.update_xaxes(type="category", title="")
+    fig.update_xaxes(tickformat="%y/%m/%d", nticks=6, title="")
     fig.update_yaxes(title="")
     return fig
 
@@ -868,7 +868,7 @@ def main():
         lookback_window = min(lookback, len(df_resampled))
         df_problem = df_resampled.tail(lookback_window).copy()
         df_problem = _compute_indicators(df_problem)
-        df_problem["date_str"] = df_problem["date"].dt.strftime("%Y-%m-%d")
+        df_problem["date_str"] = df_problem["date"].dt.strftime("%y/%m/%d")
 
         title_name = name_map.get(selected_symbol, "")
         title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
@@ -890,7 +890,7 @@ def main():
         if chart_type == "candlestick":
             price_fig.add_trace(
                 go.Candlestick(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     open=df_problem["open"],
                     high=df_problem["high"],
                     low=df_problem["low"],
@@ -925,7 +925,7 @@ def main():
         else:
             price_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["close"],
                     name="Close",
                 ),
@@ -937,7 +937,7 @@ def main():
             if show_sma20:
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["sma20"],
                         name="SMA 20",
                         line=dict(dash="dash"),
@@ -948,7 +948,7 @@ def main():
             if show_sma50:
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["sma50"],
                         name="SMA 50",
                         line=dict(dash="dot"),
@@ -959,7 +959,7 @@ def main():
             if show_bbands:
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["bb_upper"],
                         name="BB Upper",
                         line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
@@ -969,7 +969,7 @@ def main():
                 )
                 price_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["bb_lower"],
                         name="BB Lower",
                         line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
@@ -983,7 +983,7 @@ def main():
             if show_volume:
                 price_fig.add_trace(
                     go.Bar(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["volume"],
                         name="出来高",
                         marker_color="rgba(100,149,237,0.6)",
@@ -1001,7 +1001,7 @@ def main():
                 xaxis_title="Date",
                 margin=dict(l=10, r=10, t=40, b=10),
             )
-            price_fig.update_xaxes(type="category")
+            price_fig.update_xaxes(tickformat="%y/%m/%d", nticks=6)
 
         if chart_type == "pnf":
             price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
@@ -1012,7 +1012,7 @@ def main():
         if show_rsi:
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["rsi14"],
                     name="RSI 14",
                     line=dict(color="#2ca02c"),
@@ -1024,7 +1024,7 @@ def main():
         if show_stoch:
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["stoch_k"],
                     name="%K",
                     line=dict(color="#1f77b4"),
@@ -1033,7 +1033,7 @@ def main():
             )
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["stoch_d"],
                     name="%D",
                     line=dict(color="#ff7f0e", dash="dot"),
@@ -1043,7 +1043,7 @@ def main():
         if show_macd:
             osc_fig.add_trace(
                 go.Bar(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["macd_hist"],
                     name="MACD Hist",
                     marker_color="rgba(100,100,100,0.4)",
@@ -1052,7 +1052,7 @@ def main():
             )
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["macd"],
                     name="MACD",
                     line=dict(color="#d62728"),
@@ -1061,7 +1061,7 @@ def main():
             )
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["macd_signal"],
                     name="Signal",
                     line=dict(color="#9467bd", dash="dash"),
@@ -1071,7 +1071,7 @@ def main():
         if show_obv:
             osc_fig.add_trace(
                 go.Scatter(
-                    x=df_problem["date_str"],
+                    x=df_problem["date"],
                     y=df_problem["obv"],
                     name="OBV",
                     line=dict(color="#8c564b"),
@@ -1082,7 +1082,7 @@ def main():
             if "topix_rs" in df_problem.columns:
                 osc_fig.add_trace(
                     go.Scatter(
-                        x=df_problem["date_str"],
+                        x=df_problem["date"],
                         y=df_problem["topix_rs"],
                         name="TOPIX RS",
                         line=dict(color="#111111", dash="solid"),
@@ -1098,9 +1098,8 @@ def main():
             margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(orientation="h"),
         )
+        osc_fig.update_xaxes(tickformat="%y/%m/%d", nticks=6)
         osc_fig.update_yaxes(title_text="MACD / RS", secondary_y=True)
-        osc_fig.update_xaxes(type="category")
-
         st.plotly_chart(osc_fig, use_container_width=True)
 
     with tab_screen:
