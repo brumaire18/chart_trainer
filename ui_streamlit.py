@@ -1497,9 +1497,7 @@ def main():
 
         if screening_results is None:
             st.info("条件を設定して『スクリーニングを実行』を押してください。")
-            return
-
-        if screening_results:
+        elif screening_results:
             df_result = pd.DataFrame(screening_results)
             df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
