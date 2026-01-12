@@ -72,6 +72,49 @@ def _get_price_cache_key(symbol: str) -> str:
         return "missing"
 
 
+def _get_price_csv_dir_cache_key() -> str:
+    """
+    price_csv 配下の更新を検知するためのキャッシュキー。
+
+    CSVファイルの更新時刻の最大値をキーに含める。
+    """
+
+    try:
+        csv_paths = list(PRICE_CSV_DIR.glob("*.csv"))
+    except FileNotFoundError:
+        return "missing"
+    if not csv_paths:
+        return "empty"
+    max_mtime = max(path.stat().st_mtime_ns for path in csv_paths)
+    return f"{max_mtime}-{len(csv_paths)}"
+
+
+def _get_listed_master_cache_key() -> str:
+    """listed_master.csv の更新を検知するためのキャッシュキー。"""
+
+    path = META_DIR / "listed_master.csv"
+    try:
+        return str(path.stat().st_mtime_ns)
+    except FileNotFoundError:
+        return "missing"
+
+
+@st.cache_data(show_spinner=False)
+def _load_available_symbols(cache_key: str) -> List[str]:
+    """CSV 更新をキーに銘柄一覧をキャッシュする。"""
+
+    _ = cache_key
+    return get_available_symbols()
+
+
+@st.cache_data(show_spinner=False)
+def _load_listed_master_cached(cache_key: str) -> pd.DataFrame:
+    """listed_master の更新をキーに銘柄マスタをキャッシュする。"""
+
+    _ = cache_key
+    return load_listed_master()
+
+
 @st.cache_data(show_spinner=False)
 def _load_price_with_indicators(
     symbol: str, cache_key: str, topix_cache_key: Optional[str] = None
@@ -477,7 +520,8 @@ def main():
     st.sidebar.header("設定")
 
     st.sidebar.subheader("J-Quants からデータ取得")
-    available_symbols = get_available_symbols()
+    price_csv_cache_key = _get_price_csv_dir_cache_key()
+    available_symbols = _load_available_symbols(price_csv_cache_key)
     default_symbol = available_symbols[0] if available_symbols else ""
     query_symbol = st.query_params.get("symbol")
     if isinstance(query_symbol, list):
@@ -663,9 +707,10 @@ def main():
         except Exception as exc:  # broad catch for user feedback
             st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
 
-    symbols = get_available_symbols()
+    symbols = _load_available_symbols(price_csv_cache_key)
     try:
-        listed_df = load_listed_master()
+        listed_master_cache_key = _get_listed_master_cache_key()
+        listed_df = _load_listed_master_cached(listed_master_cache_key)
     except Exception as exc:  # master が無い場合でも動作継続
         st.sidebar.warning(f"銘柄マスタの読み込みに失敗しました: {exc}")
         listed_df = pd.DataFrame(columns=["code", "name", "market"])
