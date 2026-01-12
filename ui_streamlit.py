@@ -97,6 +97,19 @@ def _load_price_with_indicators(
     return df_ind, removed_rows, topix_info
 
 
+@st.cache_data(show_spinner=False)
+def _load_price_for_grid(symbol: str, cache_key: str) -> pd.DataFrame:
+    """
+    グリッド表示向けに軽量な価格データを読み込む。
+
+    cache_key を引数に含めることで、CSV更新時にキャッシュが破棄される。
+    """
+
+    _ = cache_key  # キャッシュ用に参照だけ行う
+    df_daily = load_price_csv(symbol)
+    return df_daily.loc[:, ["date", "close", "volume"]].copy()
+
+
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """主要なテクニカル指標を事前計算する。"""
 
@@ -151,25 +164,27 @@ def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         return df.copy()
 
     df_idx = df.set_index("date")
-    agg_map = {
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }
+    agg_map = {}
+    if "open" in df.columns:
+        agg_map["open"] = "first"
+    if "high" in df.columns:
+        agg_map["high"] = "max"
+    if "low" in df.columns:
+        agg_map["low"] = "min"
+    if "close" in df.columns:
+        agg_map["close"] = "last"
+    if "volume" in df.columns:
+        agg_map["volume"] = "sum"
     if "topix_close" in df.columns:
         agg_map["topix_close"] = "last"
     if "topix_rs" in df.columns:
         agg_map["topix_rs"] = "last"
     if "topix_rs_log" in df.columns:
         agg_map["topix_rs_log"] = "last"
-    resampled = (
-        df_idx.resample(rule)
-        .agg(agg_map)
-        .dropna()
-        .reset_index()
-    )
+    if not agg_map:
+        return df.copy()
+
+    resampled = df_idx.resample(rule).agg(agg_map).dropna().reset_index()
     return resampled
 
 
@@ -391,6 +406,36 @@ def _build_mini_chart(
     df: pd.DataFrame, symbol: str, name: str, timeframe: str, lookback: int
 ) -> Optional[go.Figure]:
     df_resampled = _resample_ohlc(df, timeframe)
+    if df_resampled.empty:
+        return None
+    df_resampled = df_resampled.tail(lookback).copy()
+    if df_resampled.empty:
+        return None
+    df_resampled["date_str"] = df_resampled["date"].dt.strftime("%Y-%m-%d")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df_resampled["date_str"],
+            y=df_resampled["close"],
+            mode="lines",
+            line=dict(color="#1f77b4"),
+            name="終値",
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=220,
+        title=f"{symbol} {name}",
+        showlegend=False,
+    )
+    fig.update_xaxes(type="category", title="")
+    fig.update_yaxes(title="")
+    return fig
+
+
+def _build_mini_chart_from_resampled(
+    df_resampled: pd.DataFrame, symbol: str, name: str, lookback: int
+) -> Optional[go.Figure]:
     if df_resampled.empty:
         return None
     df_resampled = df_resampled.tail(lookback).copy()
@@ -699,18 +744,18 @@ def main():
             grid_symbols = symbols
             if grid_symbols:
                 weekly_volume_map = {}
+                weekly_df_map = {}
                 weekly_volumes = []
                 for symbol in grid_symbols:
                     cache_key = _get_price_cache_key(symbol)
                     try:
-                        grid_df, _, _ = _load_price_with_indicators(
-                            symbol, cache_key, topix_cache_key
-                        )
+                        grid_df = _load_price_for_grid(symbol, cache_key)
                     except Exception:
                         continue
                     weekly_df = _resample_ohlc(grid_df, "weekly")
                     if weekly_df.empty:
                         continue
+                    weekly_df_map[symbol] = weekly_df
                     latest_weekly_vol = weekly_df.iloc[-1]["volume"]
                     if pd.notna(latest_weekly_vol):
                         weekly_volume_map[symbol] = float(latest_weekly_vol)
@@ -771,16 +816,12 @@ def main():
                         for col_idx, symbol in enumerate(row_symbols):
                             with cols[col_idx]:
                                 symbol_name = name_map.get(symbol, "")
-                                cache_key = _get_price_cache_key(symbol)
-                                try:
-                                    grid_df, _, _ = _load_price_with_indicators(
-                                        symbol, cache_key, topix_cache_key
-                                    )
-                                except Exception:
+                                weekly_df = weekly_df_map.get(symbol)
+                                if weekly_df is None:
                                     st.caption(f"{symbol} のデータ取得に失敗しました。")
                                     continue
-                                fig = _build_mini_chart(
-                                    grid_df, symbol, symbol_name, "weekly", lookback
+                                fig = _build_mini_chart_from_resampled(
+                                    weekly_df, symbol, symbol_name, lookback
                                 )
                                 if fig is None:
                                     st.caption(f"{symbol} のチャートを表示できません。")
