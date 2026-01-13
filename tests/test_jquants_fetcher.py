@@ -105,6 +105,29 @@ class NormalizeDailyQuotesTests(unittest.TestCase):
         self.assertEqual(normalized.loc[0, "open"], 100)
         self.assertEqual(normalized.loc[0, "close"], 105)
 
+    def test_applies_adjustment_factor_when_adjusted_columns_missing(self):
+        df_raw = pd.DataFrame(
+            [
+                {
+                    "date": "2024-01-02",
+                    "Open": 100,
+                    "High": 110,
+                    "Low": 90,
+                    "Close": 105,
+                    "Volume": 1000,
+                    "AdjustmentFactor": 0.5,
+                }
+            ]
+        )
+
+        normalized = _normalize_daily_quotes(df_raw, "7203")
+
+        self.assertEqual(normalized.loc[0, "open"], 50)
+        self.assertEqual(normalized.loc[0, "high"], 55)
+        self.assertEqual(normalized.loc[0, "low"], 45)
+        self.assertEqual(normalized.loc[0, "close"], 52.5)
+        self.assertEqual(normalized.loc[0, "volume"], 2000)
+
 
 class NormalizeTopixTests(unittest.TestCase):
     def test_accepts_lowercase_columns(self):

@@ -636,6 +636,22 @@ def main():
             value=False,
             key="full_refresh_universe",
         )
+        min_rows_refresh_enabled = st.checkbox(
+            "データが少ない銘柄を再取得",
+            value=False,
+            key="min_rows_refresh_enabled",
+        )
+        min_rows_refresh: Optional[int] = None
+        if min_rows_refresh_enabled:
+            min_rows_refresh = int(
+                st.number_input(
+                    "再取得判定の最小行数",
+                    min_value=1,
+                    value=200,
+                    step=50,
+                    key="min_rows_refresh",
+                )
+            )
         st.markdown("---")
         st.write("スナップショット → 日次更新フロー")
         st.caption(
@@ -703,6 +719,7 @@ def main():
                             include_custom=include_custom,
                             use_listed_master=universe_source == "listed_all",
                             market_filter="growth" if universe_source == "growth" else "prime_standard",
+                            min_rows_refresh=min_rows_refresh,
                         )
                     else:
                         update_universe(
@@ -710,6 +727,7 @@ def main():
                             full_refresh=full_refresh,
                             use_listed_master=universe_source == "listed_all",
                             market_filter="growth" if universe_source == "growth" else "prime_standard",
+                            min_rows_refresh=min_rows_refresh,
                         )
                     try:
                         update_topix(full_refresh=full_refresh)
