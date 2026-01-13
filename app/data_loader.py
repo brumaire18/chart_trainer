@@ -106,6 +106,15 @@ def _normalize_from_jquants(
         "adjustmentLow",
         "adjustmentClose",
     )
+    adjustment_factor_cols = (
+        "AdjustmentFactor",
+        "adjustmentFactor",
+        "adjustment_factor",
+    )
+    adjustment_factor_col = next(
+        (col for col in adjustment_factor_cols if col in df_raw.columns), None
+    )
+
     if any(col in df_raw.columns for col in adjustment_cols):
         open_col = (
             "AdjO"
@@ -162,17 +171,33 @@ def _normalize_from_jquants(
             else "volume"
         )
 
+    open_series = df_raw[open_col]
+    high_series = df_raw[high_col]
+    low_series = df_raw[low_col]
+    close_series = df_raw[close_col]
+    volume_series = df_raw[vol_col]
+
+    if not any(col in df_raw.columns for col in adjustment_cols) and adjustment_factor_col:
+        adjustment_factor = pd.to_numeric(
+            df_raw[adjustment_factor_col], errors="coerce"
+        ).fillna(1.0)
+        open_series = pd.to_numeric(open_series, errors="coerce") * adjustment_factor
+        high_series = pd.to_numeric(high_series, errors="coerce") * adjustment_factor
+        low_series = pd.to_numeric(low_series, errors="coerce") * adjustment_factor
+        close_series = pd.to_numeric(close_series, errors="coerce") * adjustment_factor
+        volume_series = pd.to_numeric(volume_series, errors="coerce") / adjustment_factor
+
     df = pd.DataFrame(
         {
             "date": df_raw["date"],
             "datetime": pd.to_datetime(df_raw["date"]),
             "code": str(symbol).zfill(4) if symbol is not None else df_raw.get("code"),
             "market": market or df_raw.get("market"),
-            "open": df_raw[open_col],
-            "high": df_raw[high_col],
-            "low": df_raw[low_col],
-            "close": df_raw[close_col],
-            "volume": df_raw[vol_col],
+            "open": open_series,
+            "high": high_series,
+            "low": low_series,
+            "close": close_series,
+            "volume": volume_series,
         }
     )
 

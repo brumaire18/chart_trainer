@@ -531,8 +531,13 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
         df,
         ["AdjVo", "AdjustmentVolume", "adjustmentVolume", "AdjustedVolume", "adjustedVolume"],
     )
+    adjustment_factor_col = _find_column(
+        df,
+        ["AdjustmentFactor", "adjustmentFactor", "adjustment_factor"],
+    )
 
-    if all([adjusted_open, adjusted_high, adjusted_low, adjusted_close]):
+    has_adjusted_cols = all([adjusted_open, adjusted_high, adjusted_low, adjusted_close])
+    if has_adjusted_cols:
         open_col, high_col, low_col, close_col = (
             adjusted_open,
             adjusted_high,
@@ -553,17 +558,33 @@ def _normalize_daily_quotes(df_raw: pd.DataFrame, code: str) -> pd.DataFrame:
     if not vol_col:
         raise JQuantsError("Volume 列が存在しません。")
 
+    open_series = df[open_col]
+    high_series = df[high_col]
+    low_series = df[low_col]
+    close_series = df[close_col]
+    volume_series = df[vol_col]
+
+    if not has_adjusted_cols and adjustment_factor_col:
+        adjustment_factor = pd.to_numeric(
+            df[adjustment_factor_col], errors="coerce"
+        ).fillna(1.0)
+        open_series = pd.to_numeric(open_series, errors="coerce") * adjustment_factor
+        high_series = pd.to_numeric(high_series, errors="coerce") * adjustment_factor
+        low_series = pd.to_numeric(low_series, errors="coerce") * adjustment_factor
+        close_series = pd.to_numeric(close_series, errors="coerce") * adjustment_factor
+        volume_series = pd.to_numeric(volume_series, errors="coerce") / adjustment_factor
+
     normalized = pd.DataFrame(
         {
             "date": df["date"],
             "datetime": pd.to_datetime(df["date"]),
             "code": str(code).zfill(4),
             "market": market,
-            "open": df[open_col],
-            "high": df[high_col],
-            "low": df[low_col],
-            "close": df[close_col],
-            "volume": df[vol_col],
+            "open": open_series,
+            "high": high_series,
+            "low": low_series,
+            "close": close_series,
+            "volume": volume_series,
         }
     )
 
@@ -1240,6 +1261,7 @@ def update_universe_with_anchor_day(
     custom_path: Optional[Path] = None,
     use_listed_master: bool = False,
     market_filter: str = "prime_standard",
+    min_rows_refresh: Optional[int] = None,
 ) -> None:
     """指定曜日のスナップショットを反映したうえで日次データを最新化する。"""
 
@@ -1275,7 +1297,18 @@ def update_universe_with_anchor_day(
             logger.warning("指定日の株価が見つかりませんでした: %s (%s)", code, anchor_str)
 
         try:
-            update_symbol(code, full_refresh=False)
+            force_refresh = False
+            if min_rows_refresh:
+                existing_df = _load_existing_csv(code)
+                if existing_df is not None and len(existing_df) < min_rows_refresh:
+                    logger.info(
+                        "%s の行数が少ないため再取得します (rows=%s, threshold=%s)",
+                        code,
+                        len(existing_df),
+                        min_rows_refresh,
+                    )
+                    force_refresh = True
+            update_symbol(code, full_refresh=force_refresh)
         except Exception:
             logger.exception("%s の日次更新に失敗しました", code)
         time.sleep(0.3)
@@ -1287,6 +1320,7 @@ def update_universe(
     use_listed_master: bool = False,
     append_date: Optional[str] = None,
     market_filter: str = "prime_standard",
+    min_rows_refresh: Optional[int] = None,
 ) -> None:
     target_codes = codes or build_universe(
         use_listed_master=use_listed_master,
@@ -1314,6 +1348,18 @@ def update_universe(
 
     for code in target_codes:
         needs_symbol_update = full_refresh or append_date is not None or latest_snapshot_dt is None
+        force_refresh = False
+        if min_rows_refresh and not full_refresh:
+            existing_df = _load_existing_csv(code)
+            if existing_df is not None and len(existing_df) < min_rows_refresh:
+                logger.info(
+                    "%s の行数が少ないため再取得します (rows=%s, threshold=%s)",
+                    code,
+                    len(existing_df),
+                    min_rows_refresh,
+                )
+                needs_symbol_update = True
+                force_refresh = True
         if not needs_symbol_update:
             prev_end_str = previous_meta_end.get(code)
             prev_end_dt = pd.to_datetime(prev_end_str).date() if prev_end_str else None
@@ -1330,7 +1376,7 @@ def update_universe(
         rate_limit_retry = 0
         while True:
             try:
-                update_symbol(code, full_refresh=full_refresh)
+                update_symbol(code, full_refresh=full_refresh or force_refresh)
                 break
             except JQuantsRateLimitError as exc:  # pragma: no cover - 継続実行
                 rate_limit_retry += 1
@@ -1412,6 +1458,11 @@ if __name__ == "__main__":
         action="store_true",
         help="銘柄の更新に加えて TOPIX 指数も保存する",
     )
+    parser.add_argument(
+        "--min-rows-refresh",
+        type=int,
+        help="既存データが指定行数より少ない銘柄は再取得する",
+    )
 
     args = parser.parse_args()
 
@@ -1431,6 +1482,7 @@ if __name__ == "__main__":
         use_listed_master=args.use_listed_master,
         append_date=args.append_date,
         market_filter=args.market,
+        min_rows_refresh=args.min_rows_refresh,
     )
 
     if args.include_topix:
