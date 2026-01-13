@@ -237,6 +237,21 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df_ind
 
 
+def _build_trading_rangebreaks(dates: pd.Series) -> List[dict]:
+    """休場日を除外するための rangebreaks を作成する。"""
+
+    if dates.empty:
+        return []
+    date_index = pd.DatetimeIndex(pd.to_datetime(dates).dt.normalize().unique()).sort_values()
+    if date_index.empty:
+        return []
+    full_range = pd.date_range(start=date_index[0], end=date_index[-1], freq="D")
+    missing_dates = full_range.difference(date_index)
+    if missing_dates.empty:
+        return []
+    return [dict(values=list(missing_dates.to_pydatetime()))]
+
+
 def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     """日足を週足・月足にリサンプリングする。"""
 
@@ -522,7 +537,8 @@ def _build_mini_chart(
         title=f"{symbol} {name}",
         showlegend=False,
     )
-    fig.update_xaxes(tickformat="%y/%m/%d", nticks=6, title="")
+    rangebreaks = _build_trading_rangebreaks(df_resampled["date"])
+    fig.update_xaxes(tickformat="%y/%m/%d", nticks=6, title="", rangebreaks=rangebreaks)
     fig.update_yaxes(title="")
     return fig
 
@@ -985,6 +1001,7 @@ def main():
         df_problem = df_resampled.tail(lookback_window).copy()
         df_problem = _compute_indicators(df_problem)
         df_problem["date_str"] = df_problem["date"].dt.strftime("%y/%m/%d")
+        trading_rangebreaks = _build_trading_rangebreaks(df_problem["date"])
 
         title_name = name_map.get(selected_symbol, "")
         title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
@@ -1117,7 +1134,11 @@ def main():
                 xaxis_title="Date",
                 margin=dict(l=10, r=10, t=40, b=10),
             )
-            price_fig.update_xaxes(tickformat="%y/%m/%d", nticks=6)
+            price_fig.update_xaxes(
+                tickformat="%y/%m/%d",
+                nticks=6,
+                rangebreaks=trading_rangebreaks,
+            )
 
         if chart_type == "pnf":
             price_fig.update_layout(margin=dict(l=10, r=10, t=40, b=10))
@@ -1214,7 +1235,11 @@ def main():
             margin=dict(l=10, r=10, t=40, b=10),
             legend=dict(orientation="h"),
         )
-        osc_fig.update_xaxes(tickformat="%y/%m/%d", nticks=6)
+        osc_fig.update_xaxes(
+            tickformat="%y/%m/%d",
+            nticks=6,
+            rangebreaks=trading_rangebreaks,
+        )
         osc_fig.update_yaxes(title_text="MACD / RS", secondary_y=True)
         st.plotly_chart(osc_fig, use_container_width=True)
 
