@@ -1568,8 +1568,8 @@ def main():
                             canslim_ok = False
 
                     if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
-                    weekly_vol_ok = True
-                    weekly_volume = None
+                        weekly_vol_ok = True
+                        weekly_volume = None
                     if apply_weekly_volume_quartile:
                         weekly_volume = weekly_volume_map.get(code_str)
                         if weekly_volume_threshold is None or weekly_volume is None:
