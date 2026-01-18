@@ -200,12 +200,17 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df_ind = df.copy()
     df_ind["sma20"] = df_ind["close"].rolling(20).mean()
     df_ind["sma50"] = df_ind["close"].rolling(50).mean()
+    df_ind["sma200"] = df_ind["close"].rolling(200).mean()
 
-    # ボリンジャーバンド (20, 2σ)
+    # ボリンジャーバンド (20, 1〜3σ)
     bb_basis = df_ind["close"].rolling(20).mean()
     bb_std = df_ind["close"].rolling(20).std()
-    df_ind["bb_upper"] = bb_basis + 2 * bb_std
-    df_ind["bb_lower"] = bb_basis - 2 * bb_std
+    df_ind["bb_upper_1"] = bb_basis + 1 * bb_std
+    df_ind["bb_lower_1"] = bb_basis - 1 * bb_std
+    df_ind["bb_upper_2"] = bb_basis + 2 * bb_std
+    df_ind["bb_lower_2"] = bb_basis - 2 * bb_std
+    df_ind["bb_upper_3"] = bb_basis + 3 * bb_std
+    df_ind["bb_lower_3"] = bb_basis - 3 * bb_std
 
     # RSI (14)
     delta = df_ind["close"].diff()
@@ -545,7 +550,16 @@ def _build_mini_chart(
     if df_resampled.empty:
         return None
     df_resampled["date_str"] = df_resampled["date"].dt.strftime("%y/%m/%d")
-    fig = go.Figure()
+    df_resampled["ma25"] = df_resampled["close"].rolling(25).mean()
+    df_resampled["ma50"] = df_resampled["close"].rolling(50).mean()
+    df_resampled["ma200"] = df_resampled["close"].rolling(200).mean()
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.7, 0.3],
+    )
     fig.add_trace(
         go.Scatter(
             x=df_resampled["date"],
@@ -553,11 +567,61 @@ def _build_mini_chart(
             mode="lines",
             line=dict(color="#1f77b4"),
             name="終値",
-        )
+        ),
+        row=1,
+        col=1,
     )
+    if df_resampled["ma25"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_resampled["date"],
+                y=df_resampled["ma25"],
+                mode="lines",
+                line=dict(color="#ff7f0e", width=1),
+                name="MA25",
+            ),
+            row=1,
+            col=1,
+        )
+    if df_resampled["ma50"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_resampled["date"],
+                y=df_resampled["ma50"],
+                mode="lines",
+                line=dict(color="#2ca02c", width=1),
+                name="MA50",
+            ),
+            row=1,
+            col=1,
+        )
+    if df_resampled["ma200"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_resampled["date"],
+                y=df_resampled["ma200"],
+                mode="lines",
+                line=dict(color="#7f7f7f", width=1),
+                name="MA200",
+            ),
+            row=1,
+            col=1,
+        )
+    if "volume" in df_resampled.columns:
+        fig.add_trace(
+            go.Bar(
+                x=df_resampled["date"],
+                y=df_resampled["volume"],
+                name="出来高",
+                marker_color="rgba(100,149,237,0.6)",
+                opacity=0.7,
+            ),
+            row=2,
+            col=1,
+        )
     fig.update_layout(
         margin=dict(l=10, r=10, t=30, b=10),
-        height=220,
+        height=240,
         title=f"{symbol} {name}",
         showlegend=False,
     )
@@ -579,7 +643,16 @@ def _build_mini_chart_from_resampled(
     df_resampled = df_resampled.tail(lookback).copy()
     if df_resampled.empty:
         return None
-    fig = go.Figure()
+    df_resampled["ma25"] = df_resampled["close"].rolling(25).mean()
+    df_resampled["ma50"] = df_resampled["close"].rolling(50).mean()
+    df_resampled["ma200"] = df_resampled["close"].rolling(200).mean()
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.7, 0.3],
+    )
     fig.add_trace(
         go.Scatter(
             x=df_resampled["date"],
@@ -587,12 +660,62 @@ def _build_mini_chart_from_resampled(
             mode="lines",
             line=dict(color="#1f77b4"),
             name="終値",
-        )
+        ),
+        row=1,
+        col=1,
     )
+    if df_resampled["ma25"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_resampled["date"],
+                y=df_resampled["ma25"],
+                mode="lines",
+                line=dict(color="#ff7f0e", width=1),
+                name="MA25",
+            ),
+            row=1,
+            col=1,
+        )
+    if df_resampled["ma50"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_resampled["date"],
+                y=df_resampled["ma50"],
+                mode="lines",
+                line=dict(color="#2ca02c", width=1),
+                name="MA50",
+            ),
+            row=1,
+            col=1,
+        )
+    if df_resampled["ma200"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=df_resampled["date"],
+                y=df_resampled["ma200"],
+                mode="lines",
+                line=dict(color="#7f7f7f", width=1),
+                name="MA200",
+            ),
+            row=1,
+            col=1,
+        )
+    if "volume" in df_resampled.columns:
+        fig.add_trace(
+            go.Bar(
+                x=df_resampled["date"],
+                y=df_resampled["volume"],
+                name="出来高",
+                marker_color="rgba(100,149,237,0.6)",
+                opacity=0.7,
+            ),
+            row=2,
+            col=1,
+        )
     title_text = f"{symbol} {name}" if show_title else ""
     fig.update_layout(
         margin=dict(l=10, r=10, t=30, b=10),
-        height=220,
+        height=240,
         title=title_text,
         showlegend=False,
     )
@@ -877,6 +1000,7 @@ def main():
     st.sidebar.write("テクニカル表示")
     show_sma20 = st.sidebar.checkbox("SMA 20", value=True)
     show_sma50 = st.sidebar.checkbox("SMA 50", value=False)
+    show_sma200 = st.sidebar.checkbox("SMA 200", value=False)
     show_bbands = st.sidebar.checkbox("ボリンジャーバンド", value=False)
     show_ichimoku = st.sidebar.checkbox("一目均衡表", value=False)
 
@@ -1092,7 +1216,7 @@ def main():
             )
 
         if chart_type != "pnf":
-            if show_sma20:
+            if show_sma20 and df_problem["sma20"].notna().any():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
@@ -1103,7 +1227,7 @@ def main():
                     row=1,
                     col=1,
                 )
-            if show_sma50:
+            if show_sma50 and df_problem["sma50"].notna().any():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
@@ -1114,12 +1238,43 @@ def main():
                     row=1,
                     col=1,
                 )
-            if show_bbands:
+            if show_sma200 and df_problem["sma200"].notna().any():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
-                        y=df_problem["bb_upper"],
-                        name="BB Upper",
+                        y=df_problem["sma200"],
+                        name="SMA 200",
+                        line=dict(color="#7f7f7f", dash="dash"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+            if show_bbands and df_problem["bb_upper_1"].notna().any():
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["bb_upper_1"],
+                        name="BB +1σ",
+                        line=dict(color="rgba(150,150,150,0.4)", dash="dot"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["bb_lower_1"],
+                        name="BB -1σ",
+                        line=dict(color="rgba(150,150,150,0.4)", dash="dot"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["bb_upper_2"],
+                        name="BB +2σ",
                         line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
                     ),
                     row=1,
@@ -1128,11 +1283,31 @@ def main():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
-                        y=df_problem["bb_lower"],
-                        name="BB Lower",
+                        y=df_problem["bb_lower_2"],
+                        name="BB -2σ",
                         line=dict(color="rgba(180,180,180,0.6)", dash="dot"),
                         fill="tonexty",
                         fillcolor="rgba(180,180,180,0.1)",
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["bb_upper_3"],
+                        name="BB +3σ",
+                        line=dict(color="rgba(120,120,120,0.35)", dash="dot"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["bb_lower_3"],
+                        name="BB -3σ",
+                        line=dict(color="rgba(120,120,120,0.35)", dash="dot"),
                     ),
                     row=1,
                     col=1,
