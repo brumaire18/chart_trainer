@@ -555,11 +555,10 @@ def _build_mini_chart_from_resampled(
     df_resampled = df_resampled.tail(lookback).copy()
     if df_resampled.empty:
         return None
-    df_resampled["date_str"] = df_resampled["date"].dt.strftime("%Y-%m-%d")
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=df_resampled["date_str"],
+            x=df_resampled["date"],
             y=df_resampled["close"],
             mode="lines",
             line=dict(color="#1f77b4"),
@@ -573,7 +572,8 @@ def _build_mini_chart_from_resampled(
         title=title_text,
         showlegend=False,
     )
-    fig.update_xaxes(type="category", title="")
+    rangebreaks = _build_trading_rangebreaks(df_resampled["date"])
+    fig.update_xaxes(tickformat="%Y-%m-%d", title="", rangebreaks=rangebreaks)
     fig.update_yaxes(title="")
     return fig
 
@@ -1708,8 +1708,7 @@ def main():
                     chart_df = chart_df.tail(90)
                     if chart_df.empty:
                         continue
-
-                    chart_df["date_str"] = chart_df["date"].dt.strftime("%Y-%m-%d")
+                    preview_rangebreaks = _build_trading_rangebreaks(chart_df["date"])
 
                     left, right = st.columns([1, 3])
                     with left:
@@ -1719,7 +1718,7 @@ def main():
                         preview_fig = go.Figure()
                         preview_fig.add_trace(
                             go.Scatter(
-                                x=chart_df["date_str"],
+                                x=chart_df["date"],
                                 y=chart_df["close"],
                                 mode="lines",
                                 line=dict(color="#1f77b4"),
@@ -1732,7 +1731,10 @@ def main():
                             xaxis_title="日付",
                             yaxis_title="終値",
                         )
-                        preview_fig.update_xaxes(type="category")
+                        preview_fig.update_xaxes(
+                            tickformat="%Y-%m-%d",
+                            rangebreaks=preview_rangebreaks,
+                        )
                         st.plotly_chart(preview_fig, use_container_width=True)
         else:
             reason_counter = st.session_state.get("screening_reason_counter", Counter())
@@ -1847,11 +1849,11 @@ def main():
             if df_view.empty:
                 st.warning("図解に必要な期間のデータが不足しています。")
             else:
-                df_view["date_str"] = df_view["date"].dt.strftime("%Y-%m-%d")
+                breakdown_rangebreaks = _build_trading_rangebreaks(df_view["date"])
                 fig = go.Figure()
                 fig.add_trace(
                     go.Candlestick(
-                        x=df_view["date_str"],
+                        x=df_view["date"],
                         open=df_view["open"],
                         high=df_view["high"],
                         low=df_view["low"],
@@ -1891,6 +1893,10 @@ def main():
                     xaxis_title="Date",
                     yaxis_title="Price",
                     margin=dict(l=20, r=20, t=50, b=20),
+                )
+                fig.update_xaxes(
+                    tickformat="%Y-%m-%d",
+                    rangebreaks=breakdown_rangebreaks,
                 )
                 st.plotly_chart(fig, use_container_width=True)
         elif backtest_results is not None:
