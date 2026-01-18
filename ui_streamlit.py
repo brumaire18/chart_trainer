@@ -234,6 +234,30 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     direction = price_diff.apply(lambda x: 1 if x > 0 else -1 if x < 0 else 0)
     df_ind["obv"] = (direction * df_ind["volume"].fillna(0)).cumsum()
 
+    # 一目均衡表
+    if {"high", "low", "close"}.issubset(df_ind.columns):
+        high9 = df_ind["high"].rolling(9).max()
+        low9 = df_ind["low"].rolling(9).min()
+        df_ind["ichimoku_tenkan"] = (high9 + low9) / 2
+
+        high26 = df_ind["high"].rolling(26).max()
+        low26 = df_ind["low"].rolling(26).min()
+        df_ind["ichimoku_kijun"] = (high26 + low26) / 2
+
+        df_ind["ichimoku_senkou_a"] = (
+            (df_ind["ichimoku_tenkan"] + df_ind["ichimoku_kijun"]) / 2
+        ).shift(26)
+        high52 = df_ind["high"].rolling(52).max()
+        low52 = df_ind["low"].rolling(52).min()
+        df_ind["ichimoku_senkou_b"] = ((high52 + low52) / 2).shift(26)
+        df_ind["ichimoku_chikou"] = df_ind["close"].shift(-26)
+    else:
+        df_ind["ichimoku_tenkan"] = pd.NA
+        df_ind["ichimoku_kijun"] = pd.NA
+        df_ind["ichimoku_senkou_a"] = pd.NA
+        df_ind["ichimoku_senkou_b"] = pd.NA
+        df_ind["ichimoku_chikou"] = pd.NA
+
     return df_ind
 
 
@@ -854,6 +878,7 @@ def main():
     show_sma20 = st.sidebar.checkbox("SMA 20", value=True)
     show_sma50 = st.sidebar.checkbox("SMA 50", value=False)
     show_bbands = st.sidebar.checkbox("ボリンジャーバンド", value=False)
+    show_ichimoku = st.sidebar.checkbox("一目均衡表", value=False)
 
     st.sidebar.write("オシレーター")
     show_rsi = st.sidebar.checkbox("RSI (14)", value=True)
@@ -1113,6 +1138,60 @@ def main():
                     col=1,
                 )
 
+            if show_ichimoku and df_problem["ichimoku_tenkan"].notna().any():
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["ichimoku_tenkan"],
+                        name="転換線",
+                        line=dict(color="#ff7f0e", width=1.5),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["ichimoku_kijun"],
+                        name="基準線",
+                        line=dict(color="#1f77b4", width=1.5),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["ichimoku_chikou"],
+                        name="遅行線",
+                        line=dict(color="#2ca02c", width=1.2, dash="dot"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["ichimoku_senkou_b"],
+                        name="先行スパンB",
+                        line=dict(color="rgba(140,86,75,0.6)", width=1),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                price_fig.add_trace(
+                    go.Scatter(
+                        x=df_problem["date"],
+                        y=df_problem["ichimoku_senkou_a"],
+                        name="先行スパンA",
+                        line=dict(color="rgba(44,160,44,0.6)", width=1),
+                        fill="tonexty",
+                        fillcolor="rgba(44,160,44,0.15)",
+                    ),
+                    row=1,
+                    col=1,
+                )
+
             if show_volume:
                 price_fig.add_trace(
                     go.Bar(
@@ -1222,7 +1301,7 @@ def main():
                         x=df_problem["date"],
                         y=df_problem["topix_rs"],
                         name="TOPIX RS",
-                        line=dict(color="#111111", dash="solid"),
+                        line=dict(color="#17becf", dash="solid"),
                     ),
                     secondary_y=True,
                 )
