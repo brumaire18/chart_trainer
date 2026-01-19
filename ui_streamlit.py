@@ -18,6 +18,11 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
+from app.pair_trading import (
+    compute_spread_series,
+    evaluate_pair_candidates,
+    generate_pair_candidates,
+)
 from app.backtest import run_canslim_backtest, scan_canslim_patterns
 from app.jquants_fetcher import (
     append_quotes_for_date,
@@ -1015,8 +1020,8 @@ def main():
         help="TOPIXとの相対力(RS=株価/ TOPIX)をオシレーター領域に描画します。",
     )
 
-    tab_chart, tab_screen, tab_backtest, tab_breadth = st.tabs(
-        ["チャート表示", "スクリーナー", "バックテスト", "マーケットブレッドス"]
+    tab_chart, tab_screen, tab_pair, tab_backtest, tab_breadth = st.tabs(
+        ["チャート表示", "スクリーナー", "ペアトレード", "バックテスト", "マーケットブレッドス"]
     )
 
     with tab_chart:
@@ -2006,6 +2011,194 @@ def main():
                 )
             else:
                 st.info("条件に合致する銘柄はありませんでした。条件を緩めて再検索してください。")
+
+    with tab_pair:
+        st.subheader("ペアトレード")
+        st.caption("業種フィルタで候補を絞り込み、統計指標とスプレッドの推移を確認します。")
+
+        if "pair_results" not in st.session_state:
+            st.session_state["pair_results"] = None
+
+        sector17_values = (
+            sorted(listed_df["sector17"].dropna().astype(str).unique().tolist())
+            if "sector17" in listed_df.columns
+            else []
+        )
+        sector33_values = (
+            sorted(listed_df["sector33"].dropna().astype(str).unique().tolist())
+            if "sector33" in listed_df.columns
+            else []
+        )
+
+        pair_filters = st.columns([1, 1, 1])
+        with pair_filters[0]:
+            sector17_choice = st.selectbox(
+                "sector17 フィルタ",
+                options=["指定なし", *sector17_values],
+            )
+        with pair_filters[1]:
+            sector33_choice = st.selectbox(
+                "sector33 フィルタ",
+                options=["指定なし", *sector33_values],
+            )
+        with pair_filters[2]:
+            max_pairs = st.number_input(
+                "候補数上限",
+                min_value=10,
+                max_value=300,
+                value=50,
+                step=5,
+            )
+
+        run_pairs = st.button("ペア候補を生成", type="primary")
+        if run_pairs:
+            with st.spinner("ペア候補を評価しています..."):
+                sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
+                sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
+                pair_candidates = generate_pair_candidates(
+                    listed_df=listed_df,
+                    symbols=symbols,
+                    sector17=sector17_filter,
+                    sector33=sector33_filter,
+                    max_pairs=int(max_pairs),
+                )
+                if not pair_candidates:
+                    st.warning("条件に合致するペア候補がありません。業種フィルタを調整してください。")
+                    st.session_state["pair_results"] = pd.DataFrame()
+                else:
+                    results_df = evaluate_pair_candidates(pair_candidates)
+                    st.session_state["pair_results"] = results_df
+
+        pair_results = st.session_state.get("pair_results")
+        if pair_results is None:
+            st.info("条件を指定して『ペア候補を生成』を押してください。")
+        elif pair_results.empty:
+            st.info("有効なペア候補が見つかりませんでした。")
+        else:
+            display_df = pair_results.copy()
+            display_df["pair_label"] = display_df.apply(
+                lambda row: (
+                    f"{row['symbol_a']} ({name_map.get(row['symbol_a'], '名称未登録')}) / "
+                    f"{row['symbol_b']} ({name_map.get(row['symbol_b'], '名称未登録')})"
+                ),
+                axis=1,
+            )
+            display_df = display_df.sort_values("p_value", ascending=True)
+            table_df = pd.DataFrame(
+                {
+                    "ペア": display_df["pair_label"],
+                    "p値": display_df["p_value"],
+                    "半減期": display_df["half_life"],
+                    "β": display_df["beta"],
+                    "スプレッド平均": display_df["spread_mean"],
+                    "スプレッド標準偏差": display_df["spread_std"],
+                    "最新スプレッド": display_df["spread_latest"],
+                    "最新Zスコア": display_df["zscore_latest"],
+                }
+            )
+            table_df = table_df.round(
+                {
+                    "p値": 4,
+                    "半減期": 2,
+                    "β": 3,
+                    "スプレッド平均": 4,
+                    "スプレッド標準偏差": 4,
+                    "最新スプレッド": 4,
+                    "最新Zスコア": 2,
+                }
+            )
+            st.dataframe(table_df, use_container_width=True)
+
+            selected_label = st.selectbox(
+                "可視化するペア",
+                options=table_df["ペア"].tolist(),
+            )
+            selected_row = display_df.loc[display_df["pair_label"] == selected_label].iloc[0]
+
+            signal_cols = st.columns(2)
+            with signal_cols[0]:
+                entry_threshold = st.number_input(
+                    "エントリー閾値 (Zスコア)",
+                    min_value=0.5,
+                    max_value=5.0,
+                    value=2.0,
+                    step=0.1,
+                )
+            with signal_cols[1]:
+                exit_threshold = st.number_input(
+                    "エグジット閾値 (Zスコア)",
+                    min_value=0.0,
+                    max_value=5.0,
+                    value=0.5,
+                    step=0.1,
+                )
+
+            df_pair, pair_metrics = compute_spread_series(
+                selected_row["symbol_a"], selected_row["symbol_b"]
+            )
+            if df_pair.empty:
+                st.warning("スプレッドを計算するためのデータが不足しています。")
+            else:
+                df_pair["date_str"] = df_pair["date"].dt.strftime("%Y-%m-%d")
+                rangebreaks = _build_trading_rangebreaks(df_pair["date"])
+                fig_pair = make_subplots(
+                    rows=2,
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.08,
+                    row_heights=[0.55, 0.45],
+                )
+                fig_pair.add_trace(
+                    go.Scatter(
+                        x=df_pair["date_str"],
+                        y=df_pair["spread"],
+                        mode="lines",
+                        name="スプレッド",
+                        line=dict(color="#1f77b4"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                if pair_metrics:
+                    fig_pair.add_hline(
+                        y=pair_metrics.get("spread_mean", 0.0),
+                        line=dict(color="#888888", dash="dash"),
+                        row=1,
+                        col=1,
+                    )
+                fig_pair.add_trace(
+                    go.Scatter(
+                        x=df_pair["date_str"],
+                        y=df_pair["zscore"],
+                        mode="lines",
+                        name="Zスコア",
+                        line=dict(color="#ff7f0e"),
+                    ),
+                    row=2,
+                    col=1,
+                )
+                for level, color, label in (
+                    (entry_threshold, "#d62728", "エントリー上限"),
+                    (-entry_threshold, "#d62728", "エントリー下限"),
+                    (exit_threshold, "#2ca02c", "エグジット上限"),
+                    (-exit_threshold, "#2ca02c", "エグジット下限"),
+                ):
+                    fig_pair.add_hline(
+                        y=level,
+                        line=dict(color=color, dash="dash"),
+                        annotation_text=label,
+                        row=2,
+                        col=1,
+                    )
+                fig_pair.update_layout(
+                    height=700,
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    legend=dict(orientation="h"),
+                )
+                fig_pair.update_xaxes(type="category", rangebreaks=rangebreaks)
+                fig_pair.update_yaxes(title_text="スプレッド", row=1, col=1)
+                fig_pair.update_yaxes(title_text="Zスコア", row=2, col=1)
+                st.plotly_chart(fig_pair, use_container_width=True)
 
     with tab_backtest:
         st.subheader("CAN-SLIM バックテスト")

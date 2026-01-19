@@ -5,3 +5,4 @@ plotly
 SQLAlchemy
 requests
 openai
+statsmodels
