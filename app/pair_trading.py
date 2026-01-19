@@ -1,6 +1,9 @@
 """Pair trading utilities for generating candidates and evaluating spreads."""
 
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from itertools import combinations, islice, product
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -9,52 +12,67 @@ from statsmodels.tsa.stattools import adfuller
 
 
 def generate_pairs_by_sector(
-    listed_master_df: pd.DataFrame,
+    listed_master_df: Optional[pd.DataFrame] = None,
+    sector_col: Optional[str] = None,
     min_symbols: int = 2,
+    max_pairs_per_sector: int = 50,
 ) -> pd.DataFrame:
     """Generate pair candidates using sector17/sector33 columns.
 
     Args:
         listed_master_df: DataFrame that includes code/name and sector columns.
+            When omitted, listed_master.csv is loaded automatically.
+        sector_col: Target sector column name. If None, sector17/sector33 are used.
         min_symbols: Minimum symbols per sector to generate pairs.
+        max_pairs_per_sector: Maximum pairs to generate per sector.
 
     Returns:
         DataFrame with pair metadata (pair name, symbols, sector info).
     """
     if min_symbols < 2:
         raise ValueError("min_symbols must be >= 2")
+    if max_pairs_per_sector < 1:
+        raise ValueError("max_pairs_per_sector must be >= 1")
 
-    sector_cols = [col for col in ["sector17", "sector33"] if col in listed_master_df.columns]
-    if not sector_cols:
-        raise ValueError("listed_master_df must contain sector17 or sector33 column")
+    if listed_master_df is None:
+        from app.jquants_fetcher import load_listed_master
 
-    pairs: List[Dict[str, object]] = []
+        listed_master_df = load_listed_master()
+
     df = listed_master_df.copy()
     if "code" not in df.columns:
         raise ValueError("listed_master_df must contain 'code' column")
 
-    df["code"] = df["code"].astype(str)
+    available_sector_cols = [col for col in ["sector17", "sector33"] if col in df.columns]
+    if sector_col:
+        sector_cols = [sector_col] if sector_col in df.columns else []
+    else:
+        sector_cols = available_sector_cols
+    if not sector_cols:
+        raise ValueError("listed_master_df must contain sector17 or sector33 column")
+
+    pairs: List[Dict[str, object]] = []
+    df["code"] = df["code"].astype(str).str.zfill(4)
     name_map = df.set_index("code")["name"].to_dict() if "name" in df.columns else {}
 
-    for sector_col in sector_cols:
-        sector_df = df.dropna(subset=[sector_col, "code"])
-        for sector_value, group in sector_df.groupby(sector_col):
+    for resolved_sector_col in sector_cols:
+        sector_df = df.dropna(subset=[resolved_sector_col, "code"])
+        for sector_value, group in sector_df.groupby(resolved_sector_col):
             codes = group["code"].astype(str).tolist()
             if len(codes) < min_symbols:
                 continue
-            for idx, code_x in enumerate(codes[:-1]):
-                for code_y in codes[idx + 1 :]:
-                    pairs.append(
-                        {
-                            "pair": f"{code_x}-{code_y}",
-                            "symbol_x": code_x,
-                            "symbol_y": code_y,
-                            "name_x": name_map.get(code_x),
-                            "name_y": name_map.get(code_y),
-                            "sector_type": sector_col,
-                            "sector_code": sector_value,
-                        }
-                    )
+            for code_x, code_y in islice(combinations(codes, 2), max_pairs_per_sector):
+                pairs.append(
+                    {
+                        "pair": f"{code_x}-{code_y}",
+                        "symbol_x": code_x,
+                        "symbol_y": code_y,
+                        "name_x": name_map.get(code_x),
+                        "name_y": name_map.get(code_y),
+                        "sector_type": resolved_sector_col,
+                        "sector_code": sector_value,
+                    }
+                )
 
     return pd.DataFrame(pairs)
 
@@ -205,13 +223,6 @@ def evaluate_pairs(
         results.append(payload)
 
     return pd.DataFrame(results)
-from itertools import combinations, islice
-from typing import Iterable, List, Optional, Tuple
-
-import warnings
-
-import numpy as np
-import pandas as pd
 
 try:
     from statsmodels.tsa.stattools import coint
@@ -222,6 +233,234 @@ from app.data_loader import load_price_csv
 
 
 MIN_PAIR_SAMPLES = 120
+
+
+@dataclass(frozen=True)
+class PairTradeConfig:
+    """Configuration for pair trading backtests."""
+
+    lookback: int = 60
+    entry_z: float = 2.0
+    exit_z: float = 0.5
+    stop_z: float = 3.5
+    max_holding_days: int = 20
+
+
+def backtest_pairs(
+    pairs: Union[Iterable[Tuple[str, str]], pd.DataFrame],
+    config: PairTradeConfig,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Backtest pair trading strategy for multiple pairs."""
+    trades: List[Dict[str, object]] = []
+    pair_rows = _normalize_pair_list(pairs)
+
+    for symbol_x, symbol_y, pair_name in pair_rows:
+        df_pair = _prepare_pair_prices(symbol_x, symbol_y, start_date, end_date)
+        if len(df_pair) <= config.lookback:
+            continue
+        trades.extend(_backtest_single_pair(df_pair, symbol_x, symbol_y, pair_name, config))
+
+    trades_df = pd.DataFrame(trades)
+    summary_df = _summarize_trades(trades_df)
+    return trades_df, summary_df
+
+
+def optimize_pair_trade_parameters(
+    pairs: Union[Iterable[Tuple[str, str]], pd.DataFrame],
+    param_grid: Dict[str, List[float]],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    min_trades: int = 5,
+) -> pd.DataFrame:
+    """Grid search for pair trading parameters."""
+    grid_keys = ["lookback", "entry_z", "exit_z", "stop_z", "max_holding_days"]
+    for key in grid_keys:
+        if key not in param_grid:
+            raise ValueError(f"param_grid must include '{key}'")
+
+    results: List[Dict[str, object]] = []
+    for values in product(*(param_grid[key] for key in grid_keys)):
+        config = PairTradeConfig(
+            lookback=int(values[0]),
+            entry_z=float(values[1]),
+            exit_z=float(values[2]),
+            stop_z=float(values[3]),
+            max_holding_days=int(values[4]),
+        )
+        trades_df, _ = backtest_pairs(
+            pairs,
+            config=config,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        trade_count = len(trades_df)
+        if trade_count < min_trades:
+            continue
+        win_rate = float((trades_df["pnl"] > 0).mean()) if trade_count else 0.0
+        total_pnl = float(trades_df["pnl"].sum()) if trade_count else 0.0
+        avg_pnl = float(trades_df["pnl"].mean()) if trade_count else 0.0
+        results.append(
+            {
+                "lookback": config.lookback,
+                "entry_z": config.entry_z,
+                "exit_z": config.exit_z,
+                "stop_z": config.stop_z,
+                "max_holding_days": config.max_holding_days,
+                "trade_count": trade_count,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "avg_pnl": avg_pnl,
+            }
+        )
+    if not results:
+        return pd.DataFrame()
+    return pd.DataFrame(results).sort_values("total_pnl", ascending=False).reset_index(drop=True)
+
+
+def _normalize_pair_list(
+    pairs: Union[Iterable[Tuple[str, str]], pd.DataFrame],
+) -> List[Tuple[str, str, str]]:
+    if isinstance(pairs, pd.DataFrame):
+        if {"symbol_x", "symbol_y"}.issubset(pairs.columns):
+            source = pairs
+            symbol_x_col = "symbol_x"
+            symbol_y_col = "symbol_y"
+            pair_col = "pair" if "pair" in pairs.columns else None
+        elif {"symbol_a", "symbol_b"}.issubset(pairs.columns):
+            source = pairs
+            symbol_x_col = "symbol_a"
+            symbol_y_col = "symbol_b"
+            pair_col = None
+        else:
+            raise ValueError("pairs DataFrame must include symbol_x/symbol_y or symbol_a/symbol_b")
+        return [
+            (
+                str(row[symbol_x_col]).zfill(4),
+                str(row[symbol_y_col]).zfill(4),
+                str(row[pair_col]) if pair_col and pd.notna(row[pair_col]) else None,
+            )
+            for _, row in source.iterrows()
+        ]
+
+    normalized = []
+    for pair in pairs:
+        if len(pair) != 2:
+            raise ValueError("pairs must be tuples of (symbol_x, symbol_y)")
+        symbol_x, symbol_y = pair
+        normalized.append((str(symbol_x).zfill(4), str(symbol_y).zfill(4), None))
+    return normalized
+
+
+def _prepare_pair_prices(
+    symbol_x: str,
+    symbol_y: str,
+    start_date: Optional[str],
+    end_date: Optional[str],
+) -> pd.DataFrame:
+    df_x = load_price_csv(symbol_x).loc[:, ["date", "close"]].rename(columns={"close": "close_x"})
+    df_y = load_price_csv(symbol_y).loc[:, ["date", "close"]].rename(columns={"close": "close_y"})
+    df_pair = pd.merge(df_x, df_y, on="date", how="inner").dropna()
+    df_pair = df_pair[(df_pair["close_x"] > 0) & (df_pair["close_y"] > 0)]
+    if start_date:
+        df_pair = df_pair[df_pair["date"] >= pd.to_datetime(start_date)]
+    if end_date:
+        df_pair = df_pair[df_pair["date"] <= pd.to_datetime(end_date)]
+    return df_pair.sort_values("date").reset_index(drop=True)
+
+
+def _backtest_single_pair(
+    df_pair: pd.DataFrame,
+    symbol_x: str,
+    symbol_y: str,
+    pair_name: Optional[str],
+    config: PairTradeConfig,
+) -> List[Dict[str, object]]:
+    trades: List[Dict[str, object]] = []
+    position = 0
+    entry_idx = None
+    entry_spread = None
+    entry_z = None
+
+    for idx in range(config.lookback, len(df_pair)):
+        window = df_pair.iloc[idx - config.lookback : idx]
+        beta, c = estimate_beta_ols(window["close_x"], window["close_y"])
+        if np.isnan(beta) or np.isnan(c):
+            continue
+        spread_window = compute_spread(window["close_x"], window["close_y"], beta, c)
+        spread_mean = spread_window.mean()
+        spread_std = spread_window.std(ddof=0)
+        if spread_std == 0 or np.isnan(spread_std):
+            continue
+        current_row = df_pair.iloc[idx]
+        current_spread = compute_spread(
+            pd.Series([current_row["close_x"]]),
+            pd.Series([current_row["close_y"]]),
+            beta,
+            c,
+        ).iloc[0]
+        zscore_value = (current_spread - spread_mean) / spread_std
+        date_value = current_row["date"]
+
+        if position == 0:
+            if zscore_value >= config.entry_z:
+                position = -1
+                entry_idx = idx
+                entry_spread = current_spread
+                entry_z = zscore_value
+            elif zscore_value <= -config.entry_z:
+                position = 1
+                entry_idx = idx
+                entry_spread = current_spread
+                entry_z = zscore_value
+            continue
+
+        holding_days = idx - entry_idx if entry_idx is not None else 0
+        exit_reason = None
+        if abs(zscore_value) <= config.exit_z:
+            exit_reason = "exit_z"
+        elif abs(zscore_value) >= config.stop_z:
+            exit_reason = "stop_z"
+        elif holding_days >= config.max_holding_days:
+            exit_reason = "max_holding_days"
+
+        if exit_reason:
+            pnl = position * (current_spread - entry_spread)
+            trades.append(
+                {
+                    "pair": pair_name or f"{symbol_x}-{symbol_y}",
+                    "symbol_x": symbol_x,
+                    "symbol_y": symbol_y,
+                    "entry_date": df_pair.iloc[entry_idx]["date"],
+                    "exit_date": date_value,
+                    "entry_z": float(entry_z),
+                    "exit_z": float(zscore_value),
+                    "exit_reason": exit_reason,
+                    "holding_days": holding_days,
+                    "pnl": float(pnl),
+                }
+            )
+            position = 0
+            entry_idx = None
+            entry_spread = None
+            entry_z = None
+
+    return trades
+
+
+def _summarize_trades(trades_df: pd.DataFrame) -> pd.DataFrame:
+    if trades_df.empty:
+        return pd.DataFrame()
+    grouped = trades_df.groupby("pair")
+    summary = grouped.agg(
+        trade_count=("pnl", "size"),
+        win_rate=("pnl", lambda x: float((x > 0).mean()) if len(x) else 0.0),
+        total_pnl=("pnl", "sum"),
+        avg_pnl=("pnl", "mean"),
+    )
+    summary = summary.reset_index()
+    return summary.sort_values("total_pnl", ascending=False).reset_index(drop=True)
 
 
 def generate_pair_candidates(
