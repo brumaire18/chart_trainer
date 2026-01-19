@@ -9,6 +9,7 @@
    pip install -r requirements.txt
    ```
 2. 本ツールは Python 3.8 で動作確認しています。仮想環境などで Python 3.8 を有効化してください。
+   * ペアトレードの統計検定を利用する場合は `statsmodels` が必要です。`requirements.txt` に含まれているため、上記の手順で一緒に導入されます。
 3. `.env` を作成し、J-Quantsのリフレッシュトークンを設定します。新仕様では開発者ポータルでクライアントID/シークレットを発行し、トークンを取得してから設定してください（ベースURLは未指定ならデフォルトを使用）。
    ```bash
    cp .env.example .env
