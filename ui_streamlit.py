@@ -18,6 +18,11 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
+from app.pair_trading import (
+    compute_spread_series,
+    evaluate_pair_candidates,
+    generate_pair_candidates,
+)
 from app.backtest import run_canslim_backtest, scan_canslim_patterns
 from app.jquants_fetcher import (
     append_quotes_for_date,
@@ -27,6 +32,12 @@ from app.jquants_fetcher import (
     update_topix,
     update_universe_with_anchor_day,
     update_universe,
+)
+from app.pair_trading import (
+    PairTradeConfig,
+    backtest_pairs,
+    generate_pairs_by_sector,
+    optimize_pair_trade_parameters,
 )
 
 
@@ -1015,8 +1026,8 @@ def main():
         help="TOPIXとの相対力(RS=株価/ TOPIX)をオシレーター領域に描画します。",
     )
 
-    tab_chart, tab_screen, tab_backtest, tab_breadth = st.tabs(
-        ["チャート表示", "スクリーナー", "バックテスト", "マーケットブレッドス"]
+    tab_chart, tab_screen, tab_pair, tab_backtest, tab_breadth = st.tabs(
+        ["チャート表示", "スクリーナー", "ペアトレード", "バックテスト", "マーケットブレッドス"]
     )
 
     with tab_chart:
@@ -2007,6 +2018,194 @@ def main():
             else:
                 st.info("条件に合致する銘柄はありませんでした。条件を緩めて再検索してください。")
 
+    with tab_pair:
+        st.subheader("ペアトレード")
+        st.caption("業種フィルタで候補を絞り込み、統計指標とスプレッドの推移を確認します。")
+
+        if "pair_results" not in st.session_state:
+            st.session_state["pair_results"] = None
+
+        sector17_values = (
+            sorted(listed_df["sector17"].dropna().astype(str).unique().tolist())
+            if "sector17" in listed_df.columns
+            else []
+        )
+        sector33_values = (
+            sorted(listed_df["sector33"].dropna().astype(str).unique().tolist())
+            if "sector33" in listed_df.columns
+            else []
+        )
+
+        pair_filters = st.columns([1, 1, 1])
+        with pair_filters[0]:
+            sector17_choice = st.selectbox(
+                "sector17 フィルタ",
+                options=["指定なし", *sector17_values],
+            )
+        with pair_filters[1]:
+            sector33_choice = st.selectbox(
+                "sector33 フィルタ",
+                options=["指定なし", *sector33_values],
+            )
+        with pair_filters[2]:
+            max_pairs = st.number_input(
+                "候補数上限",
+                min_value=10,
+                max_value=300,
+                value=50,
+                step=5,
+            )
+
+        run_pairs = st.button("ペア候補を生成", type="primary")
+        if run_pairs:
+            with st.spinner("ペア候補を評価しています..."):
+                sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
+                sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
+                pair_candidates = generate_pair_candidates(
+                    listed_df=listed_df,
+                    symbols=symbols,
+                    sector17=sector17_filter,
+                    sector33=sector33_filter,
+                    max_pairs=int(max_pairs),
+                )
+                if not pair_candidates:
+                    st.warning("条件に合致するペア候補がありません。業種フィルタを調整してください。")
+                    st.session_state["pair_results"] = pd.DataFrame()
+                else:
+                    results_df = evaluate_pair_candidates(pair_candidates)
+                    st.session_state["pair_results"] = results_df
+
+        pair_results = st.session_state.get("pair_results")
+        if pair_results is None:
+            st.info("条件を指定して『ペア候補を生成』を押してください。")
+        elif pair_results.empty:
+            st.info("有効なペア候補が見つかりませんでした。")
+        else:
+            display_df = pair_results.copy()
+            display_df["pair_label"] = display_df.apply(
+                lambda row: (
+                    f"{row['symbol_a']} ({name_map.get(row['symbol_a'], '名称未登録')}) / "
+                    f"{row['symbol_b']} ({name_map.get(row['symbol_b'], '名称未登録')})"
+                ),
+                axis=1,
+            )
+            display_df = display_df.sort_values("p_value", ascending=True)
+            table_df = pd.DataFrame(
+                {
+                    "ペア": display_df["pair_label"],
+                    "p値": display_df["p_value"],
+                    "半減期": display_df["half_life"],
+                    "β": display_df["beta"],
+                    "スプレッド平均": display_df["spread_mean"],
+                    "スプレッド標準偏差": display_df["spread_std"],
+                    "最新スプレッド": display_df["spread_latest"],
+                    "最新Zスコア": display_df["zscore_latest"],
+                }
+            )
+            table_df = table_df.round(
+                {
+                    "p値": 4,
+                    "半減期": 2,
+                    "β": 3,
+                    "スプレッド平均": 4,
+                    "スプレッド標準偏差": 4,
+                    "最新スプレッド": 4,
+                    "最新Zスコア": 2,
+                }
+            )
+            st.dataframe(table_df, use_container_width=True)
+
+            selected_label = st.selectbox(
+                "可視化するペア",
+                options=table_df["ペア"].tolist(),
+            )
+            selected_row = display_df.loc[display_df["pair_label"] == selected_label].iloc[0]
+
+            signal_cols = st.columns(2)
+            with signal_cols[0]:
+                entry_threshold = st.number_input(
+                    "エントリー閾値 (Zスコア)",
+                    min_value=0.5,
+                    max_value=5.0,
+                    value=2.0,
+                    step=0.1,
+                )
+            with signal_cols[1]:
+                exit_threshold = st.number_input(
+                    "エグジット閾値 (Zスコア)",
+                    min_value=0.0,
+                    max_value=5.0,
+                    value=0.5,
+                    step=0.1,
+                )
+
+            df_pair, pair_metrics = compute_spread_series(
+                selected_row["symbol_a"], selected_row["symbol_b"]
+            )
+            if df_pair.empty:
+                st.warning("スプレッドを計算するためのデータが不足しています。")
+            else:
+                df_pair["date_str"] = df_pair["date"].dt.strftime("%Y-%m-%d")
+                rangebreaks = _build_trading_rangebreaks(df_pair["date"])
+                fig_pair = make_subplots(
+                    rows=2,
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.08,
+                    row_heights=[0.55, 0.45],
+                )
+                fig_pair.add_trace(
+                    go.Scatter(
+                        x=df_pair["date_str"],
+                        y=df_pair["spread"],
+                        mode="lines",
+                        name="スプレッド",
+                        line=dict(color="#1f77b4"),
+                    ),
+                    row=1,
+                    col=1,
+                )
+                if pair_metrics:
+                    fig_pair.add_hline(
+                        y=pair_metrics.get("spread_mean", 0.0),
+                        line=dict(color="#888888", dash="dash"),
+                        row=1,
+                        col=1,
+                    )
+                fig_pair.add_trace(
+                    go.Scatter(
+                        x=df_pair["date_str"],
+                        y=df_pair["zscore"],
+                        mode="lines",
+                        name="Zスコア",
+                        line=dict(color="#ff7f0e"),
+                    ),
+                    row=2,
+                    col=1,
+                )
+                for level, color, label in (
+                    (entry_threshold, "#d62728", "エントリー上限"),
+                    (-entry_threshold, "#d62728", "エントリー下限"),
+                    (exit_threshold, "#2ca02c", "エグジット上限"),
+                    (-exit_threshold, "#2ca02c", "エグジット下限"),
+                ):
+                    fig_pair.add_hline(
+                        y=level,
+                        line=dict(color=color, dash="dash"),
+                        annotation_text=label,
+                        row=2,
+                        col=1,
+                    )
+                fig_pair.update_layout(
+                    height=700,
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    legend=dict(orientation="h"),
+                )
+                fig_pair.update_xaxes(type="category", rangebreaks=rangebreaks)
+                fig_pair.update_yaxes(title_text="スプレッド", row=1, col=1)
+                fig_pair.update_yaxes(title_text="Zスコア", row=2, col=1)
+                st.plotly_chart(fig_pair, use_container_width=True)
+
     with tab_backtest:
         st.subheader("CAN-SLIM バックテスト")
         st.caption("CAN-SLIM検出を全銘柄に適用し、ブレイク後のピークリターンで評価します。")
@@ -2155,6 +2354,177 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
         elif backtest_results is not None:
             st.info("該当するシグナルがありませんでした。")
+
+        st.markdown("---")
+        st.subheader("ペアトレード バックテスト")
+        st.caption("業種ごとの銘柄ペアに対して、Zスコア型の平均回帰戦略を評価します。")
+
+        if "pair_trade_summary" not in st.session_state:
+            st.session_state["pair_trade_summary"] = None
+        if "pair_trade_trades" not in st.session_state:
+            st.session_state["pair_trade_trades"] = None
+        if "pair_trade_optimization" not in st.session_state:
+            st.session_state["pair_trade_optimization"] = None
+
+        sector_options = []
+        if "sector33" in listed_df.columns:
+            sector_options.append("sector33")
+        if "sector17" in listed_df.columns:
+            sector_options.append("sector17")
+        if not sector_options:
+            st.warning("銘柄マスタに sector33/sector17 が無いためペアトレードを実行できません。")
+        else:
+            sector_col = st.selectbox(
+                "業種区分の列",
+                options=sector_options,
+                index=0,
+                help="listed_master.csv にある sector33 / sector17 を選択できます。",
+            )
+            pair_col1, pair_col2 = st.columns(2)
+            with pair_col1:
+                min_symbols = st.number_input(
+                    "業種内の最小銘柄数",
+                    min_value=2,
+                    max_value=200,
+                    value=5,
+                    step=1,
+                )
+                max_pairs_per_sector = st.number_input(
+                    "業種あたりの最大ペア数",
+                    min_value=1,
+                    max_value=200,
+                    value=20,
+                    step=1,
+                )
+                lookback = st.number_input("ローリング窓（日）", 20, 200, value=60, step=5)
+                max_holding_days = st.number_input(
+                    "最大保有日数", 5, 60, value=20, step=1
+                )
+            with pair_col2:
+                entry_z = st.number_input("エントリーZ", 0.5, 5.0, value=2.0, step=0.1)
+                exit_z = st.number_input("イグジットZ", 0.1, 2.0, value=0.5, step=0.1)
+                stop_z = st.number_input("ストップZ", 1.0, 6.0, value=3.5, step=0.1)
+                enable_date_filter = st.checkbox("期間フィルタを使う", value=False)
+                date_range = None
+                if enable_date_filter:
+                    date_range = st.date_input(
+                        "対象期間",
+                        value=(date.today() - timedelta(days=365), date.today()),
+                    )
+
+            run_pair_backtest = st.button("ペアトレードを実行", type="primary")
+            if run_pair_backtest:
+                with st.spinner("ペアトレードを実行しています..."):
+                    pairs = generate_pairs_by_sector(
+                        sector_col=sector_col,
+                        min_symbols=int(min_symbols),
+                        max_pairs_per_sector=int(max_pairs_per_sector),
+                    )
+                    config = PairTradeConfig(
+                        lookback=int(lookback),
+                        entry_z=float(entry_z),
+                        exit_z=float(exit_z),
+                        stop_z=float(stop_z),
+                        max_holding_days=int(max_holding_days),
+                    )
+                    start_date = None
+                    end_date = None
+                    if date_range and len(date_range) == 2:
+                        start_date = date_range[0].isoformat()
+                        end_date = date_range[1].isoformat()
+                    trades_df, summary_df = backtest_pairs(
+                        pairs,
+                        config=config,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                    st.session_state["pair_trade_trades"] = trades_df
+                    st.session_state["pair_trade_summary"] = summary_df
+
+            pair_summary = st.session_state.get("pair_trade_summary")
+            pair_trades = st.session_state.get("pair_trade_trades")
+            if pair_summary is not None and not pair_summary.empty:
+                st.markdown("#### ペア別サマリ")
+                st.dataframe(pair_summary.head(50), use_container_width=True)
+            elif pair_summary is not None:
+                st.info("条件に合致するペアがありませんでした。")
+
+            if pair_trades is not None and not pair_trades.empty:
+                st.markdown("#### トレード明細（上位200件）")
+                st.dataframe(pair_trades.head(200), use_container_width=True)
+
+            with st.expander("パラメータ探索（グリッドサーチ）", expanded=False):
+                st.caption("カンマ区切りで候補値を入力すると自動探索できます。")
+
+                def _parse_grid(text: str, cast_type: type) -> List[float]:
+                    if not text.strip():
+                        return []
+                    values = []
+                    for item in text.split(","):
+                        item = item.strip()
+                        if not item:
+                            continue
+                        values.append(cast_type(item))
+                    return values
+
+                grid_col1, grid_col2 = st.columns(2)
+                with grid_col1:
+                    grid_lookback = st.text_input("lookback候補", value="40,60,80")
+                    grid_entry = st.text_input("entry_z候補", value="1.5,2.0,2.5")
+                    grid_exit = st.text_input("exit_z候補", value="0.3,0.5")
+                with grid_col2:
+                    grid_stop = st.text_input("stop_z候補", value="3.0,3.5")
+                    grid_holding = st.text_input("max_holding_days候補", value="10,20")
+                    min_trades = st.number_input(
+                        "最小トレード数",
+                        min_value=1,
+                        max_value=50,
+                        value=5,
+                        step=1,
+                    )
+                run_optimize = st.button("パラメータ探索を実行", type="secondary")
+                if run_optimize:
+                    lookback_values = _parse_grid(grid_lookback, int)
+                    entry_values = _parse_grid(grid_entry, float)
+                    exit_values = _parse_grid(grid_exit, float)
+                    stop_values = _parse_grid(grid_stop, float)
+                    holding_values = _parse_grid(grid_holding, int)
+                    if not all(
+                        [lookback_values, entry_values, exit_values, stop_values, holding_values]
+                    ):
+                        st.warning("すべての候補値を入力してください。")
+                    else:
+                        with st.spinner("パラメータ探索を実行しています..."):
+                            pairs = generate_pairs_by_sector(
+                                sector_col=sector_col,
+                                min_symbols=int(min_symbols),
+                                max_pairs_per_sector=int(max_pairs_per_sector),
+                            )
+                            param_grid = {
+                                "lookback": lookback_values,
+                                "entry_z": entry_values,
+                                "exit_z": exit_values,
+                                "stop_z": stop_values,
+                                "max_holding_days": holding_values,
+                            }
+                            start_date = None
+                            end_date = None
+                            if date_range and len(date_range) == 2:
+                                start_date = date_range[0].isoformat()
+                                end_date = date_range[1].isoformat()
+                            optimization_df = optimize_pair_trade_parameters(
+                                pairs,
+                                param_grid=param_grid,
+                                start_date=start_date,
+                                end_date=end_date,
+                                min_trades=int(min_trades),
+                            )
+                            st.session_state["pair_trade_optimization"] = optimization_df
+
+                optimization_df = st.session_state.get("pair_trade_optimization")
+                if optimization_df is not None and not optimization_df.empty:
+                    st.markdown("#### 探索結果（上位20件）")
+                    st.dataframe(optimization_df.head(20), use_container_width=True)
 
     with tab_breadth:
         st.subheader("マーケットブレッドス")

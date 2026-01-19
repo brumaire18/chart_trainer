@@ -84,3 +84,35 @@ python -m app.jquants_fetcher --codes 7203 --append-date YYYY-MM-DD
 ```
 
 正常に終了すると `data/price_csv/7203.csv` と `data/meta/7203.json` が更新されます。Streamlit側でも同銘柄を選択して表示できることを確認してください。
+
+## ペアトレードのバックテスト
+
+`app/pair_trading.py` に簡易のペアトレードバックテストを追加しています。業種（`sector33` / `sector17`）ごとにペア候補を生成し、ローリングOLSでヘッジ比率を推定してスプレッドのZスコアを用いて売買します。
+
+```bash
+python - <<'PY'
+from app.pair_trading import (
+    PairTradeConfig,
+    backtest_pairs,
+    generate_pairs_by_sector,
+    optimize_pair_trade_parameters,
+)
+
+config = PairTradeConfig(lookback=60, entry_z=2.0, exit_z=0.5, max_holding_days=20)
+pairs = generate_pairs_by_sector(sector_col="sector33", max_pairs_per_sector=10)
+trades_df, summary_df = backtest_pairs(pairs, config=config)
+
+print(summary_df.head(10).to_string(index=False))
+print(trades_df.head(10).to_string(index=False))
+
+param_grid = {
+    "lookback": [40, 60, 80],
+    "entry_z": [1.5, 2.0, 2.5],
+    "exit_z": [0.3, 0.5],
+    "stop_z": [3.0, 3.5],
+    "max_holding_days": [10, 20],
+}
+eval_df = optimize_pair_trade_parameters(pairs, param_grid=param_grid, min_trades=5)
+print(eval_df.head(10).to_string(index=False))
+PY
+```
