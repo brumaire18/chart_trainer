@@ -33,6 +33,12 @@ from app.jquants_fetcher import (
     update_universe_with_anchor_day,
     update_universe,
 )
+from app.pair_trading import (
+    PairTradeConfig,
+    backtest_pairs,
+    generate_pairs_by_sector,
+    optimize_pair_trade_parameters,
+)
 
 
 LIGHT_PLAN_YEARS = 5
@@ -2348,6 +2354,177 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
         elif backtest_results is not None:
             st.info("該当するシグナルがありませんでした。")
+
+        st.markdown("---")
+        st.subheader("ペアトレード バックテスト")
+        st.caption("業種ごとの銘柄ペアに対して、Zスコア型の平均回帰戦略を評価します。")
+
+        if "pair_trade_summary" not in st.session_state:
+            st.session_state["pair_trade_summary"] = None
+        if "pair_trade_trades" not in st.session_state:
+            st.session_state["pair_trade_trades"] = None
+        if "pair_trade_optimization" not in st.session_state:
+            st.session_state["pair_trade_optimization"] = None
+
+        sector_options = []
+        if "sector33" in listed_df.columns:
+            sector_options.append("sector33")
+        if "sector17" in listed_df.columns:
+            sector_options.append("sector17")
+        if not sector_options:
+            st.warning("銘柄マスタに sector33/sector17 が無いためペアトレードを実行できません。")
+        else:
+            sector_col = st.selectbox(
+                "業種区分の列",
+                options=sector_options,
+                index=0,
+                help="listed_master.csv にある sector33 / sector17 を選択できます。",
+            )
+            pair_col1, pair_col2 = st.columns(2)
+            with pair_col1:
+                min_symbols = st.number_input(
+                    "業種内の最小銘柄数",
+                    min_value=2,
+                    max_value=200,
+                    value=5,
+                    step=1,
+                )
+                max_pairs_per_sector = st.number_input(
+                    "業種あたりの最大ペア数",
+                    min_value=1,
+                    max_value=200,
+                    value=20,
+                    step=1,
+                )
+                lookback = st.number_input("ローリング窓（日）", 20, 200, value=60, step=5)
+                max_holding_days = st.number_input(
+                    "最大保有日数", 5, 60, value=20, step=1
+                )
+            with pair_col2:
+                entry_z = st.number_input("エントリーZ", 0.5, 5.0, value=2.0, step=0.1)
+                exit_z = st.number_input("イグジットZ", 0.1, 2.0, value=0.5, step=0.1)
+                stop_z = st.number_input("ストップZ", 1.0, 6.0, value=3.5, step=0.1)
+                enable_date_filter = st.checkbox("期間フィルタを使う", value=False)
+                date_range = None
+                if enable_date_filter:
+                    date_range = st.date_input(
+                        "対象期間",
+                        value=(date.today() - timedelta(days=365), date.today()),
+                    )
+
+            run_pair_backtest = st.button("ペアトレードを実行", type="primary")
+            if run_pair_backtest:
+                with st.spinner("ペアトレードを実行しています..."):
+                    pairs = generate_pairs_by_sector(
+                        sector_col=sector_col,
+                        min_symbols=int(min_symbols),
+                        max_pairs_per_sector=int(max_pairs_per_sector),
+                    )
+                    config = PairTradeConfig(
+                        lookback=int(lookback),
+                        entry_z=float(entry_z),
+                        exit_z=float(exit_z),
+                        stop_z=float(stop_z),
+                        max_holding_days=int(max_holding_days),
+                    )
+                    start_date = None
+                    end_date = None
+                    if date_range and len(date_range) == 2:
+                        start_date = date_range[0].isoformat()
+                        end_date = date_range[1].isoformat()
+                    trades_df, summary_df = backtest_pairs(
+                        pairs,
+                        config=config,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                    st.session_state["pair_trade_trades"] = trades_df
+                    st.session_state["pair_trade_summary"] = summary_df
+
+            pair_summary = st.session_state.get("pair_trade_summary")
+            pair_trades = st.session_state.get("pair_trade_trades")
+            if pair_summary is not None and not pair_summary.empty:
+                st.markdown("#### ペア別サマリ")
+                st.dataframe(pair_summary.head(50), use_container_width=True)
+            elif pair_summary is not None:
+                st.info("条件に合致するペアがありませんでした。")
+
+            if pair_trades is not None and not pair_trades.empty:
+                st.markdown("#### トレード明細（上位200件）")
+                st.dataframe(pair_trades.head(200), use_container_width=True)
+
+            with st.expander("パラメータ探索（グリッドサーチ）", expanded=False):
+                st.caption("カンマ区切りで候補値を入力すると自動探索できます。")
+
+                def _parse_grid(text: str, cast_type: type) -> List[float]:
+                    if not text.strip():
+                        return []
+                    values = []
+                    for item in text.split(","):
+                        item = item.strip()
+                        if not item:
+                            continue
+                        values.append(cast_type(item))
+                    return values
+
+                grid_col1, grid_col2 = st.columns(2)
+                with grid_col1:
+                    grid_lookback = st.text_input("lookback候補", value="40,60,80")
+                    grid_entry = st.text_input("entry_z候補", value="1.5,2.0,2.5")
+                    grid_exit = st.text_input("exit_z候補", value="0.3,0.5")
+                with grid_col2:
+                    grid_stop = st.text_input("stop_z候補", value="3.0,3.5")
+                    grid_holding = st.text_input("max_holding_days候補", value="10,20")
+                    min_trades = st.number_input(
+                        "最小トレード数",
+                        min_value=1,
+                        max_value=50,
+                        value=5,
+                        step=1,
+                    )
+                run_optimize = st.button("パラメータ探索を実行", type="secondary")
+                if run_optimize:
+                    lookback_values = _parse_grid(grid_lookback, int)
+                    entry_values = _parse_grid(grid_entry, float)
+                    exit_values = _parse_grid(grid_exit, float)
+                    stop_values = _parse_grid(grid_stop, float)
+                    holding_values = _parse_grid(grid_holding, int)
+                    if not all(
+                        [lookback_values, entry_values, exit_values, stop_values, holding_values]
+                    ):
+                        st.warning("すべての候補値を入力してください。")
+                    else:
+                        with st.spinner("パラメータ探索を実行しています..."):
+                            pairs = generate_pairs_by_sector(
+                                sector_col=sector_col,
+                                min_symbols=int(min_symbols),
+                                max_pairs_per_sector=int(max_pairs_per_sector),
+                            )
+                            param_grid = {
+                                "lookback": lookback_values,
+                                "entry_z": entry_values,
+                                "exit_z": exit_values,
+                                "stop_z": stop_values,
+                                "max_holding_days": holding_values,
+                            }
+                            start_date = None
+                            end_date = None
+                            if date_range and len(date_range) == 2:
+                                start_date = date_range[0].isoformat()
+                                end_date = date_range[1].isoformat()
+                            optimization_df = optimize_pair_trade_parameters(
+                                pairs,
+                                param_grid=param_grid,
+                                start_date=start_date,
+                                end_date=end_date,
+                                min_trades=int(min_trades),
+                            )
+                            st.session_state["pair_trade_optimization"] = optimization_df
+
+                optimization_df = st.session_state.get("pair_trade_optimization")
+                if optimization_df is not None and not optimization_df.empty:
+                    st.markdown("#### 探索結果（上位20件）")
+                    st.dataframe(optimization_df.head(20), use_container_width=True)
 
     with tab_breadth:
         st.subheader("マーケットブレッドス")
