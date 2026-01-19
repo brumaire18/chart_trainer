@@ -484,10 +484,94 @@ def generate_pair_candidates(
     return list(islice(combinations(codes, 2), max_pairs))
 
 
+def generate_pairs_by_sector_candidates(
+    listed_df: pd.DataFrame,
+    symbols: List[str],
+    sector17: Optional[str] = None,
+    sector33: Optional[str] = None,
+    max_pairs_per_sector: int = 50,
+) -> List[Tuple[str, str]]:
+    available = set(symbols)
+    df = listed_df.copy()
+    if "code" not in df.columns:
+        return []
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    df = df[df["code"].isin(available)]
+    if sector17 and "sector17" in df.columns:
+        df = df[df["sector17"].astype(str) == sector17]
+    if sector33 and "sector33" in df.columns:
+        df = df[df["sector33"].astype(str) == sector33]
+    if sector33 and "sector33" in df.columns:
+        sector_col = "sector33"
+    elif sector17 and "sector17" in df.columns:
+        sector_col = "sector17"
+    elif "sector33" in df.columns:
+        sector_col = "sector33"
+    elif "sector17" in df.columns:
+        sector_col = "sector17"
+    else:
+        return []
+    pairs: List[Tuple[str, str]] = []
+    for _, group in df.dropna(subset=[sector_col]).groupby(sector_col):
+        codes = sorted(group["code"].dropna().unique().tolist())
+        pairs.extend(list(islice(combinations(codes, 2), max_pairs_per_sector)))
+    return pairs
+
+
+def generate_anchor_pair_candidates(
+    listed_df: pd.DataFrame,
+    symbols: List[str],
+    anchor_symbol: str,
+    sector17: Optional[str] = None,
+    sector33: Optional[str] = None,
+    max_pairs: int = 50,
+) -> List[Tuple[str, str]]:
+    available = set(symbols)
+    anchor_symbol = str(anchor_symbol).zfill(4)
+    if anchor_symbol not in available:
+        return []
+    df = listed_df.copy()
+    if "code" not in df.columns:
+        return []
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    df = df[df["code"].isin(available)]
+    if sector17 and "sector17" in df.columns:
+        df = df[df["sector17"].astype(str) == sector17]
+    if sector33 and "sector33" in df.columns:
+        df = df[df["sector33"].astype(str) == sector33]
+    if sector33 and "sector33" in df.columns:
+        sector_col = "sector33"
+    elif sector17 and "sector17" in df.columns:
+        sector_col = "sector17"
+    elif "sector33" in df.columns:
+        sector_col = "sector33"
+    elif "sector17" in df.columns:
+        sector_col = "sector17"
+    else:
+        return []
+    codes = sorted(df["code"].dropna().unique().tolist())
+    if anchor_symbol not in codes:
+        return []
+    anchor_sector = (
+        df.loc[df["code"] == anchor_symbol, sector_col].astype(str).iloc[0]
+        if sector_col in df.columns
+        else None
+    )
+    if anchor_sector is not None and sector_col in df.columns:
+        df = df[df[sector_col].astype(str) == anchor_sector]
+        codes = sorted(df["code"].dropna().unique().tolist())
+    candidates = [(anchor_symbol, code) for code in codes if code != anchor_symbol]
+    return list(islice(candidates, max_pairs))
+
+
 def evaluate_pair_candidates(
     pairs: Iterable[Tuple[str, str]],
     recent_window: int = 60,
     min_similarity: Optional[float] = None,
+    max_p_value: Optional[float] = None,
+    max_half_life: Optional[float] = None,
+    max_abs_zscore: Optional[float] = None,
+    min_avg_volume: Optional[float] = None,
 ) -> pd.DataFrame:
     results = []
     for symbol_a, symbol_b in pairs:
@@ -496,9 +580,27 @@ def evaluate_pair_candidates(
             symbol_b,
             recent_window=recent_window,
             min_similarity=min_similarity,
+            min_avg_volume=min_avg_volume,
         )
-        if metrics is not None:
-            results.append(metrics)
+        if metrics is None:
+            continue
+        if max_p_value is not None:
+            p_value = metrics.get("p_value")
+            if p_value is None or np.isnan(p_value) or p_value > max_p_value:
+                continue
+        if max_half_life is not None:
+            half_life = metrics.get("half_life")
+            if half_life is None or np.isnan(half_life) or half_life > max_half_life:
+                continue
+        if max_abs_zscore is not None:
+            zscore_latest = metrics.get("zscore_latest")
+            if (
+                zscore_latest is None
+                or np.isnan(zscore_latest)
+                or abs(zscore_latest) > max_abs_zscore
+            ):
+                continue
+        results.append(metrics)
     return pd.DataFrame(results)
 
 
@@ -507,10 +609,17 @@ def compute_pair_metrics(
     symbol_b: str,
     recent_window: int = 60,
     min_similarity: Optional[float] = None,
+    min_avg_volume: Optional[float] = None,
 ) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
     if len(df_pair) < MIN_PAIR_SAMPLES:
         return None
+    if min_avg_volume is not None:
+        volume_window = df_pair.tail(recent_window)
+        avg_volume_a = float(volume_window["volume_a"].mean())
+        avg_volume_b = float(volume_window["volume_b"].mean())
+        if avg_volume_a < min_avg_volume or avg_volume_b < min_avg_volume:
+            return None
     recent_similarity = compute_recent_shape_similarity(
         df_pair["close_a"],
         df_pair["close_b"],
@@ -592,10 +701,10 @@ def compute_spread_series(symbol_a: str, symbol_b: str) -> Tuple[pd.DataFrame, d
 
 
 def _prepare_pair_frame(symbol_a: str, symbol_b: str) -> pd.DataFrame:
-    df_a = load_price_csv(symbol_a).loc[:, ["date", "close"]]
-    df_b = load_price_csv(symbol_b).loc[:, ["date", "close"]]
-    df_a = df_a.rename(columns={"close": "close_a"})
-    df_b = df_b.rename(columns={"close": "close_b"})
+    df_a = load_price_csv(symbol_a).loc[:, ["date", "close", "volume"]]
+    df_b = load_price_csv(symbol_b).loc[:, ["date", "close", "volume"]]
+    df_a = df_a.rename(columns={"close": "close_a", "volume": "volume_a"})
+    df_b = df_b.rename(columns={"close": "close_b", "volume": "volume_b"})
     df_pair = pd.merge(df_a, df_b, on="date", how="inner").dropna()
     df_pair = df_pair[(df_pair["close_a"] > 0) & (df_pair["close_b"] > 0)]
     return df_pair.sort_values("date")
