@@ -1,9 +1,15 @@
 from itertools import combinations, islice
 from typing import Iterable, List, Optional, Tuple
 
+import warnings
+
 import numpy as np
 import pandas as pd
-from statsmodels.tsa.stattools import coint
+
+try:
+    from statsmodels.tsa.stattools import coint
+except ImportError:  # pragma: no cover - handled gracefully when optional dependency missing
+    coint = None
 
 from app.data_loader import load_price_csv
 
@@ -103,6 +109,13 @@ def _prepare_pair_frame(symbol_a: str, symbol_b: str) -> pd.DataFrame:
 
 
 def _compute_cointegration_pvalue(series_a: pd.Series, series_b: pd.Series) -> float:
+    if coint is None:
+        warnings.warn(
+            "statsmodels is not available; cointegration p-values will be NaN. "
+            "Install statsmodels to enable cointegration statistics.",
+            RuntimeWarning,
+        )
+        return float("nan")
     _, p_value, _ = coint(series_a, series_b)
     return float(p_value)
 
