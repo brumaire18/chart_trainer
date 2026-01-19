@@ -826,6 +826,64 @@ def get_all_listed_codes() -> List[str]:
     return sorted(df["code"].astype(str).str.zfill(4).tolist())
 
 
+def get_symbols_by_sector(
+    sector_key: str = "sector33",
+    include_markets: Optional[List[str]] = None,
+) -> Dict[str, List[str]]:
+    """sector17/sector33 ごとの銘柄コード一覧を返す。"""
+
+    normalized_sector_key = sector_key.lower()
+    if normalized_sector_key not in {"sector17", "sector33"}:
+        raise ValueError(f"不明な sector_key です: {sector_key}")
+
+    df = load_listed_master()
+    sector_candidates = (
+        ["sector17", "Sector17Code"]
+        if normalized_sector_key == "sector17"
+        else ["sector33", "Sector33Code"]
+    )
+    sector_col = _find_column(df, sector_candidates)
+    if sector_col is None:
+        raise JQuantsError(f"{sector_key} のカラムが見つかりませんでした。")
+
+    if include_markets:
+        market_col = _find_column(
+            df,
+            [
+                "market",
+                "market_name",
+                "market_code",
+                "Market",
+                "MarketName",
+                "MarketCodeName",
+                "MarketCode",
+            ],
+        )
+        if market_col is None:
+            logger.warning("市場区分カラムが見つからないため市場絞り込みを無視します。")
+        else:
+            normalized_targets = {
+                value for value in (_normalize_market_value(market) for market in include_markets) if value
+            }
+            if normalized_targets:
+                market_normalized = df[market_col].apply(_normalize_market_value)
+                df = df[market_normalized.isin(normalized_targets)]
+
+    sector_series = df[sector_col].astype(str).str.strip()
+    df = df[sector_series != ""]
+    df = df[~sector_series.isna()]
+
+    grouped: Dict[str, List[str]] = {}
+    for sector_value, group in df.groupby(sector_col):
+        sector_label = str(sector_value).strip()
+        if not sector_label:
+            continue
+        codes = sorted(group["code"].astype(str).str.zfill(4).unique().tolist())
+        grouped[sector_label] = codes
+
+    return grouped
+
+
 def _get_market_universe(markets: List[str]) -> List[str]:
     df = load_listed_master()
     market_source_col = _find_column(
@@ -866,6 +924,8 @@ def build_universe(
     custom_path: Optional[Path] = None,
     use_listed_master: bool = False,
     market_filter: str = "prime_standard",
+    sector_key: str = "sector33",
+    sector_values: Optional[List[str]] = None,
 ) -> List[str]:
     """ユニバースを組み立てる。
 
@@ -878,6 +938,8 @@ def build_universe(
             を対象にする（市場区分での絞り込みなし）。
         market_filter: use_listed_master が False の場合に適用する市場区分。
             ``prime_standard`` または ``growth`` を指定する。
+        sector_key: 業種区分のキー。``sector17`` または ``sector33``。
+        sector_values: 指定した業種区分コードのみを対象にする。
     """
 
     if use_listed_master:
@@ -891,6 +953,22 @@ def build_universe(
             raise ValueError(f"不明な market_filter です: {market_filter}")
     if include_custom:
         codes += load_custom_symbols(path=custom_path)
+
+    if sector_values is not None:
+        if isinstance(sector_values, str):
+            sector_values_list = [sector_values]
+        else:
+            sector_values_list = sector_values
+        requested_sectors = {str(value).strip() for value in sector_values_list if str(value).strip()}
+        sector_map = get_symbols_by_sector(sector_key=sector_key)
+        sector_codes: List[str] = []
+        for value in requested_sectors:
+            sector_codes.extend(sector_map.get(value, []))
+        if sector_codes:
+            allowed_codes = set(sector_codes)
+            codes = [code for code in codes if code in allowed_codes]
+        else:
+            codes = []
     # zfill(4) 済みのため重複のみ除去
     return sorted(dict.fromkeys(codes).keys())
 
