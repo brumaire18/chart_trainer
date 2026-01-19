@@ -484,19 +484,41 @@ def generate_pair_candidates(
     return list(islice(combinations(codes, 2), max_pairs))
 
 
-def evaluate_pair_candidates(pairs: Iterable[Tuple[str, str]]) -> pd.DataFrame:
+def evaluate_pair_candidates(
+    pairs: Iterable[Tuple[str, str]],
+    recent_window: int = 60,
+    min_similarity: Optional[float] = None,
+) -> pd.DataFrame:
     results = []
     for symbol_a, symbol_b in pairs:
-        metrics = compute_pair_metrics(symbol_a, symbol_b)
+        metrics = compute_pair_metrics(
+            symbol_a,
+            symbol_b,
+            recent_window=recent_window,
+            min_similarity=min_similarity,
+        )
         if metrics is not None:
             results.append(metrics)
     return pd.DataFrame(results)
 
 
-def compute_pair_metrics(symbol_a: str, symbol_b: str) -> Optional[dict]:
+def compute_pair_metrics(
+    symbol_a: str,
+    symbol_b: str,
+    recent_window: int = 60,
+    min_similarity: Optional[float] = None,
+) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
     if len(df_pair) < MIN_PAIR_SAMPLES:
         return None
+    recent_similarity = compute_recent_shape_similarity(
+        df_pair["close_a"],
+        df_pair["close_b"],
+        window=recent_window,
+    )
+    if min_similarity is not None:
+        if np.isnan(recent_similarity) or recent_similarity < min_similarity:
+            return None
     log_a = np.log(df_pair["close_a"])
     log_b = np.log(df_pair["close_b"])
     beta, alpha = np.polyfit(log_b, log_a, 1)
@@ -510,6 +532,7 @@ def compute_pair_metrics(symbol_a: str, symbol_b: str) -> Optional[dict]:
     return {
         "symbol_a": symbol_a,
         "symbol_b": symbol_b,
+        "recent_similarity": recent_similarity,
         "p_value": p_value,
         "half_life": half_life,
         "beta": float(beta),
@@ -518,6 +541,30 @@ def compute_pair_metrics(symbol_a: str, symbol_b: str) -> Optional[dict]:
         "spread_latest": float(spread.iloc[-1]),
         "zscore_latest": float(zscore.iloc[-1]),
     }
+
+
+def compute_recent_shape_similarity(
+    series_a: pd.Series,
+    series_b: pd.Series,
+    window: int = 60,
+) -> float:
+    """Compute recent chart shape similarity using correlation of normalized log prices."""
+    if window < 5:
+        raise ValueError("window must be >= 5")
+    df = pd.concat([series_a, series_b], axis=1).dropna()
+    if len(df) < window:
+        return np.nan
+    tail = df.tail(window)
+    log_a = np.log(tail.iloc[:, 0])
+    log_b = np.log(tail.iloc[:, 1])
+    norm_a = log_a - log_a.iloc[0]
+    norm_b = log_b - log_b.iloc[0]
+    std_a = norm_a.std(ddof=0)
+    std_b = norm_b.std(ddof=0)
+    if std_a == 0 or std_b == 0 or np.isnan(std_a) or np.isnan(std_b):
+        return np.nan
+    corr = float(np.corrcoef(norm_a, norm_b)[0, 1])
+    return corr
 
 
 def compute_spread_series(symbol_a: str, symbol_b: str) -> Tuple[pd.DataFrame, dict]:

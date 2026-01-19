@@ -2055,6 +2055,23 @@ def main():
                 value=50,
                 step=5,
             )
+        similarity_filters = st.columns([1, 1])
+        with similarity_filters[0]:
+            recent_window = st.number_input(
+                "直近比較本数",
+                min_value=20,
+                max_value=250,
+                value=60,
+                step=5,
+            )
+        with similarity_filters[1]:
+            min_similarity = st.slider(
+                "直近形状の類似度下限",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+            )
 
         run_pairs = st.button("ペア候補を生成", type="primary")
         if run_pairs:
@@ -2072,7 +2089,11 @@ def main():
                     st.warning("条件に合致するペア候補がありません。業種フィルタを調整してください。")
                     st.session_state["pair_results"] = pd.DataFrame()
                 else:
-                    results_df = evaluate_pair_candidates(pair_candidates)
+                    results_df = evaluate_pair_candidates(
+                        pair_candidates,
+                        recent_window=int(recent_window),
+                        min_similarity=float(min_similarity),
+                    )
                     st.session_state["pair_results"] = results_df
 
         pair_results = st.session_state.get("pair_results")
@@ -2096,6 +2117,7 @@ def main():
                     "p値": display_df["p_value"],
                     "半減期": display_df["half_life"],
                     "β": display_df["beta"],
+                    "直近類似度": display_df["recent_similarity"],
                     "スプレッド平均": display_df["spread_mean"],
                     "スプレッド標準偏差": display_df["spread_std"],
                     "最新スプレッド": display_df["spread_latest"],
@@ -2107,6 +2129,7 @@ def main():
                     "p値": 4,
                     "半減期": 2,
                     "β": 3,
+                    "直近類似度": 3,
                     "スプレッド平均": 4,
                     "スプレッド標準偏差": 4,
                     "最新スプレッド": 4,
