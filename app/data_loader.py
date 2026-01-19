@@ -221,6 +221,12 @@ def load_price_csv(symbol: str, tail_rows: Optional[int] = None) -> pd.DataFrame
     末尾の行だけを読み込む。
     """
     csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"CSVファイルが見つかりません: {csv_path}。"
+            "data/price_csv に銘柄コードのCSVを配置するか、"
+            "J-Quants取得機能でデータを保存してください。"
+        )
     if tail_rows is None:
         df_raw = pd.read_csv(csv_path)
     elif tail_rows <= 0:
