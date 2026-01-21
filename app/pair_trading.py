@@ -617,7 +617,10 @@ def generate_anchor_pair_candidates(
 def evaluate_pair_candidates(
     pairs: Iterable[Tuple[str, str]],
     recent_window: int = 60,
+    long_window: Optional[int] = None,
     min_similarity: Optional[float] = None,
+    min_long_similarity: Optional[float] = None,
+    min_return_corr: Optional[float] = None,
     max_p_value: Optional[float] = None,
     max_half_life: Optional[float] = None,
     max_abs_zscore: Optional[float] = None,
@@ -651,7 +654,10 @@ def evaluate_pair_candidates(
             symbol_a,
             symbol_b,
             recent_window=recent_window,
+            long_window=long_window,
             min_similarity=min_similarity,
+            min_long_similarity=min_long_similarity,
+            min_return_corr=min_return_corr,
             min_avg_volume=min_avg_volume,
         )
         if metrics is None:
@@ -706,6 +712,11 @@ def _compute_quick_pair_score(
     )
     if np.isnan(similarity):
         return None
+    return_corr = compute_return_correlation(
+        df_pair["close_a"], df_pair["close_b"], window=recent_window
+    )
+    if np.isnan(return_corr):
+        return None
     log_a = np.log(df_pair["close_a"])
     log_b = np.log(df_pair["close_b"])
     beta, alpha = np.polyfit(log_b, log_a, 1)
@@ -720,7 +731,8 @@ def _compute_quick_pair_score(
     zscore_score = min(abs(zscore_latest), 4.0) * 10.0
     half_life_score = max(0.0, 30.0 - float(half_life)) / 3.0
     similarity_score = float(similarity) * 100.0
-    return float(zscore_score + similarity_score + half_life_score)
+    return_score = float(return_corr) * 50.0
+    return float(zscore_score + similarity_score + half_life_score + return_score)
 
 
 def compute_pair_metrics(
@@ -728,6 +740,9 @@ def compute_pair_metrics(
     symbol_b: str,
     recent_window: int = 60,
     min_similarity: Optional[float] = None,
+    long_window: Optional[int] = None,
+    min_long_similarity: Optional[float] = None,
+    min_return_corr: Optional[float] = None,
     min_avg_volume: Optional[float] = None,
 ) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
@@ -747,6 +762,30 @@ def compute_pair_metrics(
     if min_similarity is not None:
         if np.isnan(recent_similarity) or recent_similarity < min_similarity:
             return None
+    recent_return_corr = compute_return_correlation(
+        df_pair["close_a"],
+        df_pair["close_b"],
+        window=recent_window,
+    )
+    if min_return_corr is not None:
+        if np.isnan(recent_return_corr) or recent_return_corr < min_return_corr:
+            return None
+    long_similarity = np.nan
+    long_return_corr = np.nan
+    if long_window is not None:
+        long_similarity = compute_recent_shape_similarity(
+            df_pair["close_a"],
+            df_pair["close_b"],
+            window=long_window,
+        )
+        if min_long_similarity is not None:
+            if np.isnan(long_similarity) or long_similarity < min_long_similarity:
+                return None
+        long_return_corr = compute_return_correlation(
+            df_pair["close_a"],
+            df_pair["close_b"],
+            window=long_window,
+        )
     log_a = np.log(df_pair["close_a"])
     log_b = np.log(df_pair["close_b"])
     beta, alpha = np.polyfit(log_b, log_a, 1)
@@ -761,6 +800,9 @@ def compute_pair_metrics(
         "symbol_a": symbol_a,
         "symbol_b": symbol_b,
         "recent_similarity": recent_similarity,
+        "recent_return_corr": recent_return_corr,
+        "long_similarity": float(long_similarity) if long_window is not None else np.nan,
+        "long_return_corr": float(long_return_corr) if long_window is not None else np.nan,
         "p_value": p_value,
         "half_life": half_life,
         "beta": float(beta),
@@ -793,6 +835,28 @@ def compute_recent_shape_similarity(
         return np.nan
     corr = float(np.corrcoef(norm_a, norm_b)[0, 1])
     return corr
+
+
+def compute_return_correlation(
+    series_a: pd.Series,
+    series_b: pd.Series,
+    window: int = 60,
+) -> float:
+    """Compute correlation of log returns for the recent window."""
+    if window < 5:
+        raise ValueError("window must be >= 5")
+    df = pd.concat([series_a, series_b], axis=1).dropna()
+    if len(df) < window + 1:
+        return np.nan
+    tail = df.tail(window + 1)
+    log_returns = np.log(tail).diff().dropna()
+    if len(log_returns) < window:
+        return np.nan
+    std_a = log_returns.iloc[:, 0].std(ddof=0)
+    std_b = log_returns.iloc[:, 1].std(ddof=0)
+    if std_a == 0 or std_b == 0 or np.isnan(std_a) or np.isnan(std_b):
+        return np.nan
+    return float(np.corrcoef(log_returns.iloc[:, 0], log_returns.iloc[:, 1])[0, 1])
 
 
 def compute_spread_series(symbol_a: str, symbol_b: str) -> Tuple[pd.DataFrame, dict]:

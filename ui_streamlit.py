@@ -2062,7 +2062,7 @@ def main():
                 value=80,
                 step=5,
             )
-        similarity_filters = st.columns([1, 1, 1])
+        similarity_filters = st.columns([1, 1, 1, 1])
         with similarity_filters[0]:
             recent_window = st.number_input(
                 "直近比較本数",
@@ -2072,6 +2072,14 @@ def main():
                 step=5,
             )
         with similarity_filters[1]:
+            long_window_input = st.number_input(
+                "長期比較本数(0で無効)",
+                min_value=0,
+                max_value=500,
+                value=240,
+                step=20,
+            )
+        with similarity_filters[2]:
             min_similarity = st.slider(
                 "直近形状の類似度下限",
                 min_value=0.0,
@@ -2079,7 +2087,25 @@ def main():
                 value=0.85,
                 step=0.05,
             )
-        with similarity_filters[2]:
+        with similarity_filters[3]:
+            min_long_similarity = st.slider(
+                "長期形状の類似度下限",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+            )
+        return_filters = st.columns([1])
+        with return_filters[0]:
+            min_return_corr = st.slider(
+                "直近リターン相関の下限",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+            )
+        stat_filters = st.columns([1, 1, 1])
+        with stat_filters[0]:
             max_p_value = st.number_input(
                 "コインテグレーションp値上限",
                 min_value=0.0,
@@ -2088,8 +2114,7 @@ def main():
                 step=0.01,
                 format="%.2f",
             )
-        strict_filters = st.columns([1, 1, 1])
-        with strict_filters[0]:
+        with stat_filters[1]:
             max_half_life = st.number_input(
                 "半減期の上限(日)",
                 min_value=1.0,
@@ -2097,7 +2122,7 @@ def main():
                 value=30.0,
                 step=1.0,
             )
-        with strict_filters[1]:
+        with stat_filters[2]:
             max_abs_zscore = st.number_input(
                 "最新Zスコア絶対値の上限",
                 min_value=0.5,
@@ -2105,7 +2130,8 @@ def main():
                 value=2.5,
                 step=0.1,
             )
-        with strict_filters[2]:
+        volume_filters = st.columns([1])
+        with volume_filters[0]:
             min_avg_volume = st.number_input(
                 "平均出来高の下限",
                 min_value=0.0,
@@ -2122,6 +2148,10 @@ def main():
                 step=10,
             )
 
+        long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
+        if long_window is None:
+            min_long_similarity = None
+
         with st.expander("指標の説明", expanded=False):
             st.markdown(
                 "- p値: コインテグレーション検定の結果。小さいほど統計的にペアの関係が強い。"
@@ -2129,6 +2159,11 @@ def main():
             st.markdown("- 半減期: スプレッドが平均に戻るまでの目安期間。短いほど回帰が速い。")
             st.markdown("- β: 2銘柄の回帰係数。ヘッジ比率の目安。")
             st.markdown("- 直近類似度: 直近の価格推移の形状相関。1に近いほど類似。")
+            st.markdown("- 直近リターン相関: 直近の対数リターンの相関係数。1に近いほど同期。")
+            st.markdown(
+                "- 長期類似度/長期リターン相関: 長期窓での形状相関とリターン相関。"
+                "長期比較本数を0にすると計算しない。"
+            )
             st.markdown("- スプレッド平均: 対数価格差の平均。")
             st.markdown("- スプレッド標準偏差: スプレッドのばらつき。")
             st.markdown("- 最新スプレッド: 直近日のスプレッド値。")
@@ -2168,7 +2203,10 @@ def main():
                     results_df = evaluate_pair_candidates(
                         pair_candidates,
                         recent_window=int(recent_window),
+                        long_window=long_window,
                         min_similarity=float(min_similarity),
+                        min_long_similarity=min_long_similarity,
+                        min_return_corr=float(min_return_corr),
                         max_p_value=float(max_p_value),
                         max_half_life=float(max_half_life),
                         max_abs_zscore=float(max_abs_zscore),
@@ -2200,6 +2238,9 @@ def main():
                     "半減期": display_df["half_life"],
                     "β": display_df["beta"],
                     "直近類似度": display_df["recent_similarity"],
+                    "直近リターン相関": display_df["recent_return_corr"],
+                    "長期類似度": display_df["long_similarity"],
+                    "長期リターン相関": display_df["long_return_corr"],
                     "スプレッド平均": display_df["spread_mean"],
                     "スプレッド標準偏差": display_df["spread_std"],
                     "最新スプレッド": display_df["spread_latest"],
@@ -2212,6 +2253,9 @@ def main():
                     "半減期": 2,
                     "β": 3,
                     "直近類似度": 3,
+                    "直近リターン相関": 3,
+                    "長期類似度": 3,
+                    "長期リターン相関": 3,
                     "スプレッド平均": 4,
                     "スプレッド標準偏差": 4,
                     "最新スプレッド": 4,
