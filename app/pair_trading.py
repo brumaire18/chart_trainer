@@ -779,7 +779,7 @@ def compute_pair_metrics(
             window=long_window,
         )
         if min_long_similarity is not None:
-            if np.isnan(long_similarity) or long_similarity < min_long_similarity:
+            if not np.isnan(long_similarity) and long_similarity < min_long_similarity:
                 return None
         long_return_corr = compute_return_correlation(
             df_pair["close_a"],
