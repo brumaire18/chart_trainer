@@ -19,6 +19,7 @@ from app.data_loader import (
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.pair_trading import (
+    coint as cointegration_test,
     compute_spread_series,
     evaluate_pair_candidates,
     generate_anchor_pair_candidates,
@@ -2104,16 +2105,23 @@ def main():
                 value=0.8,
                 step=0.05,
             )
+        cointegration_available = cointegration_test is not None
+        if not cointegration_available:
+            st.warning(
+                "statsmodels が未導入のため、コインテグレーション p値フィルタを無効化しています。"
+            )
         stat_filters = st.columns([1, 1, 1])
         with stat_filters[0]:
-            max_p_value = st.number_input(
+            max_p_value_input = st.number_input(
                 "コインテグレーションp値上限",
                 min_value=0.0,
                 max_value=1.0,
                 value=0.05,
                 step=0.01,
                 format="%.2f",
+                disabled=not cointegration_available,
             )
+            max_p_value = float(max_p_value_input) if cointegration_available else None
         with stat_filters[1]:
             max_half_life = st.number_input(
                 "半減期の上限(日)",
