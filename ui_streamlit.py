@@ -2024,6 +2024,9 @@ def main():
     with tab_pair:
         st.subheader("ペアトレード")
         st.caption("業種フィルタで候補を絞り込み、統計指標とスプレッドの推移を確認します。")
+        trading_days_per_year = 252
+        pair_search_years = 2
+        pair_search_history = trading_days_per_year * pair_search_years
 
         if "pair_results" not in st.session_state:
             st.session_state["pair_results"] = None
@@ -2069,7 +2072,7 @@ def main():
             recent_window = st.number_input(
                 "直近比較本数",
                 min_value=20,
-                max_value=250,
+                max_value=pair_search_history,
                 value=60,
                 step=5,
             )
@@ -2077,7 +2080,7 @@ def main():
             long_window_input = st.number_input(
                 "長期比較本数(0で無効)",
                 min_value=0,
-                max_value=500,
+                max_value=pair_search_history,
                 value=240,
                 step=20,
             )
@@ -2161,7 +2164,12 @@ def main():
         if long_window is None:
             min_long_similarity = None
         min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
-        st.caption(f"必要本数の目安: 直近/長期比較の設定から最低 {min_pair_samples} 本が必要です。")
+        required_samples = max(min_pair_samples, pair_search_history)
+        st.caption(
+            "必要本数の目安: 直近/長期比較の設定から最低 "
+            f"{min_pair_samples} 本が必要です。探索対象は直近{pair_search_years}年"
+            f"({pair_search_history}本)に限定されます。"
+        )
 
         with st.expander("指標の説明", expanded=False):
             st.markdown(
@@ -2183,7 +2191,7 @@ def main():
             st.markdown(
                 "- 総合スコア: 直近類似度、最新Zスコア、半減期から簡易スコアを算出し上位のみ評価。"
             )
-            st.markdown("- ETF同士で同一指数に連動する組み合わせは除外。")
+            st.markdown("- 指数ETFはペア探索対象から除外。")
 
         run_pairs = st.button("ペア候補を生成", type="primary")
         if run_pairs:
@@ -2212,22 +2220,23 @@ def main():
                     st.session_state["pair_results"] = pd.DataFrame()
                 else:
                     min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
+                    required_samples = max(min_pair_samples, pair_search_history)
                     unique_symbols = {symbol for pair in pair_candidates for symbol in pair}
                     insufficient_symbols = []
                     for symbol in sorted(unique_symbols):
                         try:
-                            df_symbol = load_price_csv(symbol, tail_rows=min_pair_samples)
+                            df_symbol = load_price_csv(symbol, tail_rows=required_samples)
                         except FileNotFoundError:
                             insufficient_symbols.append(symbol)
                             continue
-                        if len(df_symbol) < min_pair_samples:
+                        if len(df_symbol) < required_samples:
                             insufficient_symbols.append(symbol)
                     if insufficient_symbols:
                         sample_list = ", ".join(insufficient_symbols[:5])
                         suffix = "..." if len(insufficient_symbols) > 5 else ""
                         st.warning(
                             "必要本数が不足している銘柄があります。"
-                            f"最低 {min_pair_samples} 本必要ですが "
+                            f"最低 {required_samples} 本必要ですが "
                             f"{len(insufficient_symbols)} 銘柄が不足しています。"
                             f" 該当銘柄: {sample_list}{suffix}"
                         )
@@ -2244,6 +2253,7 @@ def main():
                         min_avg_volume=float(min_avg_volume),
                         preselect_top_n=int(preselect_top_n),
                         listed_df=listed_df,
+                        history_window=pair_search_history,
                     )
                     st.session_state["pair_results"] = results_df
 
@@ -2538,6 +2548,7 @@ def main():
         st.markdown("---")
         st.subheader("ペアトレード バックテスト")
         st.caption("業種ごとの銘柄ペアに対して、Zスコア型の平均回帰戦略を評価します。")
+        st.caption("運用期間は直近3年に固定しています。")
 
         if "pair_trade_summary" not in st.session_state:
             st.session_state["pair_trade_summary"] = None
@@ -2584,13 +2595,19 @@ def main():
                 entry_z = st.number_input("エントリーZ", 0.5, 5.0, value=2.0, step=0.1)
                 exit_z = st.number_input("イグジットZ", 0.1, 2.0, value=0.5, step=0.1)
                 stop_z = st.number_input("ストップZ", 1.0, 6.0, value=3.5, step=0.1)
-                enable_date_filter = st.checkbox("期間フィルタを使う", value=False)
-                date_range = None
-                if enable_date_filter:
-                    date_range = st.date_input(
-                        "対象期間",
-                        value=(date.today() - timedelta(days=365), date.today()),
-                    )
+                pair_trade_years = 3
+                pair_trade_start = date.today() - timedelta(days=365 * pair_trade_years)
+                enable_date_filter = st.checkbox(
+                    "期間フィルタを使う",
+                    value=True,
+                    disabled=True,
+                    help="ペアトレードは直近3年で固定しています。",
+                )
+                date_range = st.date_input(
+                    "対象期間",
+                    value=(pair_trade_start, date.today()),
+                    disabled=True,
+                )
 
             run_pair_backtest = st.button("ペアトレードを実行", type="primary")
             if run_pair_backtest:
