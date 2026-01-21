@@ -2112,6 +2112,15 @@ def main():
                 value=50000.0,
                 step=1000.0,
             )
+        score_filters = st.columns([1])
+        with score_filters[0]:
+            preselect_top_n = st.number_input(
+                "スコア上位の評価件数",
+                min_value=10,
+                max_value=500,
+                value=150,
+                step=10,
+            )
 
         with st.expander("指標の説明", expanded=False):
             st.markdown(
@@ -2125,6 +2134,10 @@ def main():
             st.markdown("- 最新スプレッド: 直近日のスプレッド値。")
             st.markdown("- 最新Zスコア: 直近スプレッドの標準化値。")
             st.markdown("- 平均出来高: 直近比較本数の平均出来高。一定以上を必須にする。")
+            st.markdown(
+                "- 総合スコア: 直近類似度、最新Zスコア、半減期から簡易スコアを算出し上位のみ評価。"
+            )
+            st.markdown("- ETF同士で同一指数に連動する組み合わせは除外。")
 
         run_pairs = st.button("ペア候補を生成", type="primary")
         if run_pairs:
@@ -2160,6 +2173,8 @@ def main():
                         max_half_life=float(max_half_life),
                         max_abs_zscore=float(max_abs_zscore),
                         min_avg_volume=float(min_avg_volume),
+                        preselect_top_n=int(preselect_top_n),
+                        listed_df=listed_df,
                     )
                     st.session_state["pair_results"] = results_df
 
