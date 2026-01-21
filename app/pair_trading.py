@@ -233,7 +233,9 @@ except ImportError:  # pragma: no cover - handled gracefully when optional depen
 from app.data_loader import load_price_csv
 
 
-MIN_PAIR_SAMPLES = 120
+def compute_min_pair_samples(recent_window: int, long_window: Optional[int] = None) -> int:
+    """Compute minimum samples needed for pair metrics based on windows."""
+    return max(recent_window + 1, (long_window or 0) + 1)
 
 
 @dataclass(frozen=True)
@@ -735,7 +737,8 @@ def _compute_quick_pair_score(
     min_avg_volume: Optional[float],
 ) -> Optional[float]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
-    if len(df_pair) < MIN_PAIR_SAMPLES:
+    min_samples = compute_min_pair_samples(recent_window)
+    if len(df_pair) < min_samples:
         return None
     volume_window = df_pair.tail(recent_window)
     avg_volume_a = float(volume_window["volume_a"].mean())
@@ -782,7 +785,8 @@ def compute_pair_metrics(
     min_avg_volume: Optional[float] = None,
 ) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
-    if len(df_pair) < MIN_PAIR_SAMPLES:
+    min_samples = compute_min_pair_samples(recent_window, long_window)
+    if len(df_pair) < min_samples:
         return None
     if min_avg_volume is not None:
         volume_window = df_pair.tail(recent_window)

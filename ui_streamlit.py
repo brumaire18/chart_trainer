@@ -20,6 +20,7 @@ from app.data_loader import (
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.pair_trading import (
     coint as cointegration_test,
+    compute_min_pair_samples,
     compute_spread_series,
     evaluate_pair_candidates,
     generate_anchor_pair_candidates,
@@ -2159,6 +2160,8 @@ def main():
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
             min_long_similarity = None
+        min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
+        st.caption(f"必要本数の目安: 直近/長期比較の設定から最低 {min_pair_samples} 本が必要です。")
 
         with st.expander("指標の説明", expanded=False):
             st.markdown(
@@ -2208,6 +2211,26 @@ def main():
                     st.warning("条件に合致するペア候補がありません。業種フィルタを調整してください。")
                     st.session_state["pair_results"] = pd.DataFrame()
                 else:
+                    min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
+                    unique_symbols = {symbol for pair in pair_candidates for symbol in pair}
+                    insufficient_symbols = []
+                    for symbol in sorted(unique_symbols):
+                        try:
+                            df_symbol = load_price_csv(symbol, tail_rows=min_pair_samples)
+                        except FileNotFoundError:
+                            insufficient_symbols.append(symbol)
+                            continue
+                        if len(df_symbol) < min_pair_samples:
+                            insufficient_symbols.append(symbol)
+                    if insufficient_symbols:
+                        sample_list = ", ".join(insufficient_symbols[:5])
+                        suffix = "..." if len(insufficient_symbols) > 5 else ""
+                        st.warning(
+                            "必要本数が不足している銘柄があります。"
+                            f"最低 {min_pair_samples} 本必要ですが "
+                            f"{len(insufficient_symbols)} 銘柄が不足しています。"
+                            f" 該当銘柄: {sample_list}{suffix}"
+                        )
                     results_df = evaluate_pair_candidates(
                         pair_candidates,
                         recent_window=int(recent_window),
