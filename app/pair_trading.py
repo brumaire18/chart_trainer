@@ -42,7 +42,7 @@ def generate_pairs_by_sector(
     df = listed_master_df.copy()
     if "code" not in df.columns:
         raise ValueError("listed_master_df must contain 'code' column")
-    df = _exclude_topix_etfs(df)
+    df = _exclude_index_etfs(df)
 
     available_sector_cols = [col for col in ["sector17", "sector33"] if col in df.columns]
     if sector_col:
@@ -238,6 +238,16 @@ def compute_min_pair_samples(recent_window: int, long_window: Optional[int] = No
     return max(recent_window + 1, (long_window or 0) + 1)
 
 
+def _trim_pair_history(df_pair: pd.DataFrame, history_window: Optional[int]) -> pd.DataFrame:
+    if history_window is None:
+        return df_pair
+    if history_window <= 0:
+        return df_pair.iloc[0:0]
+    if len(df_pair) <= history_window:
+        return df_pair
+    return df_pair.tail(history_window).reset_index(drop=True)
+
+
 @dataclass(frozen=True)
 class PairTradeConfig:
     """Configuration for pair trading backtests."""
@@ -362,8 +372,18 @@ def _prepare_pair_prices(
     start_date: Optional[str],
     end_date: Optional[str],
 ) -> pd.DataFrame:
-    df_x = load_price_csv(symbol_x).loc[:, ["date", "close"]].rename(columns={"close": "close_x"})
-    df_y = load_price_csv(symbol_y).loc[:, ["date", "close"]].rename(columns={"close": "close_y"})
+    try:
+        df_x = load_price_csv(symbol_x).loc[:, ["date", "close"]].rename(
+            columns={"close": "close_x"}
+        )
+    except FileNotFoundError:
+        return pd.DataFrame()
+    try:
+        df_y = load_price_csv(symbol_y).loc[:, ["date", "close"]].rename(
+            columns={"close": "close_y"}
+        )
+    except FileNotFoundError:
+        return pd.DataFrame()
     df_pair = pd.merge(df_x, df_y, on="date", how="inner").dropna()
     df_pair = df_pair[(df_pair["close_x"] > 0) & (df_pair["close_y"] > 0)]
     if start_date:
@@ -477,7 +497,7 @@ def generate_pair_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
-    df = _exclude_topix_etfs(df)
+    df = _exclude_index_etfs(df)
     df["code"] = df["code"].astype(str).str.zfill(4)
     df = df[df["code"].isin(available)]
     if sector17 and "sector17" in df.columns:
@@ -542,14 +562,14 @@ def _is_topix_etf_tag(tag: Optional[str]) -> bool:
     return bool(tag) and str(tag).upper().startswith("TOPIX")
 
 
-def _exclude_topix_etfs(listed_df: pd.DataFrame) -> pd.DataFrame:
+def _exclude_index_etfs(listed_df: pd.DataFrame) -> pd.DataFrame:
     if listed_df is None or listed_df.empty:
         return listed_df
     if "name" not in listed_df.columns:
         return listed_df
     df = listed_df.copy()
     df["__etf_tag__"] = df["name"].apply(lambda name: _extract_etf_index_tag(str(name)))
-    df = df[~df["__etf_tag__"].apply(_is_topix_etf_tag)].drop(columns=["__etf_tag__"])
+    df = df[df["__etf_tag__"].isna()].drop(columns=["__etf_tag__"])
     return df
 
 
@@ -564,7 +584,7 @@ def generate_pairs_by_sector_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
-    df = _exclude_topix_etfs(df)
+    df = _exclude_index_etfs(df)
     df["code"] = df["code"].astype(str).str.zfill(4)
     df = df[df["code"].isin(available)]
     if sector17 and "sector17" in df.columns:
@@ -603,7 +623,7 @@ def generate_anchor_pair_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
-    df = _exclude_topix_etfs(df)
+    df = _exclude_index_etfs(df)
     df["code"] = df["code"].astype(str).str.zfill(4)
     df = df[df["code"].isin(available)]
     if sector17 and "sector17" in df.columns:
@@ -648,12 +668,13 @@ def evaluate_pair_candidates(
     min_avg_volume: Optional[float] = None,
     preselect_top_n: Optional[int] = None,
     listed_df: Optional[pd.DataFrame] = None,
+    history_window: Optional[int] = None,
 ) -> pd.DataFrame:
     etf_index_map = _build_etf_index_map(listed_df) if listed_df is not None else {}
     scored_pairs = []
     if preselect_top_n is not None and preselect_top_n > 0:
         for symbol_a, symbol_b in pairs:
-            if _is_topix_etf_symbol(symbol_a, etf_index_map) or _is_topix_etf_symbol(
+            if _is_index_etf_symbol(symbol_a, etf_index_map) or _is_index_etf_symbol(
                 symbol_b, etf_index_map
             ):
                 continue
@@ -664,6 +685,7 @@ def evaluate_pair_candidates(
                 symbol_b,
                 recent_window=recent_window,
                 min_avg_volume=min_avg_volume,
+                history_window=history_window,
             )
             if score is not None:
                 scored_pairs.append((score, (symbol_a, symbol_b)))
@@ -673,7 +695,7 @@ def evaluate_pair_candidates(
         target_pairs = [pair for pair in pairs]
     results = []
     for symbol_a, symbol_b in target_pairs:
-        if _is_topix_etf_symbol(symbol_a, etf_index_map) or _is_topix_etf_symbol(
+        if _is_index_etf_symbol(symbol_a, etf_index_map) or _is_index_etf_symbol(
             symbol_b, etf_index_map
         ):
             continue
@@ -688,6 +710,7 @@ def evaluate_pair_candidates(
             min_long_similarity=min_long_similarity,
             min_return_corr=min_return_corr,
             min_avg_volume=min_avg_volume,
+            history_window=history_window,
         )
         if metrics is None:
             continue
@@ -730,13 +753,22 @@ def _is_topix_etf_symbol(symbol: str, etf_index_map: Dict[str, Optional[str]]) -
     return _is_topix_etf_tag(tag)
 
 
+def _is_index_etf_symbol(symbol: str, etf_index_map: Dict[str, Optional[str]]) -> bool:
+    if not etf_index_map:
+        return False
+    tag = etf_index_map.get(str(symbol).zfill(4))
+    return tag is not None
+
+
 def _compute_quick_pair_score(
     symbol_a: str,
     symbol_b: str,
     recent_window: int,
     min_avg_volume: Optional[float],
+    history_window: Optional[int],
 ) -> Optional[float]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
+    df_pair = _trim_pair_history(df_pair, history_window)
     min_samples = compute_min_pair_samples(recent_window)
     if len(df_pair) < min_samples:
         return None
@@ -783,8 +815,10 @@ def compute_pair_metrics(
     min_long_similarity: Optional[float] = None,
     min_return_corr: Optional[float] = None,
     min_avg_volume: Optional[float] = None,
+    history_window: Optional[int] = None,
 ) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
+    df_pair = _trim_pair_history(df_pair, history_window)
     min_samples = compute_min_pair_samples(recent_window, long_window)
     if len(df_pair) < min_samples:
         return None
