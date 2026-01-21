@@ -664,7 +664,9 @@ def evaluate_pair_candidates(
             continue
         if max_p_value is not None:
             p_value = metrics.get("p_value")
-            if p_value is None or np.isnan(p_value) or p_value > max_p_value:
+            if p_value is None or np.isnan(p_value):
+                pass
+            elif p_value > max_p_value:
                 continue
         if max_half_life is not None:
             half_life = metrics.get("half_life")
