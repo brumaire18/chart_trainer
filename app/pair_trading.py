@@ -42,6 +42,7 @@ def generate_pairs_by_sector(
     df = listed_master_df.copy()
     if "code" not in df.columns:
         raise ValueError("listed_master_df must contain 'code' column")
+    df = _exclude_topix_etfs(df)
 
     available_sector_cols = [col for col in ["sector17", "sector33"] if col in df.columns]
     if sector_col:
@@ -474,6 +475,7 @@ def generate_pair_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
+    df = _exclude_topix_etfs(df)
     df["code"] = df["code"].astype(str).str.zfill(4)
     df = df[df["code"].isin(available)]
     if sector17 and "sector17" in df.columns:
@@ -534,6 +536,21 @@ def _build_etf_index_map(listed_df: pd.DataFrame) -> Dict[str, Optional[str]]:
     }
 
 
+def _is_topix_etf_tag(tag: Optional[str]) -> bool:
+    return bool(tag) and str(tag).upper().startswith("TOPIX")
+
+
+def _exclude_topix_etfs(listed_df: pd.DataFrame) -> pd.DataFrame:
+    if listed_df is None or listed_df.empty:
+        return listed_df
+    if "name" not in listed_df.columns:
+        return listed_df
+    df = listed_df.copy()
+    df["__etf_tag__"] = df["name"].apply(lambda name: _extract_etf_index_tag(str(name)))
+    df = df[~df["__etf_tag__"].apply(_is_topix_etf_tag)].drop(columns=["__etf_tag__"])
+    return df
+
+
 def generate_pairs_by_sector_candidates(
     listed_df: pd.DataFrame,
     symbols: List[str],
@@ -545,6 +562,7 @@ def generate_pairs_by_sector_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
+    df = _exclude_topix_etfs(df)
     df["code"] = df["code"].astype(str).str.zfill(4)
     df = df[df["code"].isin(available)]
     if sector17 and "sector17" in df.columns:
@@ -583,6 +601,7 @@ def generate_anchor_pair_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
+    df = _exclude_topix_etfs(df)
     df["code"] = df["code"].astype(str).str.zfill(4)
     df = df[df["code"].isin(available)]
     if sector17 and "sector17" in df.columns:
@@ -632,6 +651,10 @@ def evaluate_pair_candidates(
     scored_pairs = []
     if preselect_top_n is not None and preselect_top_n > 0:
         for symbol_a, symbol_b in pairs:
+            if _is_topix_etf_symbol(symbol_a, etf_index_map) or _is_topix_etf_symbol(
+                symbol_b, etf_index_map
+            ):
+                continue
             if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
                 continue
             score = _compute_quick_pair_score(
@@ -648,6 +671,10 @@ def evaluate_pair_candidates(
         target_pairs = [pair for pair in pairs]
     results = []
     for symbol_a, symbol_b in target_pairs:
+        if _is_topix_etf_symbol(symbol_a, etf_index_map) or _is_topix_etf_symbol(
+            symbol_b, etf_index_map
+        ):
+            continue
         if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
             continue
         metrics = compute_pair_metrics(
@@ -692,6 +719,13 @@ def _is_same_index_etf_pair(
     tag_a = etf_index_map.get(str(symbol_a).zfill(4))
     tag_b = etf_index_map.get(str(symbol_b).zfill(4))
     return tag_a is not None and tag_a == tag_b
+
+
+def _is_topix_etf_symbol(symbol: str, etf_index_map: Dict[str, Optional[str]]) -> bool:
+    if not etf_index_map:
+        return False
+    tag = etf_index_map.get(str(symbol).zfill(4))
+    return _is_topix_etf_tag(tag)
 
 
 def _compute_quick_pair_score(
