@@ -484,22 +484,243 @@ def generate_pair_candidates(
     return list(islice(combinations(codes, 2), max_pairs))
 
 
+def _is_etf_name(name: str) -> bool:
+    upper_name = name.upper()
+    return "ETF" in upper_name or "上場投信" in name
+
+
+def _extract_etf_index_tag(name: str) -> Optional[str]:
+    if not name or not _is_etf_name(name):
+        return None
+    normalized = (
+        name.upper()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace("・", "")
+        .replace("＆", "")
+    )
+    index_aliases = {
+        "TOPIX": ["TOPIX"],
+        "NIKKEI225": ["日経225", "NIKKEI225", "NIKKEI 225", "NIKKEI２２５"],
+        "JPXNIKKEI400": ["JPX日経400", "JPXNIKKEI400", "JPX-NIKKEI400"],
+        "S&P500": ["S&P500", "S&P 500", "SP500"],
+        "NASDAQ100": ["NASDAQ100", "NASDAQ 100", "NASDAQ-100"],
+        "DOW": ["DOW", "ダウ", "NYDOW", "DOWJONES"],
+        "MSCI": ["MSCI"],
+        "FTSE": ["FTSE"],
+        "REIT": ["REIT"],
+        "RUSSELL": ["RUSSELL", "ラッセル"],
+        "TOPIXCORE30": ["TOPIXCORE30", "TOPIX CORE30", "TOPIXコア30"],
+        "TOPIXSMALL": ["TOPIXSMALL", "TOPIX SMALL"],
+    }
+    for tag, candidates in index_aliases.items():
+        for keyword in candidates:
+            if keyword.upper().replace(" ", "").replace("-", "") in normalized:
+                return tag
+    return None
+
+
+def _build_etf_index_map(listed_df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    if listed_df is None or listed_df.empty:
+        return {}
+    if "code" not in listed_df.columns or "name" not in listed_df.columns:
+        return {}
+    df = listed_df.loc[:, ["code", "name"]].copy()
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    return {
+        row.code: _extract_etf_index_tag(str(row.name))
+        for row in df.itertuples(index=False)
+    }
+
+
+def generate_pairs_by_sector_candidates(
+    listed_df: pd.DataFrame,
+    symbols: List[str],
+    sector17: Optional[str] = None,
+    sector33: Optional[str] = None,
+    max_pairs_per_sector: int = 50,
+) -> List[Tuple[str, str]]:
+    available = set(symbols)
+    df = listed_df.copy()
+    if "code" not in df.columns:
+        return []
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    df = df[df["code"].isin(available)]
+    if sector17 and "sector17" in df.columns:
+        df = df[df["sector17"].astype(str) == sector17]
+    if sector33 and "sector33" in df.columns:
+        df = df[df["sector33"].astype(str) == sector33]
+    if sector33 and "sector33" in df.columns:
+        sector_col = "sector33"
+    elif sector17 and "sector17" in df.columns:
+        sector_col = "sector17"
+    elif "sector33" in df.columns:
+        sector_col = "sector33"
+    elif "sector17" in df.columns:
+        sector_col = "sector17"
+    else:
+        return []
+    pairs: List[Tuple[str, str]] = []
+    for _, group in df.dropna(subset=[sector_col]).groupby(sector_col):
+        codes = sorted(group["code"].dropna().unique().tolist())
+        pairs.extend(list(islice(combinations(codes, 2), max_pairs_per_sector)))
+    return pairs
+
+
+def generate_anchor_pair_candidates(
+    listed_df: pd.DataFrame,
+    symbols: List[str],
+    anchor_symbol: str,
+    sector17: Optional[str] = None,
+    sector33: Optional[str] = None,
+    max_pairs: int = 50,
+) -> List[Tuple[str, str]]:
+    available = set(symbols)
+    anchor_symbol = str(anchor_symbol).zfill(4)
+    if anchor_symbol not in available:
+        return []
+    df = listed_df.copy()
+    if "code" not in df.columns:
+        return []
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    df = df[df["code"].isin(available)]
+    if sector17 and "sector17" in df.columns:
+        df = df[df["sector17"].astype(str) == sector17]
+    if sector33 and "sector33" in df.columns:
+        df = df[df["sector33"].astype(str) == sector33]
+    if sector33 and "sector33" in df.columns:
+        sector_col = "sector33"
+    elif sector17 and "sector17" in df.columns:
+        sector_col = "sector17"
+    elif "sector33" in df.columns:
+        sector_col = "sector33"
+    elif "sector17" in df.columns:
+        sector_col = "sector17"
+    else:
+        return []
+    codes = sorted(df["code"].dropna().unique().tolist())
+    if anchor_symbol not in codes:
+        return []
+    anchor_sector = (
+        df.loc[df["code"] == anchor_symbol, sector_col].astype(str).iloc[0]
+        if sector_col in df.columns
+        else None
+    )
+    if anchor_sector is not None and sector_col in df.columns:
+        df = df[df[sector_col].astype(str) == anchor_sector]
+        codes = sorted(df["code"].dropna().unique().tolist())
+    candidates = [(anchor_symbol, code) for code in codes if code != anchor_symbol]
+    return list(islice(candidates, max_pairs))
+
+
 def evaluate_pair_candidates(
     pairs: Iterable[Tuple[str, str]],
     recent_window: int = 60,
     min_similarity: Optional[float] = None,
+    max_p_value: Optional[float] = None,
+    max_half_life: Optional[float] = None,
+    max_abs_zscore: Optional[float] = None,
+    min_avg_volume: Optional[float] = None,
+    preselect_top_n: Optional[int] = None,
+    listed_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
+    etf_index_map = _build_etf_index_map(listed_df) if listed_df is not None else {}
+    scored_pairs = []
+    if preselect_top_n is not None and preselect_top_n > 0:
+        for symbol_a, symbol_b in pairs:
+            if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
+                continue
+            score = _compute_quick_pair_score(
+                symbol_a,
+                symbol_b,
+                recent_window=recent_window,
+                min_avg_volume=min_avg_volume,
+            )
+            if score is not None:
+                scored_pairs.append((score, (symbol_a, symbol_b)))
+        scored_pairs.sort(key=lambda item: item[0], reverse=True)
+        target_pairs = [pair for _, pair in scored_pairs[:preselect_top_n]]
+    else:
+        target_pairs = [pair for pair in pairs]
     results = []
-    for symbol_a, symbol_b in pairs:
+    for symbol_a, symbol_b in target_pairs:
+        if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
+            continue
         metrics = compute_pair_metrics(
             symbol_a,
             symbol_b,
             recent_window=recent_window,
             min_similarity=min_similarity,
+            min_avg_volume=min_avg_volume,
         )
-        if metrics is not None:
-            results.append(metrics)
+        if metrics is None:
+            continue
+        if max_p_value is not None:
+            p_value = metrics.get("p_value")
+            if p_value is None or np.isnan(p_value) or p_value > max_p_value:
+                continue
+        if max_half_life is not None:
+            half_life = metrics.get("half_life")
+            if half_life is None or np.isnan(half_life) or half_life > max_half_life:
+                continue
+        if max_abs_zscore is not None:
+            zscore_latest = metrics.get("zscore_latest")
+            if (
+                zscore_latest is None
+                or np.isnan(zscore_latest)
+                or abs(zscore_latest) > max_abs_zscore
+            ):
+                continue
+        results.append(metrics)
     return pd.DataFrame(results)
+
+
+def _is_same_index_etf_pair(
+    symbol_a: str, symbol_b: str, etf_index_map: Dict[str, Optional[str]]
+) -> bool:
+    if not etf_index_map:
+        return False
+    tag_a = etf_index_map.get(str(symbol_a).zfill(4))
+    tag_b = etf_index_map.get(str(symbol_b).zfill(4))
+    return tag_a is not None and tag_a == tag_b
+
+
+def _compute_quick_pair_score(
+    symbol_a: str,
+    symbol_b: str,
+    recent_window: int,
+    min_avg_volume: Optional[float],
+) -> Optional[float]:
+    df_pair = _prepare_pair_frame(symbol_a, symbol_b)
+    if len(df_pair) < MIN_PAIR_SAMPLES:
+        return None
+    volume_window = df_pair.tail(recent_window)
+    avg_volume_a = float(volume_window["volume_a"].mean())
+    avg_volume_b = float(volume_window["volume_b"].mean())
+    if min_avg_volume is not None:
+        if avg_volume_a < min_avg_volume or avg_volume_b < min_avg_volume:
+            return None
+    similarity = compute_recent_shape_similarity(
+        df_pair["close_a"], df_pair["close_b"], window=recent_window
+    )
+    if np.isnan(similarity):
+        return None
+    log_a = np.log(df_pair["close_a"])
+    log_b = np.log(df_pair["close_b"])
+    beta, alpha = np.polyfit(log_b, log_a, 1)
+    spread = log_a - (beta * log_b + alpha)
+    spread_std = float(spread.std(ddof=0))
+    if spread_std == 0 or np.isnan(spread_std):
+        return None
+    zscore_latest = float((spread.iloc[-1] - spread.mean()) / spread_std)
+    half_life = _compute_half_life(spread)
+    if half_life is None or np.isnan(half_life):
+        return None
+    zscore_score = min(abs(zscore_latest), 4.0) * 10.0
+    half_life_score = max(0.0, 30.0 - float(half_life)) / 3.0
+    similarity_score = float(similarity) * 100.0
+    return float(zscore_score + similarity_score + half_life_score)
 
 
 def compute_pair_metrics(
@@ -507,10 +728,17 @@ def compute_pair_metrics(
     symbol_b: str,
     recent_window: int = 60,
     min_similarity: Optional[float] = None,
+    min_avg_volume: Optional[float] = None,
 ) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
     if len(df_pair) < MIN_PAIR_SAMPLES:
         return None
+    if min_avg_volume is not None:
+        volume_window = df_pair.tail(recent_window)
+        avg_volume_a = float(volume_window["volume_a"].mean())
+        avg_volume_b = float(volume_window["volume_b"].mean())
+        if avg_volume_a < min_avg_volume or avg_volume_b < min_avg_volume:
+            return None
     recent_similarity = compute_recent_shape_similarity(
         df_pair["close_a"],
         df_pair["close_b"],
@@ -592,10 +820,10 @@ def compute_spread_series(symbol_a: str, symbol_b: str) -> Tuple[pd.DataFrame, d
 
 
 def _prepare_pair_frame(symbol_a: str, symbol_b: str) -> pd.DataFrame:
-    df_a = load_price_csv(symbol_a).loc[:, ["date", "close"]]
-    df_b = load_price_csv(symbol_b).loc[:, ["date", "close"]]
-    df_a = df_a.rename(columns={"close": "close_a"})
-    df_b = df_b.rename(columns={"close": "close_b"})
+    df_a = load_price_csv(symbol_a).loc[:, ["date", "close", "volume"]]
+    df_b = load_price_csv(symbol_b).loc[:, ["date", "close", "volume"]]
+    df_a = df_a.rename(columns={"close": "close_a", "volume": "volume_a"})
+    df_b = df_b.rename(columns={"close": "close_b", "volume": "volume_b"})
     df_pair = pd.merge(df_a, df_b, on="date", how="inner").dropna()
     df_pair = df_pair[(df_pair["close_a"] > 0) & (df_pair["close_b"] > 0)]
     return df_pair.sort_values("date")

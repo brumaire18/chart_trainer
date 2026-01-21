@@ -21,7 +21,8 @@ from app.market_breadth import aggregate_market_breadth, compute_breadth_indicat
 from app.pair_trading import (
     compute_spread_series,
     evaluate_pair_candidates,
-    generate_pair_candidates,
+    generate_anchor_pair_candidates,
+    generate_pairs_by_sector_candidates,
 )
 from app.backtest import run_canslim_backtest, scan_canslim_patterns
 from app.jquants_fetcher import (
@@ -2036,7 +2037,7 @@ def main():
             else []
         )
 
-        pair_filters = st.columns([1, 1, 1])
+        pair_filters = st.columns([1, 1, 1, 1])
         with pair_filters[0]:
             sector17_choice = st.selectbox(
                 "sector17 フィルタ",
@@ -2048,14 +2049,20 @@ def main():
                 options=["指定なし", *sector33_values],
             )
         with pair_filters[2]:
+            search_scope = st.selectbox(
+                "探索範囲",
+                options=["セクター別(全銘柄)", "選択銘柄起点(同一セクター)"],
+                help="総当たりを避け、セクター内でペア候補を探索します。",
+            )
+        with pair_filters[3]:
             max_pairs = st.number_input(
-                "候補数上限",
+                "セクターあたり候補上限",
                 min_value=10,
                 max_value=300,
-                value=50,
+                value=80,
                 step=5,
             )
-        similarity_filters = st.columns([1, 1])
+        similarity_filters = st.columns([1, 1, 1])
         with similarity_filters[0]:
             recent_window = st.number_input(
                 "直近比較本数",
@@ -2069,22 +2076,91 @@ def main():
                 "直近形状の類似度下限",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.8,
+                value=0.85,
                 step=0.05,
             )
+        with similarity_filters[2]:
+            max_p_value = st.number_input(
+                "コインテグレーションp値上限",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.05,
+                step=0.01,
+                format="%.2f",
+            )
+        strict_filters = st.columns([1, 1, 1])
+        with strict_filters[0]:
+            max_half_life = st.number_input(
+                "半減期の上限(日)",
+                min_value=1.0,
+                max_value=250.0,
+                value=30.0,
+                step=1.0,
+            )
+        with strict_filters[1]:
+            max_abs_zscore = st.number_input(
+                "最新Zスコア絶対値の上限",
+                min_value=0.5,
+                max_value=5.0,
+                value=2.5,
+                step=0.1,
+            )
+        with strict_filters[2]:
+            min_avg_volume = st.number_input(
+                "平均出来高の下限",
+                min_value=0.0,
+                value=50000.0,
+                step=1000.0,
+            )
+        score_filters = st.columns([1])
+        with score_filters[0]:
+            preselect_top_n = st.number_input(
+                "スコア上位の評価件数",
+                min_value=10,
+                max_value=500,
+                value=150,
+                step=10,
+            )
+
+        with st.expander("指標の説明", expanded=False):
+            st.markdown(
+                "- p値: コインテグレーション検定の結果。小さいほど統計的にペアの関係が強い。"
+            )
+            st.markdown("- 半減期: スプレッドが平均に戻るまでの目安期間。短いほど回帰が速い。")
+            st.markdown("- β: 2銘柄の回帰係数。ヘッジ比率の目安。")
+            st.markdown("- 直近類似度: 直近の価格推移の形状相関。1に近いほど類似。")
+            st.markdown("- スプレッド平均: 対数価格差の平均。")
+            st.markdown("- スプレッド標準偏差: スプレッドのばらつき。")
+            st.markdown("- 最新スプレッド: 直近日のスプレッド値。")
+            st.markdown("- 最新Zスコア: 直近スプレッドの標準化値。")
+            st.markdown("- 平均出来高: 直近比較本数の平均出来高。一定以上を必須にする。")
+            st.markdown(
+                "- 総合スコア: 直近類似度、最新Zスコア、半減期から簡易スコアを算出し上位のみ評価。"
+            )
+            st.markdown("- ETF同士で同一指数に連動する組み合わせは除外。")
 
         run_pairs = st.button("ペア候補を生成", type="primary")
         if run_pairs:
             with st.spinner("ペア候補を評価しています..."):
                 sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
                 sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
-                pair_candidates = generate_pair_candidates(
-                    listed_df=listed_df,
-                    symbols=symbols,
-                    sector17=sector17_filter,
-                    sector33=sector33_filter,
-                    max_pairs=int(max_pairs),
-                )
+                if search_scope == "選択銘柄起点(同一セクター)":
+                    pair_candidates = generate_anchor_pair_candidates(
+                        listed_df=listed_df,
+                        symbols=symbols,
+                        anchor_symbol=selected_symbol,
+                        sector17=sector17_filter,
+                        sector33=sector33_filter,
+                        max_pairs=int(max_pairs),
+                    )
+                else:
+                    pair_candidates = generate_pairs_by_sector_candidates(
+                        listed_df=listed_df,
+                        symbols=symbols,
+                        sector17=sector17_filter,
+                        sector33=sector33_filter,
+                        max_pairs_per_sector=int(max_pairs),
+                    )
                 if not pair_candidates:
                     st.warning("条件に合致するペア候補がありません。業種フィルタを調整してください。")
                     st.session_state["pair_results"] = pd.DataFrame()
@@ -2093,6 +2169,12 @@ def main():
                         pair_candidates,
                         recent_window=int(recent_window),
                         min_similarity=float(min_similarity),
+                        max_p_value=float(max_p_value),
+                        max_half_life=float(max_half_life),
+                        max_abs_zscore=float(max_abs_zscore),
+                        min_avg_volume=float(min_avg_volume),
+                        preselect_top_n=int(preselect_top_n),
+                        listed_df=listed_df,
                     )
                     st.session_state["pair_results"] = results_df
 
