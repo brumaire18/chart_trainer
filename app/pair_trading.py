@@ -578,7 +578,7 @@ def generate_pairs_by_sector_candidates(
     symbols: List[str],
     sector17: Optional[str] = None,
     sector33: Optional[str] = None,
-    max_pairs_per_sector: int = 50,
+    max_pairs_per_sector: Optional[int] = 50,
 ) -> List[Tuple[str, str]]:
     available = set(symbols)
     df = listed_df.copy()
@@ -604,7 +604,11 @@ def generate_pairs_by_sector_candidates(
     pairs: List[Tuple[str, str]] = []
     for _, group in df.dropna(subset=[sector_col]).groupby(sector_col):
         codes = sorted(group["code"].dropna().unique().tolist())
-        pairs.extend(list(islice(combinations(codes, 2), max_pairs_per_sector)))
+        combos = combinations(codes, 2)
+        if max_pairs_per_sector is None:
+            pairs.extend(list(combos))
+        else:
+            pairs.extend(list(islice(combos, max_pairs_per_sector)))
     return pairs
 
 
