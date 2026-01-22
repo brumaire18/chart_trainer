@@ -20,6 +20,7 @@ from app.data_loader import (
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.pair_trading import (
     coint as cointegration_test,
+    compute_pair_metrics,
     compute_min_pair_samples,
     compute_spread_series,
     evaluate_pair_candidates,
@@ -392,6 +393,131 @@ def _build_trading_rangebreaks(dates: pd.Series) -> List[dict]:
     if missing_dates.empty:
         return []
     return [dict(values=list(missing_dates.to_pydatetime()))]
+
+
+def _lookup_cached_pair_metrics(
+    pairs_df: Optional[pd.DataFrame], symbol_a: str, symbol_b: str
+) -> Optional[dict]:
+    if pairs_df is None or pairs_df.empty:
+        return None
+    df = pairs_df.copy()
+    df["symbol_a"] = df["symbol_a"].astype(str).str.zfill(4)
+    df["symbol_b"] = df["symbol_b"].astype(str).str.zfill(4)
+    symbol_a = str(symbol_a).zfill(4)
+    symbol_b = str(symbol_b).zfill(4)
+    row = df[
+        ((df["symbol_a"] == symbol_a) & (df["symbol_b"] == symbol_b))
+        | ((df["symbol_a"] == symbol_b) & (df["symbol_b"] == symbol_a))
+    ]
+    if row.empty:
+        return None
+    return row.iloc[0].to_dict()
+
+
+def _build_pair_metrics_table(metrics: dict) -> pd.DataFrame:
+    table_df = pd.DataFrame(
+        {
+            "p値": [metrics.get("p_value")],
+            "半減期": [metrics.get("half_life")],
+            "β": [metrics.get("beta")],
+            "直近類似度": [metrics.get("recent_similarity")],
+            "直近リターン相関": [metrics.get("recent_return_corr")],
+            "長期類似度": [metrics.get("long_similarity")],
+            "長期リターン相関": [metrics.get("long_return_corr")],
+            "スプレッド平均": [metrics.get("spread_mean")],
+            "スプレッド標準偏差": [metrics.get("spread_std")],
+            "最新スプレッド": [metrics.get("spread_latest")],
+            "最新Zスコア": [metrics.get("zscore_latest")],
+        }
+    )
+    return table_df.round(
+        {
+            "p値": 4,
+            "半減期": 2,
+            "β": 3,
+            "直近類似度": 3,
+            "直近リターン相関": 3,
+            "長期類似度": 3,
+            "長期リターン相関": 3,
+            "スプレッド平均": 4,
+            "スプレッド標準偏差": 4,
+            "最新スプレッド": 4,
+            "最新Zスコア": 2,
+        }
+    )
+
+
+def _render_pair_spread_chart(
+    df_pair: pd.DataFrame,
+    entry_threshold: float,
+    exit_threshold: float,
+    pair_metrics: Optional[dict] = None,
+) -> None:
+    if df_pair.empty:
+        st.warning("スプレッドを計算するためのデータが不足しています。")
+        return
+    df_pair = df_pair.copy()
+    df_pair["date_str"] = df_pair["date"].dt.strftime("%Y-%m-%d")
+    rangebreaks = _build_trading_rangebreaks(df_pair["date"])
+    fig_pair = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.55, 0.45],
+    )
+    fig_pair.add_trace(
+        go.Scatter(
+            x=df_pair["date_str"],
+            y=df_pair["spread"],
+            mode="lines",
+            name="スプレッド",
+            line=dict(color="#1f77b4"),
+        ),
+        row=1,
+        col=1,
+    )
+    spread_mean = pair_metrics.get("spread_mean") if pair_metrics else None
+    if spread_mean is not None:
+        fig_pair.add_hline(
+            y=spread_mean,
+            line=dict(color="#888888", dash="dash"),
+            row=1,
+            col=1,
+        )
+    fig_pair.add_trace(
+        go.Scatter(
+            x=df_pair["date_str"],
+            y=df_pair["zscore"],
+            mode="lines",
+            name="Zスコア",
+            line=dict(color="#ff7f0e"),
+        ),
+        row=2,
+        col=1,
+    )
+    for level, color, label in (
+        (entry_threshold, "#d62728", "エントリー上限"),
+        (-entry_threshold, "#d62728", "エントリー下限"),
+        (exit_threshold, "#2ca02c", "エグジット上限"),
+        (-exit_threshold, "#2ca02c", "エグジット下限"),
+    ):
+        fig_pair.add_hline(
+            y=level,
+            line=dict(color=color, dash="dash"),
+            annotation_text=label,
+            row=2,
+            col=1,
+        )
+    fig_pair.update_layout(
+        height=700,
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h"),
+    )
+    fig_pair.update_xaxes(type="category", rangebreaks=rangebreaks)
+    fig_pair.update_yaxes(title_text="スプレッド", row=1, col=1)
+    fig_pair.update_yaxes(title_text="Zスコア", row=2, col=1)
+    st.plotly_chart(fig_pair, use_container_width=True)
 
 
 def _resample_ohlc(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -2129,6 +2255,134 @@ def main():
 
         if "pair_results" not in st.session_state:
             st.session_state["pair_results"] = None
+        if "pair_manual_result" not in st.session_state:
+            st.session_state["pair_manual_result"] = None
+        if "pair_manual_metrics" not in st.session_state:
+            st.session_state["pair_manual_metrics"] = None
+        if "pair_manual_spread_metrics" not in st.session_state:
+            st.session_state["pair_manual_spread_metrics"] = None
+        if "pair_manual_cache_hit" not in st.session_state:
+            st.session_state["pair_manual_cache_hit"] = False
+
+        cached_pairs_df, cached_meta = _load_pair_cache()
+
+        with st.expander("任意の2銘柄を指定して分析", expanded=True):
+            use_cached_metrics = st.checkbox(
+                "ペアキャッシュの指標を優先して表示",
+                value=True,
+                help="キャッシュにあるペアは再計算せず、保存済みの指標を表示します。",
+            )
+            manual_cols = st.columns(2)
+            with manual_cols[0]:
+                manual_symbol_a = st.selectbox(
+                    "銘柄A",
+                    symbols,
+                    format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+                    key="pair_manual_symbol_a",
+                )
+            with manual_cols[1]:
+                manual_symbol_b = st.selectbox(
+                    "銘柄B",
+                    symbols,
+                    format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+                    key="pair_manual_symbol_b",
+                    index=1 if len(symbols) > 1 else 0,
+                )
+
+            manual_window_cols = st.columns(2)
+            with manual_window_cols[0]:
+                manual_recent_window = st.number_input(
+                    "直近比較本数(任意ペア)",
+                    min_value=20,
+                    max_value=pair_search_history,
+                    value=60,
+                    step=5,
+                    key="pair_manual_recent_window",
+                )
+            with manual_window_cols[1]:
+                manual_long_window_input = st.number_input(
+                    "長期比較本数(任意ペア, 0で無効)",
+                    min_value=0,
+                    max_value=pair_search_history,
+                    value=240,
+                    step=20,
+                    key="pair_manual_long_window",
+                )
+
+            manual_signal_cols = st.columns(2)
+            with manual_signal_cols[0]:
+                entry_threshold_manual = st.number_input(
+                    "エントリー閾値 (Zスコア)",
+                    min_value=0.5,
+                    max_value=5.0,
+                    value=2.0,
+                    step=0.1,
+                    key="pair_manual_entry_threshold",
+                )
+            with manual_signal_cols[1]:
+                exit_threshold_manual = st.number_input(
+                    "エグジット閾値 (Zスコア)",
+                    min_value=0.0,
+                    max_value=5.0,
+                    value=0.5,
+                    step=0.1,
+                    key="pair_manual_exit_threshold",
+                )
+
+            run_manual_pair = st.button("選択ペアを分析", type="primary", key="pair_manual_run")
+            if run_manual_pair:
+                if manual_symbol_a == manual_symbol_b:
+                    st.warning("異なる銘柄を選択してください。")
+                    st.session_state["pair_manual_result"] = pd.DataFrame()
+                    st.session_state["pair_manual_metrics"] = None
+                    st.session_state["pair_manual_spread_metrics"] = None
+                    st.session_state["pair_manual_cache_hit"] = False
+                else:
+                    with st.spinner("ペア指標を計算しています..."):
+                        df_pair, spread_metrics = compute_spread_series(
+                            manual_symbol_a, manual_symbol_b
+                        )
+                        manual_long_window = (
+                            int(manual_long_window_input)
+                            if manual_long_window_input and manual_long_window_input >= 5
+                            else None
+                        )
+                        cached_metrics = _lookup_cached_pair_metrics(
+                            cached_pairs_df, manual_symbol_a, manual_symbol_b
+                        )
+                        st.session_state["pair_manual_cache_hit"] = (
+                            cached_metrics is not None
+                        )
+                        if use_cached_metrics and cached_metrics is not None:
+                            manual_metrics = cached_metrics
+                        else:
+                            manual_metrics = compute_pair_metrics(
+                                manual_symbol_a,
+                                manual_symbol_b,
+                                recent_window=int(manual_recent_window),
+                                long_window=manual_long_window,
+                            )
+                        st.session_state["pair_manual_result"] = df_pair
+                        st.session_state["pair_manual_metrics"] = manual_metrics
+                        st.session_state["pair_manual_spread_metrics"] = spread_metrics
+
+            manual_result = st.session_state.get("pair_manual_result")
+            if manual_result is not None:
+                manual_metrics = st.session_state.get("pair_manual_metrics")
+                if st.session_state.get("pair_manual_cache_hit"):
+                    st.caption("ペアキャッシュの指標を表示しています。")
+                if manual_metrics:
+                    st.dataframe(
+                        _build_pair_metrics_table(manual_metrics), use_container_width=True
+                    )
+                else:
+                    st.info("指標が算出できませんでした。比較本数やデータ量を確認してください。")
+                _render_pair_spread_chart(
+                    manual_result,
+                    entry_threshold_manual,
+                    exit_threshold_manual,
+                    st.session_state.get("pair_manual_spread_metrics"),
+                )
 
         sector17_values = (
             sorted(listed_df["sector17"].dropna().astype(str).unique().tolist())
@@ -2292,8 +2546,6 @@ def main():
             )
             st.markdown("- 指数ETFはペア探索対象から除外。")
 
-        cached_pairs_df, cached_meta = _load_pair_cache()
-
         with st.expander("ペアキャッシュ", expanded=False):
             if cached_pairs_df is None or cached_pairs_df.empty:
                 st.info("ペアキャッシュが未作成です。手動更新で作成してください。")
@@ -2317,7 +2569,7 @@ def main():
                         symbols=symbols,
                         sector17=sector17_filter,
                         sector33=sector33_filter,
-                        max_pairs_per_sector=int(max_pairs),
+                        max_pairs_per_sector=None,
                     )
                     if not pair_candidates:
                         st.warning(
@@ -2327,15 +2579,15 @@ def main():
                         results_df = evaluate_pair_candidates(
                             pair_candidates,
                             recent_window=int(recent_window),
-                            long_window=long_window,
-                            min_similarity=float(min_similarity),
-                            min_long_similarity=min_long_similarity,
-                            min_return_corr=float(min_return_corr),
+                            long_window=None,
+                            min_similarity=None,
+                            min_long_similarity=None,
+                            min_return_corr=None,
                             max_p_value=float(max_p_value) if max_p_value is not None else None,
-                            max_half_life=float(max_half_life),
-                            max_abs_zscore=float(max_abs_zscore),
-                            min_avg_volume=float(min_avg_volume),
-                            preselect_top_n=int(preselect_top_n),
+                            max_half_life=None,
+                            max_abs_zscore=None,
+                            min_avg_volume=None,
+                            preselect_top_n=None,
                             listed_df=listed_df,
                             history_window=pair_search_history,
                         )
@@ -2344,16 +2596,16 @@ def main():
                             "sector17": sector17_filter,
                             "sector33": sector33_filter,
                             "recent_window": int(recent_window),
-                            "long_window": long_window,
-                            "min_similarity": float(min_similarity),
-                            "min_long_similarity": min_long_similarity,
-                            "min_return_corr": float(min_return_corr),
+                            "long_window": None,
+                            "min_similarity": None,
+                            "min_long_similarity": None,
+                            "min_return_corr": None,
                             "max_p_value": float(max_p_value) if max_p_value is not None else None,
-                            "max_half_life": float(max_half_life),
-                            "max_abs_zscore": float(max_abs_zscore),
-                            "min_avg_volume": float(min_avg_volume),
-                            "preselect_top_n": int(preselect_top_n),
-                            "max_pairs_per_sector": int(max_pairs),
+                            "max_half_life": None,
+                            "max_abs_zscore": None,
+                            "min_avg_volume": None,
+                            "preselect_top_n": None,
+                            "max_pairs_per_sector": None,
                             "pair_search_history": int(pair_search_history),
                         }
                         _save_pair_cache(results_df, metadata)
@@ -2469,69 +2721,7 @@ def main():
             df_pair, pair_metrics = compute_spread_series(
                 selected_row["symbol_a"], selected_row["symbol_b"]
             )
-            if df_pair.empty:
-                st.warning("スプレッドを計算するためのデータが不足しています。")
-            else:
-                df_pair["date_str"] = df_pair["date"].dt.strftime("%Y-%m-%d")
-                rangebreaks = _build_trading_rangebreaks(df_pair["date"])
-                fig_pair = make_subplots(
-                    rows=2,
-                    cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.08,
-                    row_heights=[0.55, 0.45],
-                )
-                fig_pair.add_trace(
-                    go.Scatter(
-                        x=df_pair["date_str"],
-                        y=df_pair["spread"],
-                        mode="lines",
-                        name="スプレッド",
-                        line=dict(color="#1f77b4"),
-                    ),
-                    row=1,
-                    col=1,
-                )
-                if pair_metrics:
-                    fig_pair.add_hline(
-                        y=pair_metrics.get("spread_mean", 0.0),
-                        line=dict(color="#888888", dash="dash"),
-                        row=1,
-                        col=1,
-                    )
-                fig_pair.add_trace(
-                    go.Scatter(
-                        x=df_pair["date_str"],
-                        y=df_pair["zscore"],
-                        mode="lines",
-                        name="Zスコア",
-                        line=dict(color="#ff7f0e"),
-                    ),
-                    row=2,
-                    col=1,
-                )
-                for level, color, label in (
-                    (entry_threshold, "#d62728", "エントリー上限"),
-                    (-entry_threshold, "#d62728", "エントリー下限"),
-                    (exit_threshold, "#2ca02c", "エグジット上限"),
-                    (-exit_threshold, "#2ca02c", "エグジット下限"),
-                ):
-                    fig_pair.add_hline(
-                        y=level,
-                        line=dict(color=color, dash="dash"),
-                        annotation_text=label,
-                        row=2,
-                        col=1,
-                    )
-                fig_pair.update_layout(
-                    height=700,
-                    margin=dict(l=20, r=20, t=40, b=20),
-                    legend=dict(orientation="h"),
-                )
-                fig_pair.update_xaxes(type="category", rangebreaks=rangebreaks)
-                fig_pair.update_yaxes(title_text="スプレッド", row=1, col=1)
-                fig_pair.update_yaxes(title_text="Zスコア", row=2, col=1)
-                st.plotly_chart(fig_pair, use_container_width=True)
+            _render_pair_spread_chart(df_pair, entry_threshold, exit_threshold, pair_metrics)
 
     with tab_backtest:
         st.subheader("CAN-SLIM バックテスト")
