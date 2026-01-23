@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import json
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -378,6 +379,119 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df_ind["ichimoku_chikou"] = pd.NA
 
     return df_ind
+
+
+def _compute_moving_average(series: pd.Series, period: int, ma_type: str) -> pd.Series:
+    if period <= 0:
+        return pd.Series([pd.NA] * len(series), index=series.index)
+    if ma_type == "EMA":
+        return series.ewm(span=period, adjust=False).mean()
+    return series.rolling(period).mean()
+
+
+def _find_local_extrema(df: pd.DataFrame, order: int = 3) -> Tuple[List[int], List[int]]:
+    if df.empty:
+        return [], []
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    local_max = []
+    local_min = []
+    for idx in range(order, len(df) - order):
+        window_high = highs[idx - order : idx + order + 1]
+        window_low = lows[idx - order : idx + order + 1]
+        if np.isnan(window_high).any() or np.isnan(window_low).any():
+            continue
+        if highs[idx] >= window_high.max():
+            local_max.append(idx)
+        if lows[idx] <= window_low.min():
+            local_min.append(idx)
+    return local_min, local_max
+
+
+def _fit_trendline(
+    df: pd.DataFrame, indices: List[int], price_col: str
+) -> Optional[Tuple[float, float]]:
+    if len(indices) < 2:
+        return None
+    x_vals = df.loc[df.index[indices], "date"].astype("int64").to_numpy()
+    y_vals = df.loc[df.index[indices], price_col].to_numpy()
+    if np.isnan(x_vals).any() or np.isnan(y_vals).any():
+        return None
+    slope, intercept = np.polyfit(x_vals, y_vals, 1)
+    return float(slope), float(intercept)
+
+
+def _build_trendline_trace(
+    df: pd.DataFrame,
+    slope: float,
+    intercept: float,
+    name: str,
+    color: str,
+    dash: str = "dash",
+) -> go.Scatter:
+    start_date = df["date"].iloc[0]
+    end_date = df["date"].iloc[-1]
+    x_vals = np.array([start_date, end_date], dtype="datetime64[ns]").astype("int64")
+    y_vals = slope * x_vals + intercept
+    return go.Scatter(
+        x=[start_date, end_date],
+        y=y_vals,
+        mode="lines",
+        name=name,
+        line=dict(color=color, dash=dash, width=2),
+    )
+
+
+def _compute_support_resistance(
+    df: pd.DataFrame, order: int = 3, max_points: int = 5
+) -> Dict[str, Optional[Tuple[float, float]]]:
+    local_min, local_max = _find_local_extrema(df, order=order)
+    support_idx = local_min[-max_points:]
+    resistance_idx = local_max[-max_points:]
+    support = _fit_trendline(df, support_idx, "low")
+    resistance = _fit_trendline(df, resistance_idx, "high")
+    return {"support": support, "resistance": resistance}
+
+
+def _detect_head_and_shoulders(
+    df: pd.DataFrame,
+    order: int = 3,
+    shoulder_tolerance: float = 0.08,
+    min_separation: int = 5,
+) -> Optional[dict]:
+    local_min, local_max = _find_local_extrema(df, order=order)
+    if len(local_max) < 3:
+        return None
+    peaks = local_max
+    best = None
+    for i in range(len(peaks) - 2):
+        for j in range(i + 1, len(peaks) - 1):
+            for k in range(j + 1, len(peaks)):
+                left, head, right = peaks[i], peaks[j], peaks[k]
+                if head - left < min_separation or right - head < min_separation:
+                    continue
+                left_price = df["high"].iloc[left]
+                head_price = df["high"].iloc[head]
+                right_price = df["high"].iloc[right]
+                if not (head_price > left_price and head_price > right_price):
+                    continue
+                shoulder_diff = abs(left_price - right_price) / max(left_price, right_price)
+                if shoulder_diff > shoulder_tolerance:
+                    continue
+                trough_candidates_left = [m for m in local_min if left < m < head]
+                trough_candidates_right = [m for m in local_min if head < m < right]
+                if not trough_candidates_left or not trough_candidates_right:
+                    continue
+                trough_left = trough_candidates_left[-1]
+                trough_right = trough_candidates_right[0]
+                best = {
+                    "left": left,
+                    "head": head,
+                    "right": right,
+                    "trough_left": trough_left,
+                    "trough_right": trough_right,
+                }
+    return best
 
 
 def _build_trading_rangebreaks(dates: pd.Series) -> List[dict]:
@@ -1237,11 +1351,48 @@ def main():
 
     st.sidebar.markdown("---")
     st.sidebar.write("テクニカル表示")
-    show_sma20 = st.sidebar.checkbox("SMA 20", value=True)
-    show_sma50 = st.sidebar.checkbox("SMA 50", value=False)
-    show_sma200 = st.sidebar.checkbox("SMA 200", value=False)
+    ma_type = st.sidebar.selectbox(
+        "移動平均の種類",
+        options=["SMA", "EMA"],
+        index=0,
+        help="EMA(指数移動平均)は直近の価格に重みを置いて計算します。",
+    )
+    show_ma_short = st.sidebar.checkbox("短期移動平均", value=True)
+    ma_short_period = st.sidebar.number_input(
+        "短期期間",
+        min_value=2,
+        max_value=200,
+        value=20,
+        step=1,
+    )
+    show_ma_mid = st.sidebar.checkbox("中期移動平均", value=False)
+    ma_mid_period = st.sidebar.number_input(
+        "中期期間",
+        min_value=5,
+        max_value=300,
+        value=50,
+        step=1,
+    )
+    show_ma_long = st.sidebar.checkbox("長期移動平均", value=False)
+    ma_long_period = st.sidebar.number_input(
+        "長期期間",
+        min_value=10,
+        max_value=400,
+        value=200,
+        step=1,
+    )
     show_bbands = st.sidebar.checkbox("ボリンジャーバンド", value=False)
     show_ichimoku = st.sidebar.checkbox("一目均衡表", value=False)
+    st.sidebar.write("チャート分析ライン")
+    show_trendlines = st.sidebar.checkbox("支持線/抵抗線", value=False)
+    show_head_shoulders = st.sidebar.checkbox("ヘッド＆ショルダーズ", value=False)
+    extrema_order = st.sidebar.slider(
+        "ライン検出の感度(局所判定幅)",
+        min_value=2,
+        max_value=6,
+        value=3,
+        help="値が大きいほど極値の数が減り、ラインが安定します。",
+    )
 
     st.sidebar.write("オシレーター")
     show_rsi = st.sidebar.checkbox("RSI (14)", value=True)
@@ -1388,6 +1539,15 @@ def main():
         lookback_window = min(lookback, len(df_resampled))
         df_problem = df_resampled.tail(lookback_window).copy()
         df_problem = _compute_indicators(df_problem)
+        df_problem["ma_short"] = _compute_moving_average(
+            df_problem["close"], int(ma_short_period), ma_type
+        )
+        df_problem["ma_mid"] = _compute_moving_average(
+            df_problem["close"], int(ma_mid_period), ma_type
+        )
+        df_problem["ma_long"] = _compute_moving_average(
+            df_problem["close"], int(ma_long_period), ma_type
+        )
         df_problem["date_str"] = df_problem["date"].dt.strftime("%y/%m/%d")
         trading_rangebreaks = _build_trading_rangebreaks(df_problem["date"])
 
@@ -1455,34 +1615,34 @@ def main():
             )
 
         if chart_type != "pnf":
-            if show_sma20 and df_problem["sma20"].notna().any():
+            if show_ma_short and df_problem["ma_short"].notna().any():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
-                        y=df_problem["sma20"],
-                        name="SMA 20",
+                        y=df_problem["ma_short"],
+                        name=f"{ma_type} 短期({int(ma_short_period)})",
                         line=dict(dash="dash"),
                     ),
                     row=1,
                     col=1,
                 )
-            if show_sma50 and df_problem["sma50"].notna().any():
+            if show_ma_mid and df_problem["ma_mid"].notna().any():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
-                        y=df_problem["sma50"],
-                        name="SMA 50",
+                        y=df_problem["ma_mid"],
+                        name=f"{ma_type} 中期({int(ma_mid_period)})",
                         line=dict(dash="dot"),
                     ),
                     row=1,
                     col=1,
                 )
-            if show_sma200 and df_problem["sma200"].notna().any():
+            if show_ma_long and df_problem["ma_long"].notna().any():
                 price_fig.add_trace(
                     go.Scatter(
                         x=df_problem["date"],
-                        y=df_problem["sma200"],
-                        name="SMA 200",
+                        y=df_problem["ma_long"],
+                        name=f"{ma_type} 長期({int(ma_long_period)})",
                         line=dict(color="#7f7f7f", dash="dash"),
                     ),
                     row=1,
@@ -1605,6 +1765,87 @@ def main():
                     row=1,
                     col=1,
                 )
+
+            if show_trendlines:
+                line_info = _compute_support_resistance(
+                    df_problem, order=extrema_order, max_points=5
+                )
+                support_line = line_info.get("support")
+                resistance_line = line_info.get("resistance")
+                if support_line:
+                    price_fig.add_trace(
+                        _build_trendline_trace(
+                            df_problem,
+                            support_line[0],
+                            support_line[1],
+                            "支持線(トレンドライン)",
+                            "#2ca02c",
+                            dash="dash",
+                        ),
+                        row=1,
+                        col=1,
+                    )
+                if resistance_line:
+                    price_fig.add_trace(
+                        _build_trendline_trace(
+                            df_problem,
+                            resistance_line[0],
+                            resistance_line[1],
+                            "抵抗線(トレンドライン)",
+                            "#d62728",
+                            dash="dash",
+                        ),
+                        row=1,
+                        col=1,
+                    )
+
+            if show_head_shoulders:
+                pattern = _detect_head_and_shoulders(
+                    df_problem, order=extrema_order, shoulder_tolerance=0.08
+                )
+                if pattern:
+                    marker_x = [
+                        df_problem["date"].iloc[pattern["left"]],
+                        df_problem["date"].iloc[pattern["head"]],
+                        df_problem["date"].iloc[pattern["right"]],
+                    ]
+                    marker_y = [
+                        df_problem["high"].iloc[pattern["left"]],
+                        df_problem["high"].iloc[pattern["head"]],
+                        df_problem["high"].iloc[pattern["right"]],
+                    ]
+                    price_fig.add_trace(
+                        go.Scatter(
+                            x=marker_x,
+                            y=marker_y,
+                            mode="markers+text",
+                            name="ヘッド＆ショルダーズ",
+                            text=["左肩", "ヘッド", "右肩"],
+                            textposition="top center",
+                            marker=dict(color="#9467bd", size=10, symbol="triangle-up"),
+                        ),
+                        row=1,
+                        col=1,
+                    )
+                    neckline_x = [
+                        df_problem["date"].iloc[pattern["trough_left"]],
+                        df_problem["date"].iloc[pattern["trough_right"]],
+                    ]
+                    neckline_y = [
+                        df_problem["low"].iloc[pattern["trough_left"]],
+                        df_problem["low"].iloc[pattern["trough_right"]],
+                    ]
+                    price_fig.add_trace(
+                        go.Scatter(
+                            x=neckline_x,
+                            y=neckline_y,
+                            mode="lines",
+                            name="ネックライン",
+                            line=dict(color="#9467bd", dash="dot", width=2),
+                        ),
+                        row=1,
+                        col=1,
+                    )
 
             if show_volume:
                 price_fig.add_trace(
