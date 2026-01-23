@@ -2799,6 +2799,71 @@ def main():
                 if cached_meta:
                     st.caption("キャッシュ作成時の条件")
                     st.json(cached_meta, expanded=False)
+                show_cache_details = st.checkbox(
+                    "ペアキャッシュの詳細を表示",
+                    value=False,
+                    help="キャッシュ済みのペア組み合わせと指標を一覧します。",
+                )
+                if show_cache_details:
+                    max_cache_rows = st.number_input(
+                        "表示件数(上限)",
+                        min_value=10,
+                        max_value=1000,
+                        value=200,
+                        step=10,
+                    )
+                    cache_display_df = cached_pairs_df.copy()
+                    cache_display_df["pair_label"] = cache_display_df.apply(
+                        lambda row: (
+                            f"{row['symbol_a']} ({name_map.get(row['symbol_a'], '名称未登録')}) / "
+                            f"{row['symbol_b']} ({name_map.get(row['symbol_b'], '名称未登録')})"
+                        ),
+                        axis=1,
+                    )
+                    if "p_value" in cache_display_df.columns:
+                        cache_display_df = cache_display_df.sort_values("p_value", ascending=True)
+                    cache_table_data = {
+                        "ペア": cache_display_df["pair_label"],
+                    }
+                    if "p_value" in cache_display_df.columns:
+                        cache_table_data["p値"] = cache_display_df["p_value"]
+                    if "half_life" in cache_display_df.columns:
+                        cache_table_data["半減期"] = cache_display_df["half_life"]
+                    if "beta" in cache_display_df.columns:
+                        cache_table_data["β"] = cache_display_df["beta"]
+                    if "recent_similarity" in cache_display_df.columns:
+                        cache_table_data["直近類似度"] = cache_display_df["recent_similarity"]
+                    if "recent_return_corr" in cache_display_df.columns:
+                        cache_table_data["直近リターン相関"] = cache_display_df["recent_return_corr"]
+                    if "long_similarity" in cache_display_df.columns:
+                        cache_table_data["長期類似度"] = cache_display_df["long_similarity"]
+                    if "long_return_corr" in cache_display_df.columns:
+                        cache_table_data["長期リターン相関"] = cache_display_df["long_return_corr"]
+                    if "spread_mean" in cache_display_df.columns:
+                        cache_table_data["スプレッド平均"] = cache_display_df["spread_mean"]
+                    if "spread_std" in cache_display_df.columns:
+                        cache_table_data["スプレッド標準偏差"] = cache_display_df["spread_std"]
+                    if "spread_latest" in cache_display_df.columns:
+                        cache_table_data["最新スプレッド"] = cache_display_df["spread_latest"]
+                    if "zscore_latest" in cache_display_df.columns:
+                        cache_table_data["最新Zスコア"] = cache_display_df["zscore_latest"]
+                    cache_table_df = pd.DataFrame(cache_table_data).head(int(max_cache_rows))
+                    cache_table_df = cache_table_df.round(
+                        {
+                            "p値": 4,
+                            "半減期": 2,
+                            "β": 3,
+                            "直近類似度": 3,
+                            "直近リターン相関": 3,
+                            "長期類似度": 3,
+                            "長期リターン相関": 3,
+                            "スプレッド平均": 4,
+                            "スプレッド標準偏差": 4,
+                            "最新スプレッド": 4,
+                            "最新Zスコア": 2,
+                        }
+                    )
+                    st.dataframe(cache_table_df, use_container_width=True)
 
             update_cache = st.button("ペアキャッシュを更新", type="secondary")
             if update_cache:
