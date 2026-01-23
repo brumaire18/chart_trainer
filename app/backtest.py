@@ -179,6 +179,12 @@ def scan_canslim_patterns(
     cup_window: int = 50,
     saucer_window: int = 80,
     handle_window: int = 10,
+    cup_depth_range: Tuple[float, float] = (0.15, 0.4),
+    cup_recovery_ratio: float = 0.85,
+    cup_handle_max_depth: float = 0.15,
+    saucer_depth_range: Tuple[float, float] = (0.05, 0.18),
+    saucer_recovery_ratio: float = 0.9,
+    saucer_handle_max_depth: float = 0.1,
 ) -> List[PatternSignal]:
     """
     CAN-SLIM のカップウィズハンドル/ソーサーウィズハンドルを探索し、
@@ -212,18 +218,18 @@ def scan_canslim_patterns(
             idx,
             cup_window=cup_window,
             handle_window=handle_window,
-            depth_range=(0.15, 0.4),
-            recovery_ratio=0.85,
-            handle_max_depth=0.15,
+            depth_range=cup_depth_range,
+            recovery_ratio=cup_recovery_ratio,
+            handle_max_depth=cup_handle_max_depth,
         )
         saucer_info = _detect_pattern(
             df_ind,
             idx,
             cup_window=saucer_window,
             handle_window=handle_window,
-            depth_range=(0.05, 0.18),
-            recovery_ratio=0.9,
-            handle_max_depth=0.1,
+            depth_range=saucer_depth_range,
+            recovery_ratio=saucer_recovery_ratio,
+            handle_max_depth=saucer_handle_max_depth,
         )
 
         pattern_info = None
@@ -296,6 +302,12 @@ def run_canslim_backtest(
     cup_window: int = 50,
     saucer_window: int = 80,
     handle_window: int = 10,
+    cup_depth_range: Tuple[float, float] = (0.15, 0.4),
+    cup_recovery_ratio: float = 0.85,
+    cup_handle_max_depth: float = 0.15,
+    saucer_depth_range: Tuple[float, float] = (0.05, 0.18),
+    saucer_recovery_ratio: float = 0.9,
+    saucer_handle_max_depth: float = 0.1,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     銘柄をランダムに半分ずつに分割し、CAN-SLIM に基づいた
@@ -327,6 +339,12 @@ def run_canslim_backtest(
             cup_window=cup_window,
             saucer_window=saucer_window,
             handle_window=handle_window,
+            cup_depth_range=cup_depth_range,
+            cup_recovery_ratio=cup_recovery_ratio,
+            cup_handle_max_depth=cup_handle_max_depth,
+            saucer_depth_range=saucer_depth_range,
+            saucer_recovery_ratio=saucer_recovery_ratio,
+            saucer_handle_max_depth=saucer_handle_max_depth,
         )
         dataset = "train" if symbol in train_set else "validation"
         for signal in symbol_signals:
@@ -459,11 +477,138 @@ def optimize_canslim_parameters(
     return eval_df, best_summary
 
 
+def grid_search_cup_shape(
+    symbols: Optional[Iterable[str]] = None,
+    seed: int = 42,
+    train_ratio: float = 0.5,
+    lookahead: int = 20,
+    return_threshold: float = 0.03,
+    volume_multiplier: float = 1.5,
+    min_signals: int = 10,
+    gap_penalty: float = 0.5,
+    cup_windows: Optional[List[int]] = None,
+    handle_windows: Optional[List[int]] = None,
+    depth_ranges: Optional[List[Tuple[float, float]]] = None,
+    recovery_ratios: Optional[List[float]] = None,
+    handle_max_depths: Optional[List[float]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    カップウィズハンドル形状のパラメーターをグリッドサーチで確認する。
+
+    validation を主指標にし、train との差分にペナルティを掛けて過剰最適化を抑える。
+    """
+
+    cup_windows = cup_windows or [40, 50, 60, 70]
+    handle_windows = handle_windows or [7, 10, 12]
+    depth_ranges = depth_ranges or [(0.12, 0.35), (0.15, 0.4), (0.18, 0.45)]
+    recovery_ratios = recovery_ratios or [0.82, 0.85, 0.88]
+    handle_max_depths = handle_max_depths or [0.1, 0.12, 0.15]
+
+    eval_records = []
+    best_score = float("-inf")
+    best_params: Optional[Dict[str, float]] = None
+    best_results = pd.DataFrame()
+    best_summary = pd.DataFrame()
+
+    for cup_window in cup_windows:
+        for handle_window in handle_windows:
+            for depth_range in depth_ranges:
+                for recovery_ratio in recovery_ratios:
+                    for handle_max_depth in handle_max_depths:
+                        results_df, summary_df = run_canslim_backtest(
+                            symbols=symbols,
+                            seed=seed,
+                            train_ratio=train_ratio,
+                            lookahead=lookahead,
+                            return_threshold=return_threshold,
+                            volume_multiplier=volume_multiplier,
+                            cup_window=cup_window,
+                            handle_window=handle_window,
+                            cup_depth_range=depth_range,
+                            cup_recovery_ratio=recovery_ratio,
+                            cup_handle_max_depth=handle_max_depth,
+                        )
+
+                        if results_df.empty:
+                            continue
+
+                        train_signals = results_df[results_df["dataset"] == "train"].shape[
+                            0
+                        ]
+                        val_signals = results_df[
+                            results_df["dataset"] == "validation"
+                        ].shape[0]
+                        if train_signals < min_signals or val_signals < min_signals:
+                            continue
+
+                        train_up = summary_df[
+                            (summary_df["dataset"] == "train")
+                            & (summary_df["pattern"] == "cup_with_handle")
+                            & (summary_df["label"] == "up")
+                        ]
+                        val_up = summary_df[
+                            (summary_df["dataset"] == "validation")
+                            & (summary_df["pattern"] == "cup_with_handle")
+                            & (summary_df["label"] == "up")
+                        ]
+                        train_up_avg = (
+                            float(train_up["avg_return"].mean())
+                            if not train_up.empty
+                            else 0.0
+                        )
+                        val_up_avg = (
+                            float(val_up["avg_return"].mean()) if not val_up.empty else 0.0
+                        )
+                        generalization_gap = abs(train_up_avg - val_up_avg)
+                        score = val_up_avg - gap_penalty * generalization_gap
+
+                        eval_records.append(
+                            {
+                                "cup_window": cup_window,
+                                "handle_window": handle_window,
+                                "depth_min": depth_range[0],
+                                "depth_max": depth_range[1],
+                                "recovery_ratio": recovery_ratio,
+                                "handle_max_depth": handle_max_depth,
+                                "train_up_avg_return": train_up_avg,
+                                "validation_up_avg_return": val_up_avg,
+                                "generalization_gap": generalization_gap,
+                                "score": score,
+                                "train_signals": int(train_signals),
+                                "validation_signals": int(val_signals),
+                            }
+                        )
+
+                        if score > best_score:
+                            best_score = score
+                            best_params = {
+                                "cup_window": cup_window,
+                                "handle_window": handle_window,
+                                "cup_depth_range": depth_range,
+                                "cup_recovery_ratio": recovery_ratio,
+                                "cup_handle_max_depth": handle_max_depth,
+                                "volume_multiplier": volume_multiplier,
+                            }
+                            best_results = results_df
+                            best_summary = summary_df
+
+    eval_df = pd.DataFrame(eval_records).sort_values("score", ascending=False)
+    if best_params is None:
+        return eval_df, pd.DataFrame()
+
+    best_summary = best_summary.copy()
+    for key, value in best_params.items():
+        best_summary[f"best_{key}"] = value
+
+    return eval_df, best_summary
+
+
 def _run_cli() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="CAN-SLIM backtest runner")
     parser.add_argument("--optimize", action="store_true", help="run parameter optimization")
+    parser.add_argument("--grid-search", action="store_true", help="run grid search for cup shape")
     parser.add_argument("--lookahead", type=int, default=20)
     parser.add_argument("--return-threshold", type=float, default=0.03)
     parser.add_argument("--volume-multiplier", type=float, default=1.5)
@@ -472,9 +617,23 @@ def _run_cli() -> None:
     parser.add_argument("--handle-window", type=int, default=10)
     parser.add_argument("--max-evals", type=int, default=30)
     parser.add_argument("--sample-ratio", type=float, default=0.6)
+    parser.add_argument("--min-signals", type=int, default=10)
+    parser.add_argument("--gap-penalty", type=float, default=0.5)
     args = parser.parse_args()
 
-    if args.optimize:
+    if args.grid_search:
+        eval_df, best_summary = grid_search_cup_shape(
+            lookahead=args.lookahead,
+            return_threshold=args.return_threshold,
+            volume_multiplier=args.volume_multiplier,
+            min_signals=args.min_signals,
+            gap_penalty=args.gap_penalty,
+        )
+        print("=== Grid search results ===")
+        print(eval_df.head(20).to_string(index=False))
+        print("=== Best summary ===")
+        print(best_summary.head(20).to_string(index=False))
+    elif args.optimize:
         eval_df, best_summary = optimize_canslim_parameters(
             lookahead=args.lookahead,
             return_threshold=args.return_threshold,

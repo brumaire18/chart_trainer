@@ -27,7 +27,7 @@ from app.pair_trading import (
     generate_anchor_pair_candidates,
     generate_pairs_by_sector_candidates,
 )
-from app.backtest import run_canslim_backtest, scan_canslim_patterns
+from app.backtest import grid_search_cup_shape, run_canslim_backtest, scan_canslim_patterns
 from app.jquants_fetcher import (
     append_quotes_for_date,
     build_universe,
@@ -2731,6 +2731,10 @@ def main():
             st.session_state["backtest_results"] = None
         if "backtest_summary" not in st.session_state:
             st.session_state["backtest_summary"] = None
+        if "grid_search_results" not in st.session_state:
+            st.session_state["grid_search_results"] = None
+        if "grid_search_summary" not in st.session_state:
+            st.session_state["grid_search_summary"] = None
 
         backtest_col1, backtest_col2 = st.columns(2)
         with backtest_col1:
@@ -2868,6 +2872,118 @@ def main():
                     tickformat="%Y-%m-%d",
                     rangebreaks=breakdown_rangebreaks,
                 )
+
+        st.divider()
+        st.subheader("カップ形状のグリッドサーチ")
+        st.caption("validation成績を主指標にしつつ、trainとの差分にペナルティを掛けて過剰最適化を抑えます。")
+
+        depth_range_options = {
+            "0.12-0.35": (0.12, 0.35),
+            "0.15-0.40": (0.15, 0.4),
+            "0.18-0.45": (0.18, 0.45),
+        }
+
+        grid_col1, grid_col2 = st.columns(2)
+        with grid_col1:
+            gs_lookahead = st.number_input(
+                "ピーク探索期間（日）",
+                5,
+                120,
+                value=20,
+                step=1,
+                key="gs_lookahead",
+            )
+            gs_return_threshold = st.number_input(
+                "上昇判定の下限（ピークリターン）",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.03,
+                step=0.01,
+                key="gs_return_threshold",
+            )
+            gs_volume_multiplier = st.number_input(
+                "出来高/20日平均の下限 (倍)",
+                min_value=0.0,
+                max_value=10.0,
+                value=1.5,
+                step=0.1,
+                key="gs_volume_multiplier",
+            )
+            gs_min_signals = st.number_input(
+                "train/validation の最小シグナル数",
+                min_value=1,
+                max_value=200,
+                value=10,
+                step=1,
+                help="サンプルが少なすぎる組み合わせを除外します。",
+            )
+            gs_gap_penalty = st.number_input(
+                "generalization gap のペナルティ係数",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.5,
+                step=0.1,
+                help="train/validation の差が大きいほどスコアを下げます。",
+            )
+        with grid_col2:
+            gs_cup_windows = st.multiselect(
+                "カップ判定期間（日）候補",
+                options=[30, 40, 50, 60, 70, 80],
+                default=[40, 50, 60, 70],
+            )
+            gs_handle_windows = st.multiselect(
+                "ハンドル判定期間（日）候補",
+                options=[5, 7, 10, 12, 15],
+                default=[7, 10, 12],
+            )
+            gs_depth_ranges = st.multiselect(
+                "深さレンジ候補",
+                options=list(depth_range_options.keys()),
+                default=["0.12-0.35", "0.15-0.40", "0.18-0.45"],
+            )
+            gs_recovery_ratios = st.multiselect(
+                "回復率候補",
+                options=[0.8, 0.82, 0.85, 0.88, 0.9],
+                default=[0.82, 0.85, 0.88],
+            )
+            gs_handle_max_depths = st.multiselect(
+                "ハンドル最大深さ候補",
+                options=[0.08, 0.1, 0.12, 0.15, 0.18],
+                default=[0.1, 0.12, 0.15],
+            )
+
+        run_grid_search = st.button("グリッドサーチを実行", type="primary")
+        if run_grid_search:
+            if not gs_cup_windows or not gs_handle_windows or not gs_depth_ranges:
+                st.warning("カップ/ハンドル期間と深さレンジの候補を1つ以上選択してください。")
+            else:
+                depth_ranges = [depth_range_options[key] for key in gs_depth_ranges]
+                with st.spinner("グリッドサーチを実行しています..."):
+                    eval_df, best_summary = grid_search_cup_shape(
+                        lookahead=int(gs_lookahead),
+                        return_threshold=float(gs_return_threshold),
+                        volume_multiplier=float(gs_volume_multiplier),
+                        min_signals=int(gs_min_signals),
+                        gap_penalty=float(gs_gap_penalty),
+                        cup_windows=[int(v) for v in gs_cup_windows],
+                        handle_windows=[int(v) for v in gs_handle_windows],
+                        depth_ranges=depth_ranges,
+                        recovery_ratios=[float(v) for v in gs_recovery_ratios],
+                        handle_max_depths=[float(v) for v in gs_handle_max_depths],
+                    )
+                    st.session_state["grid_search_results"] = eval_df
+                    st.session_state["grid_search_summary"] = best_summary
+
+        grid_search_results = st.session_state.get("grid_search_results")
+        grid_search_summary = st.session_state.get("grid_search_summary")
+
+        if grid_search_summary is not None and not grid_search_summary.empty:
+            st.markdown("#### ベスト設定")
+            st.dataframe(grid_search_summary, use_container_width=True)
+
+        if grid_search_results is not None and not grid_search_results.empty:
+            st.markdown("#### グリッドサーチ結果（上位）")
+            st.dataframe(grid_search_results.head(200), use_container_width=True)
                 st.plotly_chart(fig, use_container_width=True)
         elif backtest_results is not None:
             st.info("該当するシグナルがありませんでした。")
