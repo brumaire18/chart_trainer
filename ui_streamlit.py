@@ -2880,11 +2880,14 @@ def main():
                     )
                     st.dataframe(cache_table_df, use_container_width=True)
 
+            st.caption(
+                "ペアキャッシュ更新時は、業種フィルタに関係なく全セクターで総当たり検索します。"
+            )
             update_cache = st.button("ペアキャッシュを更新", type="secondary")
             if update_cache:
                 with st.spinner("ペアキャッシュを更新しています..."):
-                    sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
-                    sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
+                    sector17_filter = None
+                    sector33_filter = None
                     pair_candidates = generate_pairs_by_sector_candidates(
                         listed_df=listed_df,
                         symbols=symbols,
