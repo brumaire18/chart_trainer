@@ -114,8 +114,15 @@ def _filter_cached_pairs(
     sector17: Optional[str],
     sector33: Optional[str],
     anchor_symbol: Optional[str],
+    available_symbols: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     df = pairs_df.copy()
+    if available_symbols:
+        symbol_set = {str(symbol).zfill(4) for symbol in available_symbols}
+        df = df[
+            df["symbol_a"].astype(str).str.zfill(4).isin(symbol_set)
+            & df["symbol_b"].astype(str).str.zfill(4).isin(symbol_set)
+        ]
     if sector17:
         df = df[df["pair_sector17"].astype(str) == str(sector17)]
     if sector33:
@@ -2685,6 +2692,7 @@ def main():
                 max_value=1.0,
                 value=0.85,
                 step=0.05,
+                disabled=True,
             )
         with similarity_filters[3]:
             min_long_similarity = st.slider(
@@ -2693,6 +2701,7 @@ def main():
                 max_value=1.0,
                 value=0.8,
                 step=0.05,
+                disabled=True,
             )
         return_filters = st.columns([1])
         with return_filters[0]:
@@ -2702,6 +2711,7 @@ def main():
                 max_value=1.0,
                 value=0.8,
                 step=0.05,
+                disabled=True,
             )
         cointegration_available = cointegration_test is not None
         if not cointegration_available:
@@ -2727,6 +2737,7 @@ def main():
                 max_value=250.0,
                 value=30.0,
                 step=1.0,
+                disabled=True,
             )
         with stat_filters[2]:
             max_abs_zscore = st.number_input(
@@ -2735,6 +2746,7 @@ def main():
                 max_value=5.0,
                 value=2.5,
                 step=0.1,
+                disabled=True,
             )
         volume_filters = st.columns([1])
         with volume_filters[0]:
@@ -2743,6 +2755,7 @@ def main():
                 min_value=0.0,
                 value=50000.0,
                 step=1000.0,
+                disabled=True,
             )
         score_filters = st.columns([1])
         with score_filters[0]:
@@ -2752,7 +2765,9 @@ def main():
                 max_value=500,
                 value=150,
                 step=10,
+                disabled=True,
             )
+        st.caption("ペア検索の条件は現存銘柄 + p値のみを使用します。")
 
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
@@ -2928,28 +2943,14 @@ def main():
                 sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
                 anchor_symbol = selected_symbol if search_scope == "選択銘柄起点(同一セクター)" else None
                 filtered_df = _filter_cached_pairs(
-                    cached_pairs_df, sector17_filter, sector33_filter, anchor_symbol
+                    cached_pairs_df,
+                    sector17_filter,
+                    sector33_filter,
+                    anchor_symbol,
+                    available_symbols=symbols,
                 )
                 if max_p_value is not None and "p_value" in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
-                if min_similarity is not None:
-                    filtered_df = filtered_df[filtered_df["recent_similarity"] >= float(min_similarity)]
-                if min_long_similarity is not None:
-                    filtered_df = filtered_df[
-                        filtered_df["long_similarity"] >= float(min_long_similarity)
-                    ]
-                if min_return_corr is not None:
-                    filtered_df = filtered_df[
-                        filtered_df["recent_return_corr"] >= float(min_return_corr)
-                    ]
-                if max_half_life is not None:
-                    filtered_df = filtered_df[
-                        filtered_df["half_life"] <= float(max_half_life)
-                    ]
-                if max_abs_zscore is not None:
-                    filtered_df = filtered_df[
-                        filtered_df["zscore_latest"].abs() <= float(max_abs_zscore)
-                    ]
                 st.session_state["pair_results"] = filtered_df.reset_index(drop=True)
 
         pair_results = st.session_state.get("pair_results")
