@@ -3290,7 +3290,7 @@ def main():
         if grid_search_results is not None and not grid_search_results.empty:
             st.markdown("#### グリッドサーチ結果（上位）")
             st.dataframe(grid_search_results.head(200), use_container_width=True)
-                st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
         elif backtest_results is not None:
             st.info("該当するシグナルがありませんでした。")
 
