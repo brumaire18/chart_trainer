@@ -617,8 +617,17 @@ def _filter_listed_equity_df(
         available_set = {str(code).zfill(4) for code in available_symbols}
         df = df[df["code"].isin(available_set)]
     if "market" in df.columns:
-        allowed_markets = {"PRIME", "STANDARD", "GROWTH"}
-        df = df[df["market"].isin(allowed_markets)]
+        market_series = df["market"].astype(str).str.strip()
+        allowed_markets = {
+            "PRIME",
+            "STANDARD",
+            "GROWTH",
+            "プライム",
+            "スタンダード",
+            "グロース",
+        }
+        normalized = market_series.str.upper()
+        df = df[market_series.isin(allowed_markets) | normalized.isin(allowed_markets)]
     df = _exclude_funds_and_etfs(df)
     df = _exclude_index_etfs(df)
     return df
