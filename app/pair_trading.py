@@ -16,6 +16,7 @@ def generate_pairs_by_sector(
     sector_col: Optional[str] = None,
     min_symbols: int = 2,
     max_pairs_per_sector: int = 50,
+    available_symbols: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """Generate pair candidates using sector17/sector33 columns.
 
@@ -25,6 +26,7 @@ def generate_pairs_by_sector(
         sector_col: Target sector column name. If None, sector17/sector33 are used.
         min_symbols: Minimum symbols per sector to generate pairs.
         max_pairs_per_sector: Maximum pairs to generate per sector.
+        available_symbols: If provided, filter to locally available symbols.
 
     Returns:
         DataFrame with pair metadata (pair name, symbols, sector info).
@@ -42,7 +44,7 @@ def generate_pairs_by_sector(
     df = listed_master_df.copy()
     if "code" not in df.columns:
         raise ValueError("listed_master_df must contain 'code' column")
-    df = _exclude_index_etfs(df)
+    df = _filter_listed_equity_df(df, available_symbols=available_symbols)
 
     available_sector_cols = [col for col in ["sector17", "sector33"] if col in df.columns]
     if sector_col:
@@ -497,9 +499,7 @@ def generate_pair_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
-    df = _exclude_index_etfs(df)
-    df["code"] = df["code"].astype(str).str.zfill(4)
-    df = df[df["code"].isin(available)]
+    df = _filter_listed_equity_df(df, available_symbols=available)
     if sector17 and "sector17" in df.columns:
         df = df[df["sector17"].astype(str) == sector17]
     if sector33 and "sector33" in df.columns:
@@ -511,6 +511,26 @@ def generate_pair_candidates(
 def _is_etf_name(name: str) -> bool:
     upper_name = name.upper()
     return "ETF" in upper_name or "上場投信" in name
+
+
+def _is_fund_or_etf_name(name: str) -> bool:
+    if not name:
+        return False
+    upper_name = name.upper()
+    keywords = [
+        "ETF",
+        "ETN",
+        "ETP",
+        "REIT",
+        "上場投信",
+        "上場投資信託",
+        "投資信託",
+        "投信",
+        "ファンド",
+        "インデックスファンド",
+        "不動産投資信託",
+    ]
+    return any(keyword in upper_name or keyword in name for keyword in keywords)
 
 
 def _extract_etf_index_tag(name: str) -> Optional[str]:
@@ -573,6 +593,37 @@ def _exclude_index_etfs(listed_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _exclude_funds_and_etfs(listed_df: pd.DataFrame) -> pd.DataFrame:
+    if listed_df is None or listed_df.empty:
+        return listed_df
+    if "name" not in listed_df.columns:
+        return listed_df
+    df = listed_df.copy()
+    df = df[~df["name"].astype(str).apply(_is_fund_or_etf_name)]
+    return df
+
+
+def _filter_listed_equity_df(
+    listed_df: pd.DataFrame,
+    available_symbols: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    if listed_df is None or listed_df.empty:
+        return listed_df
+    if "code" not in listed_df.columns:
+        return listed_df.iloc[0:0]
+    df = listed_df.copy()
+    df["code"] = df["code"].astype(str).str.zfill(4)
+    if available_symbols is not None:
+        available_set = {str(code).zfill(4) for code in available_symbols}
+        df = df[df["code"].isin(available_set)]
+    if "market" in df.columns:
+        allowed_markets = {"PRIME", "STANDARD", "GROWTH"}
+        df = df[df["market"].isin(allowed_markets)]
+    df = _exclude_funds_and_etfs(df)
+    df = _exclude_index_etfs(df)
+    return df
+
+
 def generate_pairs_by_sector_candidates(
     listed_df: pd.DataFrame,
     symbols: List[str],
@@ -584,9 +635,7 @@ def generate_pairs_by_sector_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
-    df = _exclude_index_etfs(df)
-    df["code"] = df["code"].astype(str).str.zfill(4)
-    df = df[df["code"].isin(available)]
+    df = _filter_listed_equity_df(df, available_symbols=available)
     if sector17 and "sector17" in df.columns:
         df = df[df["sector17"].astype(str) == sector17]
     if sector33 and "sector33" in df.columns:
@@ -627,9 +676,7 @@ def generate_anchor_pair_candidates(
     df = listed_df.copy()
     if "code" not in df.columns:
         return []
-    df = _exclude_index_etfs(df)
-    df["code"] = df["code"].astype(str).str.zfill(4)
-    df = df[df["code"].isin(available)]
+    df = _filter_listed_equity_df(df, available_symbols=available)
     if sector17 and "sector17" in df.columns:
         df = df[df["sector17"].astype(str) == sector17]
     if sector33 and "sector33" in df.columns:
@@ -675,9 +722,19 @@ def evaluate_pair_candidates(
     history_window: Optional[int] = None,
 ) -> pd.DataFrame:
     etf_index_map = _build_etf_index_map(listed_df) if listed_df is not None else {}
+    allowed_codes: Optional[set] = None
+    if listed_df is not None:
+        filtered_listed = _filter_listed_equity_df(listed_df)
+        if not filtered_listed.empty and "code" in filtered_listed.columns:
+            allowed_codes = set(filtered_listed["code"].astype(str).str.zfill(4).tolist())
     scored_pairs = []
     if preselect_top_n is not None and preselect_top_n > 0:
         for symbol_a, symbol_b in pairs:
+            if allowed_codes is not None:
+                if str(symbol_a).zfill(4) not in allowed_codes:
+                    continue
+                if str(symbol_b).zfill(4) not in allowed_codes:
+                    continue
             if _is_index_etf_symbol(symbol_a, etf_index_map) or _is_index_etf_symbol(
                 symbol_b, etf_index_map
             ):
@@ -699,6 +756,11 @@ def evaluate_pair_candidates(
         target_pairs = [pair for pair in pairs]
     results = []
     for symbol_a, symbol_b in target_pairs:
+        if allowed_codes is not None:
+            if str(symbol_a).zfill(4) not in allowed_codes:
+                continue
+            if str(symbol_b).zfill(4) not in allowed_codes:
+                continue
         if _is_index_etf_symbol(symbol_a, etf_index_map) or _is_index_etf_symbol(
             symbol_b, etf_index_map
         ):
