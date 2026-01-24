@@ -739,6 +739,7 @@ def evaluate_pair_candidates(
     max_half_life: Optional[float] = None,
     max_abs_zscore: Optional[float] = None,
     min_avg_volume: Optional[float] = None,
+    min_daily_volume: Optional[float] = None,
     preselect_top_n: Optional[int] = None,
     listed_df: Optional[pd.DataFrame] = None,
     history_window: Optional[int] = None,
@@ -807,6 +808,7 @@ def evaluate_pair_candidates(
                 min_long_similarity=min_long_similarity,
                 min_return_corr=min_return_corr,
                 min_avg_volume=min_avg_volume,
+                min_daily_volume=min_daily_volume,
                 history_window=history_window,
             )
             if metrics is None:
@@ -915,9 +917,14 @@ def compute_pair_metrics(
     min_long_similarity: Optional[float] = None,
     min_return_corr: Optional[float] = None,
     min_avg_volume: Optional[float] = None,
+    min_daily_volume: Optional[float] = None,
     history_window: Optional[int] = None,
 ) -> Optional[dict]:
-    df_pair = _prepare_pair_frame(symbol_a, symbol_b)
+    df_pair = _prepare_pair_frame(
+        symbol_a,
+        symbol_b,
+        min_daily_volume=min_daily_volume,
+    )
     df_pair = _trim_pair_history(df_pair, history_window)
     min_samples = compute_min_pair_samples(recent_window, long_window)
     if len(df_pair) < min_samples:
@@ -1057,13 +1064,22 @@ def compute_spread_series(symbol_a: str, symbol_b: str) -> Tuple[pd.DataFrame, d
     return df_pair, metrics
 
 
-def _prepare_pair_frame(symbol_a: str, symbol_b: str) -> pd.DataFrame:
+def _prepare_pair_frame(
+    symbol_a: str,
+    symbol_b: str,
+    min_daily_volume: Optional[float] = None,
+) -> pd.DataFrame:
     df_a = load_price_csv(symbol_a).loc[:, ["date", "close", "volume"]]
     df_b = load_price_csv(symbol_b).loc[:, ["date", "close", "volume"]]
     df_a = df_a.rename(columns={"close": "close_a", "volume": "volume_a"})
     df_b = df_b.rename(columns={"close": "close_b", "volume": "volume_b"})
     df_pair = pd.merge(df_a, df_b, on="date", how="inner").dropna()
     df_pair = df_pair[(df_pair["close_a"] > 0) & (df_pair["close_b"] > 0)]
+    if min_daily_volume is not None:
+        df_pair = df_pair[
+            (df_pair["volume_a"] >= min_daily_volume)
+            & (df_pair["volume_b"] >= min_daily_volume)
+        ]
     return df_pair.sort_values("date")
 
 
