@@ -2606,6 +2606,16 @@ def main():
                     key="pair_manual_long_window",
                 )
 
+            manual_volume_cols = st.columns(1)
+            with manual_volume_cols[0]:
+                manual_min_daily_volume = st.number_input(
+                    "日次出来高の下限(任意ペア)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1000.0,
+                    key="pair_manual_min_daily_volume",
+                )
+
             manual_signal_cols = st.columns(2)
             with manual_signal_cols[0]:
                 entry_threshold_manual = st.number_input(
@@ -2658,6 +2668,11 @@ def main():
                                 manual_symbol_b,
                                 recent_window=int(manual_recent_window),
                                 long_window=manual_long_window,
+                                min_daily_volume=(
+                                    float(manual_min_daily_volume)
+                                    if manual_min_daily_volume > 0
+                                    else None
+                                ),
                             )
                         st.session_state["pair_manual_result"] = df_pair
                         st.session_state["pair_manual_metrics"] = manual_metrics
@@ -2797,7 +2812,7 @@ def main():
                 step=0.1,
                 disabled=True,
             )
-        volume_filters = st.columns([1])
+        volume_filters = st.columns([1, 1])
         with volume_filters[0]:
             min_avg_volume = st.number_input(
                 "平均出来高の下限",
@@ -2805,6 +2820,13 @@ def main():
                 value=50000.0,
                 step=1000.0,
                 disabled=True,
+            )
+        with volume_filters[1]:
+            min_daily_volume = st.number_input(
+                "日次出来高の下限",
+                min_value=0.0,
+                value=0.0,
+                step=1000.0,
             )
         score_filters = st.columns([1])
         with score_filters[0]:
@@ -2821,6 +2843,7 @@ def main():
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
             min_long_similarity = None
+        resolved_min_daily_volume = float(min_daily_volume) if min_daily_volume > 0 else None
         min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
         required_samples = max(min_pair_samples, pair_search_history)
         st.caption(
@@ -2962,6 +2985,7 @@ def main():
                         max_half_life=None,
                         max_abs_zscore=None,
                         min_avg_volume=None,
+                        min_daily_volume=resolved_min_daily_volume,
                         preselect_top_n=None,
                         listed_df=listed_df,
                         history_window=pair_search_history,
@@ -2981,6 +3005,7 @@ def main():
                         "max_half_life": None,
                         "max_abs_zscore": None,
                         "min_avg_volume": None,
+                        "min_daily_volume": resolved_min_daily_volume,
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
                         "pair_search_history": int(pair_search_history),
