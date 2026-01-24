@@ -1,7 +1,8 @@
 from collections import Counter
 from datetime import date, timedelta
 import json
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,54 @@ from app.pair_trading import (
 
 LIGHT_PLAN_YEARS = 5
 PAIR_CACHE_PATH = META_DIR / "pair_candidates_cache.json"
+
+
+def _format_eta(seconds: Optional[float]) -> str:
+    if seconds is None or seconds < 0:
+        return "計算中"
+    seconds_int = int(round(seconds))
+    if seconds_int < 60:
+        return f"{seconds_int}秒"
+    minutes, sec = divmod(seconds_int, 60)
+    if minutes < 60:
+        return f"{minutes}分{sec}秒"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}時間{minutes}分{sec}秒"
+
+
+def _build_progress_updater(
+    label: str,
+) -> Tuple[Callable[[int, int, Optional[str]], None], Callable[[], None]]:
+    bar = st.progress(0.0)
+    status = st.empty()
+    state = {"stage": None, "start": None}
+
+    def update(current: int, total: int, stage: Optional[str] = None) -> None:
+        if total is None or total <= 0:
+            status.text(f"{label}を実行中...")
+            bar.progress(0.0)
+            return
+        if stage != state["stage"]:
+            state["stage"] = stage
+            state["start"] = time.monotonic()
+        start = state["start"] or time.monotonic()
+        elapsed = max(0.0, time.monotonic() - start)
+        if current <= 0 or elapsed <= 0:
+            remaining = None
+        else:
+            remaining = (total - current) * (elapsed / current)
+        stage_label = f"{stage}: " if stage else ""
+        status.text(
+            f"{label} {stage_label}{current}/{total} | 残り推定: {_format_eta(remaining)}"
+        )
+        progress_value = min(max(current / total, 0.0), 1.0)
+        bar.progress(progress_value)
+
+    def done() -> None:
+        bar.progress(1.0)
+        status.text(f"{label} 完了")
+
+    return update, done
 
 
 def _attach_pair_sector_info(
@@ -2885,56 +2934,60 @@ def main():
             )
             update_cache = st.button("ペアキャッシュを更新", type="secondary")
             if update_cache:
-                with st.spinner("ペアキャッシュを更新しています..."):
-                    sector17_filter = None
-                    sector33_filter = None
-                    pair_candidates = generate_pairs_by_sector_candidates(
-                        listed_df=listed_df,
-                        symbols=symbols,
-                        sector17=sector17_filter,
-                        sector33=sector33_filter,
-                        max_pairs_per_sector=None,
+                sector17_filter = None
+                sector33_filter = None
+                pair_candidates = generate_pairs_by_sector_candidates(
+                    listed_df=listed_df,
+                    symbols=symbols,
+                    sector17=sector17_filter,
+                    sector33=sector33_filter,
+                    max_pairs_per_sector=None,
+                )
+                if not pair_candidates:
+                    st.warning(
+                        "条件に合致するペア候補がありません。業種フィルタを調整してください。"
                     )
-                    if not pair_candidates:
-                        st.warning(
-                            "条件に合致するペア候補がありません。業種フィルタを調整してください。"
-                        )
-                    else:
-                        results_df = evaluate_pair_candidates(
-                            pair_candidates,
-                            recent_window=int(recent_window),
-                            long_window=None,
-                            min_similarity=None,
-                            min_long_similarity=None,
-                            min_return_corr=None,
-                            max_p_value=float(max_p_value) if max_p_value is not None else None,
-                            max_half_life=None,
-                            max_abs_zscore=None,
-                            min_avg_volume=None,
-                            preselect_top_n=None,
-                            listed_df=listed_df,
-                            history_window=pair_search_history,
-                        )
-                        results_df = _attach_pair_sector_info(results_df, listed_df)
-                        metadata = {
-                            "sector17": sector17_filter,
-                            "sector33": sector33_filter,
-                            "recent_window": int(recent_window),
-                            "long_window": None,
-                            "min_similarity": None,
-                            "min_long_similarity": None,
-                            "min_return_corr": None,
-                            "max_p_value": float(max_p_value) if max_p_value is not None else None,
-                            "max_half_life": None,
-                            "max_abs_zscore": None,
-                            "min_avg_volume": None,
-                            "preselect_top_n": None,
-                            "max_pairs_per_sector": None,
-                            "pair_search_history": int(pair_search_history),
-                        }
-                        _save_pair_cache(results_df, metadata)
-                        st.success("ペアキャッシュを更新しました。")
-                        cached_pairs_df, cached_meta = _load_pair_cache()
+                else:
+                    progress_update, progress_done = _build_progress_updater(
+                        "ペアキャッシュ更新"
+                    )
+                    results_df = evaluate_pair_candidates(
+                        pair_candidates,
+                        recent_window=int(recent_window),
+                        long_window=None,
+                        min_similarity=None,
+                        min_long_similarity=None,
+                        min_return_corr=None,
+                        max_p_value=float(max_p_value) if max_p_value is not None else None,
+                        max_half_life=None,
+                        max_abs_zscore=None,
+                        min_avg_volume=None,
+                        preselect_top_n=None,
+                        listed_df=listed_df,
+                        history_window=pair_search_history,
+                        progress_callback=progress_update,
+                    )
+                    progress_done()
+                    results_df = _attach_pair_sector_info(results_df, listed_df)
+                    metadata = {
+                        "sector17": sector17_filter,
+                        "sector33": sector33_filter,
+                        "recent_window": int(recent_window),
+                        "long_window": None,
+                        "min_similarity": None,
+                        "min_long_similarity": None,
+                        "min_return_corr": None,
+                        "max_p_value": float(max_p_value) if max_p_value is not None else None,
+                        "max_half_life": None,
+                        "max_abs_zscore": None,
+                        "min_avg_volume": None,
+                        "preselect_top_n": None,
+                        "max_pairs_per_sector": None,
+                        "pair_search_history": int(pair_search_history),
+                    }
+                    _save_pair_cache(results_df, metadata)
+                    st.success("ペアキャッシュを更新しました。")
+                    cached_pairs_df, cached_meta = _load_pair_cache()
 
         run_pairs = st.button("ペア候補を表示", type="primary")
         if run_pairs:
@@ -3091,17 +3144,19 @@ def main():
 
         run_backtest = st.button("バックテストを実行", type="primary")
         if run_backtest:
-            with st.spinner("バックテストを実行しています..."):
-                results_df, summary_df = run_canslim_backtest(
-                    lookahead=int(bt_lookahead),
-                    return_threshold=float(bt_return_threshold),
-                    volume_multiplier=float(bt_volume_multiplier),
-                    cup_window=int(bt_cup_window),
-                    saucer_window=int(bt_saucer_window),
-                    handle_window=int(bt_handle_window),
-                )
-                st.session_state["backtest_results"] = results_df
-                st.session_state["backtest_summary"] = summary_df
+            progress_update, progress_done = _build_progress_updater("CAN-SLIM バックテスト")
+            results_df, summary_df = run_canslim_backtest(
+                lookahead=int(bt_lookahead),
+                return_threshold=float(bt_return_threshold),
+                volume_multiplier=float(bt_volume_multiplier),
+                cup_window=int(bt_cup_window),
+                saucer_window=int(bt_saucer_window),
+                handle_window=int(bt_handle_window),
+                progress_callback=progress_update,
+            )
+            progress_done()
+            st.session_state["backtest_results"] = results_df
+            st.session_state["backtest_summary"] = summary_df
 
         backtest_results = st.session_state.get("backtest_results")
         backtest_summary = st.session_state.get("backtest_summary")
@@ -3268,21 +3323,23 @@ def main():
                 st.warning("カップ/ハンドル期間と深さレンジの候補を1つ以上選択してください。")
             else:
                 depth_ranges = [depth_range_options[key] for key in gs_depth_ranges]
-                with st.spinner("グリッドサーチを実行しています..."):
-                    eval_df, best_summary = grid_search_cup_shape(
-                        lookahead=int(gs_lookahead),
-                        return_threshold=float(gs_return_threshold),
-                        volume_multiplier=float(gs_volume_multiplier),
-                        min_signals=int(gs_min_signals),
-                        gap_penalty=float(gs_gap_penalty),
-                        cup_windows=[int(v) for v in gs_cup_windows],
-                        handle_windows=[int(v) for v in gs_handle_windows],
-                        depth_ranges=depth_ranges,
-                        recovery_ratios=[float(v) for v in gs_recovery_ratios],
-                        handle_max_depths=[float(v) for v in gs_handle_max_depths],
-                    )
-                    st.session_state["grid_search_results"] = eval_df
-                    st.session_state["grid_search_summary"] = best_summary
+                progress_update, progress_done = _build_progress_updater("カップ形状グリッドサーチ")
+                eval_df, best_summary = grid_search_cup_shape(
+                    lookahead=int(gs_lookahead),
+                    return_threshold=float(gs_return_threshold),
+                    volume_multiplier=float(gs_volume_multiplier),
+                    min_signals=int(gs_min_signals),
+                    gap_penalty=float(gs_gap_penalty),
+                    cup_windows=[int(v) for v in gs_cup_windows],
+                    handle_windows=[int(v) for v in gs_handle_windows],
+                    depth_ranges=depth_ranges,
+                    recovery_ratios=[float(v) for v in gs_recovery_ratios],
+                    handle_max_depths=[float(v) for v in gs_handle_max_depths],
+                    progress_callback=progress_update,
+                )
+                progress_done()
+                st.session_state["grid_search_results"] = eval_df
+                st.session_state["grid_search_summary"] = best_summary
 
         grid_search_results = st.session_state.get("grid_search_results")
         grid_search_summary = st.session_state.get("grid_search_summary")
@@ -3374,67 +3431,64 @@ def main():
 
             run_pair_backtest = st.button("ペアトレードを実行", type="primary")
             if run_pair_backtest:
-                with st.spinner("ペアトレードを実行しています..."):
-                    if use_cached_pairs and cached_pairs_df is not None and not cached_pairs_df.empty:
-                        filtered_pairs = _filter_cached_pairs(
-                            cached_pairs_df,
-                            None,
-                            None,
-                            None,
-                        )
-                        if "p_value" in filtered_pairs.columns:
-                            filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
-                        sector_key = (
-                            "pair_sector33" if sector_col == "sector33" else "pair_sector17"
-                        )
-                        if sector_key in filtered_pairs.columns:
-                            sector_counts = (
-                                listed_df[sector_col]
-                                .dropna()
-                                .astype(str)
-                                .value_counts()
-                            )
-                            eligible_sectors = set(
-                                sector_counts[sector_counts >= int(min_symbols)].index
-                            )
-                            filtered_pairs = filtered_pairs[
-                                filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
-                            ]
-                        filtered_pairs = _limit_pairs_per_sector(
-                            filtered_pairs, sector_col, int(max_pairs_per_sector)
-                        )
-                        pairs = list(
-                            zip(
-                                filtered_pairs["symbol_a"].astype(str).tolist(),
-                                filtered_pairs["symbol_b"].astype(str).tolist(),
-                            )
-                        )
-                    else:
-                        pairs = generate_pairs_by_sector(
-                            sector_col=sector_col,
-                            min_symbols=int(min_symbols),
-                            max_pairs_per_sector=int(max_pairs_per_sector),
-                        )
-                    config = PairTradeConfig(
-                        lookback=int(lookback),
-                        entry_z=float(entry_z),
-                        exit_z=float(exit_z),
-                        stop_z=float(stop_z),
-                        max_holding_days=int(max_holding_days),
+                if use_cached_pairs and cached_pairs_df is not None and not cached_pairs_df.empty:
+                    filtered_pairs = _filter_cached_pairs(
+                        cached_pairs_df,
+                        None,
+                        None,
+                        None,
                     )
-                    start_date = None
-                    end_date = None
-                    if date_range and len(date_range) == 2:
-                        start_date = date_range[0].isoformat()
-                        end_date = date_range[1].isoformat()
-                    trades_df, summary_df = backtest_pairs(
-                        pairs,
-                        config=config,
-                        start_date=start_date,
-                        end_date=end_date,
+                    if "p_value" in filtered_pairs.columns:
+                        filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
+                    sector_key = "pair_sector33" if sector_col == "sector33" else "pair_sector17"
+                    if sector_key in filtered_pairs.columns:
+                        sector_counts = (
+                            listed_df[sector_col].dropna().astype(str).value_counts()
+                        )
+                        eligible_sectors = set(
+                            sector_counts[sector_counts >= int(min_symbols)].index
+                        )
+                        filtered_pairs = filtered_pairs[
+                            filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
+                        ]
+                    filtered_pairs = _limit_pairs_per_sector(
+                        filtered_pairs, sector_col, int(max_pairs_per_sector)
                     )
-                    st.session_state["pair_trade_trades"] = trades_df
-                    st.session_state["pair_trade_summary"] = summary_df
+                    pairs = list(
+                        zip(
+                            filtered_pairs["symbol_a"].astype(str).tolist(),
+                            filtered_pairs["symbol_b"].astype(str).tolist(),
+                        )
+                    )
+                else:
+                    pairs = generate_pairs_by_sector(
+                        sector_col=sector_col,
+                        min_symbols=int(min_symbols),
+                        max_pairs_per_sector=int(max_pairs_per_sector),
+                    )
+                config = PairTradeConfig(
+                    lookback=int(lookback),
+                    entry_z=float(entry_z),
+                    exit_z=float(exit_z),
+                    stop_z=float(stop_z),
+                    max_holding_days=int(max_holding_days),
+                )
+                start_date = None
+                end_date = None
+                if date_range and len(date_range) == 2:
+                    start_date = date_range[0].isoformat()
+                    end_date = date_range[1].isoformat()
+                progress_update, progress_done = _build_progress_updater("ペアトレードバックテスト")
+                trades_df, summary_df = backtest_pairs(
+                    pairs,
+                    config=config,
+                    start_date=start_date,
+                    end_date=end_date,
+                    progress_callback=progress_update,
+                )
+                progress_done()
+                st.session_state["pair_trade_trades"] = trades_df
+                st.session_state["pair_trade_summary"] = summary_df
 
             pair_summary = st.session_state.get("pair_trade_summary")
             pair_trades = st.session_state.get("pair_trade_trades")
@@ -3489,71 +3543,71 @@ def main():
                     ):
                         st.warning("すべての候補値を入力してください。")
                     else:
-                        with st.spinner("パラメータ探索を実行しています..."):
-                            if use_cached_pairs and cached_pairs_df is not None and not cached_pairs_df.empty:
-                                filtered_pairs = _filter_cached_pairs(
-                                    cached_pairs_df,
-                                    None,
-                                    None,
-                                    None,
-                                )
-                                if "p_value" in filtered_pairs.columns:
-                                    filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
-                                sector_key = (
-                                    "pair_sector33"
-                                    if sector_col == "sector33"
-                                    else "pair_sector17"
-                                )
-                                if sector_key in filtered_pairs.columns:
-                                    sector_counts = (
-                                        listed_df[sector_col]
-                                        .dropna()
-                                        .astype(str)
-                                        .value_counts()
-                                    )
-                                    eligible_sectors = set(
-                                        sector_counts[sector_counts >= int(min_symbols)].index
-                                    )
-                                    filtered_pairs = filtered_pairs[
-                                        filtered_pairs[sector_key]
-                                        .astype(str)
-                                        .isin(eligible_sectors)
-                                    ]
-                                filtered_pairs = _limit_pairs_per_sector(
-                                    filtered_pairs, sector_col, int(max_pairs_per_sector)
-                                )
-                                pairs = list(
-                                    zip(
-                                        filtered_pairs["symbol_a"].astype(str).tolist(),
-                                        filtered_pairs["symbol_b"].astype(str).tolist(),
-                                    )
-                                )
-                            else:
-                                pairs = generate_pairs_by_sector(
-                                    sector_col=sector_col,
-                                    min_symbols=int(min_symbols),
-                                    max_pairs_per_sector=int(max_pairs_per_sector),
-                                )
-                            param_grid = {
-                                "lookback": lookback_values,
-                                "entry_z": entry_values,
-                                "exit_z": exit_values,
-                                "stop_z": stop_values,
-                                "max_holding_days": holding_values,
-                            }
-                            start_date = None
-                            end_date = None
-                            if date_range and len(date_range) == 2:
-                                start_date = date_range[0].isoformat()
-                                end_date = date_range[1].isoformat()
-                            optimization_df = optimize_pair_trade_parameters(
-                                pairs,
-                                param_grid=param_grid,
-                                start_date=start_date,
-                                end_date=end_date,
-                                min_trades=int(min_trades),
+                        if use_cached_pairs and cached_pairs_df is not None and not cached_pairs_df.empty:
+                            filtered_pairs = _filter_cached_pairs(
+                                cached_pairs_df,
+                                None,
+                                None,
+                                None,
                             )
-                            st.session_state["pair_trade_optimization"] = optimization_df
+                            if "p_value" in filtered_pairs.columns:
+                                filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
+                            sector_key = (
+                                "pair_sector33"
+                                if sector_col == "sector33"
+                                else "pair_sector17"
+                            )
+                            if sector_key in filtered_pairs.columns:
+                                sector_counts = (
+                                    listed_df[sector_col]
+                                    .dropna()
+                                    .astype(str)
+                                    .value_counts()
+                                )
+                                eligible_sectors = set(
+                                    sector_counts[sector_counts >= int(min_symbols)].index
+                                )
+                                filtered_pairs = filtered_pairs[
+                                    filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
+                                ]
+                            filtered_pairs = _limit_pairs_per_sector(
+                                filtered_pairs, sector_col, int(max_pairs_per_sector)
+                            )
+                            pairs = list(
+                                zip(
+                                    filtered_pairs["symbol_a"].astype(str).tolist(),
+                                    filtered_pairs["symbol_b"].astype(str).tolist(),
+                                )
+                            )
+                        else:
+                            pairs = generate_pairs_by_sector(
+                                sector_col=sector_col,
+                                min_symbols=int(min_symbols),
+                                max_pairs_per_sector=int(max_pairs_per_sector),
+                            )
+                        param_grid = {
+                            "lookback": lookback_values,
+                            "entry_z": entry_values,
+                            "exit_z": exit_values,
+                            "stop_z": stop_values,
+                            "max_holding_days": holding_values,
+                        }
+                        start_date = None
+                        end_date = None
+                        if date_range and len(date_range) == 2:
+                            start_date = date_range[0].isoformat()
+                            end_date = date_range[1].isoformat()
+                        progress_update, progress_done = _build_progress_updater("ペアトレード最適化")
+                        optimization_df = optimize_pair_trade_parameters(
+                            pairs,
+                            param_grid=param_grid,
+                            start_date=start_date,
+                            end_date=end_date,
+                            min_trades=int(min_trades),
+                            progress_callback=progress_update,
+                        )
+                        progress_done()
+                        st.session_state["pair_trade_optimization"] = optimization_df
 
                 optimization_df = st.session_state.get("pair_trade_optimization")
                 if optimization_df is not None and not optimization_df.empty:

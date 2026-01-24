@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import random
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -308,6 +308,7 @@ def run_canslim_backtest(
     saucer_depth_range: Tuple[float, float] = (0.05, 0.18),
     saucer_recovery_ratio: float = 0.9,
     saucer_handle_max_depth: float = 0.1,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     銘柄をランダムに半分ずつに分割し、CAN-SLIM に基づいた
@@ -325,32 +326,35 @@ def run_canslim_backtest(
 
     all_signals: List[PatternSignal] = []
 
-    for symbol in target_symbols:
+    total_symbols = len(target_symbols)
+    for idx, symbol in enumerate(target_symbols, start=1):
         try:
             df_price = load_price_csv(symbol)
+            symbol_signals = scan_canslim_patterns(
+                df_price,
+                lookahead=lookahead,
+                return_threshold=return_threshold,
+                volume_multiplier=volume_multiplier,
+                cup_window=cup_window,
+                saucer_window=saucer_window,
+                handle_window=handle_window,
+                cup_depth_range=cup_depth_range,
+                cup_recovery_ratio=cup_recovery_ratio,
+                cup_handle_max_depth=cup_handle_max_depth,
+                saucer_depth_range=saucer_depth_range,
+                saucer_recovery_ratio=saucer_recovery_ratio,
+                saucer_handle_max_depth=saucer_handle_max_depth,
+            )
+            dataset = "train" if symbol in train_set else "validation"
+            for signal in symbol_signals:
+                signal.dataset = dataset
+                signal.symbol = symbol
+            all_signals.extend(symbol_signals)
         except Exception:
             continue
-
-        symbol_signals = scan_canslim_patterns(
-            df_price,
-            lookahead=lookahead,
-            return_threshold=return_threshold,
-            volume_multiplier=volume_multiplier,
-            cup_window=cup_window,
-            saucer_window=saucer_window,
-            handle_window=handle_window,
-            cup_depth_range=cup_depth_range,
-            cup_recovery_ratio=cup_recovery_ratio,
-            cup_handle_max_depth=cup_handle_max_depth,
-            saucer_depth_range=saucer_depth_range,
-            saucer_recovery_ratio=saucer_recovery_ratio,
-            saucer_handle_max_depth=saucer_handle_max_depth,
-        )
-        dataset = "train" if symbol in train_set else "validation"
-        for signal in symbol_signals:
-            signal.dataset = dataset
-            signal.symbol = symbol
-        all_signals.extend(symbol_signals)
+        finally:
+            if progress_callback:
+                progress_callback(idx, total_symbols, "銘柄スキャン")
 
     if not all_signals:
         return pd.DataFrame(), pd.DataFrame()
@@ -491,6 +495,7 @@ def grid_search_cup_shape(
     depth_ranges: Optional[List[Tuple[float, float]]] = None,
     recovery_ratios: Optional[List[float]] = None,
     handle_max_depths: Optional[List[float]] = None,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     カップウィズハンドル形状のパラメーターをグリッドサーチで確認する。
@@ -510,11 +515,20 @@ def grid_search_cup_shape(
     best_results = pd.DataFrame()
     best_summary = pd.DataFrame()
 
+    total_combos = (
+        len(cup_windows)
+        * len(handle_windows)
+        * len(depth_ranges)
+        * len(recovery_ratios)
+        * len(handle_max_depths)
+    )
+    combo_index = 0
     for cup_window in cup_windows:
         for handle_window in handle_windows:
             for depth_range in depth_ranges:
                 for recovery_ratio in recovery_ratios:
                     for handle_max_depth in handle_max_depths:
+                        combo_index += 1
                         results_df, summary_df = run_canslim_backtest(
                             symbols=symbols,
                             seed=seed,
@@ -530,6 +544,8 @@ def grid_search_cup_shape(
                         )
 
                         if results_df.empty:
+                            if progress_callback:
+                                progress_callback(combo_index, total_combos, "グリッドサーチ")
                             continue
 
                         train_signals = results_df[results_df["dataset"] == "train"].shape[
@@ -539,6 +555,8 @@ def grid_search_cup_shape(
                             results_df["dataset"] == "validation"
                         ].shape[0]
                         if train_signals < min_signals or val_signals < min_signals:
+                            if progress_callback:
+                                progress_callback(combo_index, total_combos, "グリッドサーチ")
                             continue
 
                         train_up = summary_df[
@@ -578,6 +596,8 @@ def grid_search_cup_shape(
                                 "validation_signals": int(val_signals),
                             }
                         )
+                        if progress_callback:
+                            progress_callback(combo_index, total_combos, "グリッドサーチ")
 
                         if score > best_score:
                             best_score = score
