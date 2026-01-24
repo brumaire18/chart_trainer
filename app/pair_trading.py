@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from itertools import combinations, islice, product
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 import warnings
 
 import numpy as np
@@ -266,16 +266,22 @@ def backtest_pairs(
     config: PairTradeConfig,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Backtest pair trading strategy for multiple pairs."""
     trades: List[Dict[str, object]] = []
     pair_rows = _normalize_pair_list(pairs)
 
-    for symbol_x, symbol_y, pair_name in pair_rows:
+    total_pairs = len(pair_rows)
+    for idx, (symbol_x, symbol_y, pair_name) in enumerate(pair_rows, start=1):
         df_pair = _prepare_pair_prices(symbol_x, symbol_y, start_date, end_date)
         if len(df_pair) <= config.lookback:
+            if progress_callback:
+                progress_callback(idx, total_pairs, "ペア評価")
             continue
         trades.extend(_backtest_single_pair(df_pair, symbol_x, symbol_y, pair_name, config))
+        if progress_callback:
+            progress_callback(idx, total_pairs, "ペア評価")
 
     trades_df = pd.DataFrame(trades)
     summary_df = _summarize_trades(trades_df)
@@ -288,6 +294,7 @@ def optimize_pair_trade_parameters(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     min_trades: int = 5,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
 ) -> pd.DataFrame:
     """Grid search for pair trading parameters."""
     grid_keys = ["lookback", "entry_z", "exit_z", "stop_z", "max_holding_days"]
@@ -296,39 +303,45 @@ def optimize_pair_trade_parameters(
             raise ValueError(f"param_grid must include '{key}'")
 
     results: List[Dict[str, object]] = []
-    for values in product(*(param_grid[key] for key in grid_keys)):
-        config = PairTradeConfig(
-            lookback=int(values[0]),
-            entry_z=float(values[1]),
-            exit_z=float(values[2]),
-            stop_z=float(values[3]),
-            max_holding_days=int(values[4]),
-        )
-        trades_df, _ = backtest_pairs(
-            pairs,
-            config=config,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        trade_count = len(trades_df)
-        if trade_count < min_trades:
-            continue
-        win_rate = float((trades_df["pnl"] > 0).mean()) if trade_count else 0.0
-        total_pnl = float(trades_df["pnl"].sum()) if trade_count else 0.0
-        avg_pnl = float(trades_df["pnl"].mean()) if trade_count else 0.0
-        results.append(
-            {
-                "lookback": config.lookback,
-                "entry_z": config.entry_z,
-                "exit_z": config.exit_z,
-                "stop_z": config.stop_z,
-                "max_holding_days": config.max_holding_days,
-                "trade_count": trade_count,
-                "win_rate": win_rate,
-                "total_pnl": total_pnl,
-                "avg_pnl": avg_pnl,
-            }
-        )
+    param_sets = list(product(*(param_grid[key] for key in grid_keys)))
+    total_sets = len(param_sets)
+    for idx, values in enumerate(param_sets, start=1):
+        try:
+            config = PairTradeConfig(
+                lookback=int(values[0]),
+                entry_z=float(values[1]),
+                exit_z=float(values[2]),
+                stop_z=float(values[3]),
+                max_holding_days=int(values[4]),
+            )
+            trades_df, _ = backtest_pairs(
+                pairs,
+                config=config,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            trade_count = len(trades_df)
+            if trade_count < min_trades:
+                continue
+            win_rate = float((trades_df["pnl"] > 0).mean()) if trade_count else 0.0
+            total_pnl = float(trades_df["pnl"].sum()) if trade_count else 0.0
+            avg_pnl = float(trades_df["pnl"].mean()) if trade_count else 0.0
+            results.append(
+                {
+                    "lookback": config.lookback,
+                    "entry_z": config.entry_z,
+                    "exit_z": config.exit_z,
+                    "stop_z": config.stop_z,
+                    "max_holding_days": config.max_holding_days,
+                    "trade_count": trade_count,
+                    "win_rate": win_rate,
+                    "total_pnl": total_pnl,
+                    "avg_pnl": avg_pnl,
+                }
+            )
+        finally:
+            if progress_callback:
+                progress_callback(idx, total_sets, "パラメータ探索")
     if not results:
         return pd.DataFrame()
     return pd.DataFrame(results).sort_values("total_pnl", ascending=False).reset_index(drop=True)
@@ -729,6 +742,7 @@ def evaluate_pair_candidates(
     preselect_top_n: Optional[int] = None,
     listed_df: Optional[pd.DataFrame] = None,
     history_window: Optional[int] = None,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
 ) -> pd.DataFrame:
     etf_index_map = _build_etf_index_map(listed_df) if listed_df is not None else {}
     allowed_codes: Optional[set] = None
@@ -736,9 +750,43 @@ def evaluate_pair_candidates(
         filtered_listed = _filter_listed_equity_df(listed_df)
         if not filtered_listed.empty and "code" in filtered_listed.columns:
             allowed_codes = set(filtered_listed["code"].astype(str).str.zfill(4).tolist())
+    pairs_list = list(pairs)
     scored_pairs = []
     if preselect_top_n is not None and preselect_top_n > 0:
-        for symbol_a, symbol_b in pairs:
+        total_pairs = len(pairs_list)
+        for idx, (symbol_a, symbol_b) in enumerate(pairs_list, start=1):
+            try:
+                if allowed_codes is not None:
+                    if str(symbol_a).zfill(4) not in allowed_codes:
+                        continue
+                    if str(symbol_b).zfill(4) not in allowed_codes:
+                        continue
+                if _is_index_etf_symbol(symbol_a, etf_index_map) or _is_index_etf_symbol(
+                    symbol_b, etf_index_map
+                ):
+                    continue
+                if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
+                    continue
+                score = _compute_quick_pair_score(
+                    symbol_a,
+                    symbol_b,
+                    recent_window=recent_window,
+                    min_avg_volume=min_avg_volume,
+                    history_window=history_window,
+                )
+                if score is not None:
+                    scored_pairs.append((score, (symbol_a, symbol_b)))
+            finally:
+                if progress_callback:
+                    progress_callback(idx, total_pairs, "候補スコアリング")
+        scored_pairs.sort(key=lambda item: item[0], reverse=True)
+        target_pairs = [pair for _, pair in scored_pairs[:preselect_top_n]]
+    else:
+        target_pairs = list(pairs_list)
+    results = []
+    total_targets = len(target_pairs)
+    for idx, (symbol_a, symbol_b) in enumerate(target_pairs, start=1):
+        try:
             if allowed_codes is not None:
                 if str(symbol_a).zfill(4) not in allowed_codes:
                     continue
@@ -750,64 +798,41 @@ def evaluate_pair_candidates(
                 continue
             if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
                 continue
-            score = _compute_quick_pair_score(
+            metrics = compute_pair_metrics(
                 symbol_a,
                 symbol_b,
                 recent_window=recent_window,
+                long_window=long_window,
+                min_similarity=min_similarity,
+                min_long_similarity=min_long_similarity,
+                min_return_corr=min_return_corr,
                 min_avg_volume=min_avg_volume,
                 history_window=history_window,
             )
-            if score is not None:
-                scored_pairs.append((score, (symbol_a, symbol_b)))
-        scored_pairs.sort(key=lambda item: item[0], reverse=True)
-        target_pairs = [pair for _, pair in scored_pairs[:preselect_top_n]]
-    else:
-        target_pairs = [pair for pair in pairs]
-    results = []
-    for symbol_a, symbol_b in target_pairs:
-        if allowed_codes is not None:
-            if str(symbol_a).zfill(4) not in allowed_codes:
+            if metrics is None:
                 continue
-            if str(symbol_b).zfill(4) not in allowed_codes:
-                continue
-        if _is_index_etf_symbol(symbol_a, etf_index_map) or _is_index_etf_symbol(
-            symbol_b, etf_index_map
-        ):
-            continue
-        if _is_same_index_etf_pair(symbol_a, symbol_b, etf_index_map):
-            continue
-        metrics = compute_pair_metrics(
-            symbol_a,
-            symbol_b,
-            recent_window=recent_window,
-            long_window=long_window,
-            min_similarity=min_similarity,
-            min_long_similarity=min_long_similarity,
-            min_return_corr=min_return_corr,
-            min_avg_volume=min_avg_volume,
-            history_window=history_window,
-        )
-        if metrics is None:
-            continue
-        if max_p_value is not None:
-            p_value = metrics.get("p_value")
-            if p_value is None or np.isnan(p_value):
-                pass
-            elif p_value > max_p_value:
-                continue
-        if max_half_life is not None:
-            half_life = metrics.get("half_life")
-            if half_life is None or np.isnan(half_life) or half_life > max_half_life:
-                continue
-        if max_abs_zscore is not None:
-            zscore_latest = metrics.get("zscore_latest")
-            if (
-                zscore_latest is None
-                or np.isnan(zscore_latest)
-                or abs(zscore_latest) > max_abs_zscore
-            ):
-                continue
-        results.append(metrics)
+            if max_p_value is not None:
+                p_value = metrics.get("p_value")
+                if p_value is None or np.isnan(p_value):
+                    pass
+                elif p_value > max_p_value:
+                    continue
+            if max_half_life is not None:
+                half_life = metrics.get("half_life")
+                if half_life is None or np.isnan(half_life) or half_life > max_half_life:
+                    continue
+            if max_abs_zscore is not None:
+                zscore_latest = metrics.get("zscore_latest")
+                if (
+                    zscore_latest is None
+                    or np.isnan(zscore_latest)
+                    or abs(zscore_latest) > max_abs_zscore
+                ):
+                    continue
+            results.append(metrics)
+        finally:
+            if progress_callback:
+                progress_callback(idx, total_targets, "指標評価")
     return pd.DataFrame(results)
 
 
