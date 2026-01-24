@@ -2800,11 +2800,10 @@ def main():
         volume_filters = st.columns([1])
         with volume_filters[0]:
             min_avg_volume = st.number_input(
-                "平均出来高の下限",
+                "平均出来高の下限(0で無効)",
                 min_value=0.0,
                 value=50000.0,
                 step=1000.0,
-                disabled=True,
             )
         score_filters = st.columns([1])
         with score_filters[0]:
@@ -2816,11 +2815,12 @@ def main():
                 step=10,
                 disabled=True,
             )
-        st.caption("ペア検索の条件は現存銘柄 + p値のみを使用します。")
+        st.caption("ペア検索の条件は現存銘柄 + p値 + 平均出来高のみを使用します。")
 
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
             min_long_similarity = None
+        min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
         min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
         required_samples = max(min_pair_samples, pair_search_history)
         st.caption(
@@ -2961,7 +2961,7 @@ def main():
                         max_p_value=float(max_p_value) if max_p_value is not None else None,
                         max_half_life=None,
                         max_abs_zscore=None,
-                        min_avg_volume=None,
+                        min_avg_volume=min_avg_volume_filter,
                         preselect_top_n=None,
                         listed_df=listed_df,
                         history_window=pair_search_history,
@@ -2980,7 +2980,7 @@ def main():
                         "max_p_value": float(max_p_value) if max_p_value is not None else None,
                         "max_half_life": None,
                         "max_abs_zscore": None,
-                        "min_avg_volume": None,
+                        "min_avg_volume": min_avg_volume_filter,
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
                         "pair_search_history": int(pair_search_history),
