@@ -2935,12 +2935,35 @@ def main():
                     st.dataframe(cache_table_df, use_container_width=True)
 
             st.caption(
-                "ペアキャッシュ更新時は、業種フィルタに関係なく全セクターで総当たり検索します。"
+                "ペアキャッシュ更新時は対象セクターを絞り込んで作成できます。"
             )
+            cache_scope = st.selectbox(
+                "キャッシュ作成対象",
+                options=["全セクター", "sector17", "sector33"],
+                help="改善イテレーションのために1セクターのみを選んでキャッシュを作成できます。",
+            )
+            cache_sector17 = None
+            cache_sector33 = None
+            if cache_scope == "sector17":
+                if sector17_values:
+                    cache_sector17 = st.selectbox(
+                        "対象 sector17",
+                        options=sector17_values,
+                    )
+                else:
+                    st.warning("sector17 の候補がありません。")
+            elif cache_scope == "sector33":
+                if sector33_values:
+                    cache_sector33 = st.selectbox(
+                        "対象 sector33",
+                        options=sector33_values,
+                    )
+                else:
+                    st.warning("sector33 の候補がありません。")
             update_cache = st.button("ペアキャッシュを更新", type="secondary")
             if update_cache:
-                sector17_filter = None
-                sector33_filter = None
+                sector17_filter = cache_sector17
+                sector33_filter = cache_sector33
                 pair_candidates = generate_pairs_by_sector_candidates(
                     listed_df=listed_df,
                     symbols=symbols,
@@ -2989,6 +3012,7 @@ def main():
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
                         "pair_search_history": int(pair_search_history),
+                        "cache_scope": cache_scope,
                     }
                     _save_pair_cache(results_df, metadata)
                     st.success("ペアキャッシュを更新しました。")
