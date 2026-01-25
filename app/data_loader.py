@@ -13,6 +13,98 @@ from .config import (
 from .jquants_client import JQuantsClient
 
 
+MANUAL_STOCK_SPLITS: Dict[str, List[Tuple[str, float]]] = {
+    "6039": [("2025-12-15", 5.0)],
+    "1333": [("2025-12-29", 3.0)],
+    "1414": [("2025-12-29", 4.0)],
+    "1980": [("2025-12-29", 3.0)],
+    "2114": [("2025-12-29", 2.0)],
+    "2146": [("2025-12-29", 15.0)],
+    "2501": [("2025-12-29", 5.0)],
+    "3661": [("2025-12-29", 2.0)],
+    "3916": [("2025-12-29", 2.0)],
+    "3986": [("2025-12-29", 3.0)],
+    "4062": [("2025-12-29", 2.0)],
+    "4107": [("2025-12-29", 10.0)],
+    "4183": [("2025-12-29", 2.0)],
+    "4396": [("2025-12-29", 2.0)],
+    "4635": [("2025-12-29", 5.0)],
+    "4811": [("2025-12-29", 3.0)],
+    "4812": [("2025-12-29", 3.0)],
+    "4828": [("2025-12-29", 5.0)],
+    "4935": [("2025-12-29", 5.0)],
+    "4976": [("2025-12-29", 3.0)],
+    "5108": [("2025-12-29", 2.0)],
+    "5262": [("2025-12-29", 2.0)],
+    "6061": [("2025-12-29", 2.0)],
+    "6328": [("2025-12-29", 2.0)],
+    "6369": [("2025-12-29", 2.0)],
+    "6592": [("2025-12-29", 2.0)],
+    "6648": [("2025-12-29", 5.0)],
+    "6772": [("2025-12-29", 5.0)],
+    "7089": [("2025-12-29", 2.0)],
+    "7409": [("2025-12-29", 3.0)],
+    "7552": [("2025-12-29", 2.0)],
+    "7609": [("2025-12-29", 2.0)],
+    "7628": [("2025-12-29", 2.0)],
+    "8001": [("2025-12-29", 5.0)],
+    "8020": [("2025-12-29", 2.0)],
+    "8179": [("2025-12-29", 2.0)],
+    "8830": [("2025-12-29", 2.0)],
+    "9722": [("2025-12-29", 5.0)],
+    "9757": [("2025-12-29", 2.0)],
+}
+
+
+def _needs_manual_split_adjustment(
+    df: pd.DataFrame, split_date: pd.Timestamp, factor: float
+) -> bool:
+    if df.empty:
+        return False
+
+    before_split = df[df["date"] < split_date]
+    after_split = df[df["date"] >= split_date]
+    if before_split.empty or after_split.empty:
+        return False
+
+    pre_close = pd.to_numeric(before_split.iloc[-1]["close"], errors="coerce")
+    post_close = pd.to_numeric(after_split.iloc[0]["close"], errors="coerce")
+    if pd.isna(pre_close) or pd.isna(post_close) or post_close == 0:
+        return False
+
+    observed_ratio = pre_close / post_close
+    return observed_ratio >= factor * 0.8
+
+
+def apply_manual_stock_split_adjustments(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    splits = MANUAL_STOCK_SPLITS.get(str(symbol).zfill(4))
+    if not splits:
+        return df
+
+    adjusted = df.copy()
+    adjusted["date"] = pd.to_datetime(adjusted["date"]).dt.normalize()
+
+    for split_date_str, factor in sorted(splits, key=lambda item: item[0]):
+        split_date = pd.to_datetime(split_date_str).normalize()
+        if not _needs_manual_split_adjustment(adjusted, split_date, factor):
+            continue
+
+        before_mask = adjusted["date"] < split_date
+        price_cols = [col for col in ["open", "high", "low", "close"] if col in adjusted.columns]
+        for col in price_cols:
+            adjusted.loc[before_mask, col] = (
+                pd.to_numeric(adjusted.loc[before_mask, col], errors="coerce") / factor
+            )
+
+        if "volume" in adjusted.columns:
+            adjusted.loc[before_mask, "volume"] = (
+                pd.to_numeric(adjusted.loc[before_mask, "volume"], errors="coerce")
+                * factor
+            )
+
+    return adjusted
+
+
 def get_available_symbols() -> List[str]:
     """
     price_csvフォルダに存在するCSVファイル名から銘柄コード一覧を返す。
@@ -268,11 +360,12 @@ def load_price_csv(symbol: str, tail_rows: Optional[int] = None) -> pd.DataFrame
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
         if "datetime" not in df.columns:
             df["datetime"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
-        return df
+        return apply_manual_stock_split_adjustments(df, symbol)
 
     # パターン2: J-Quants daily_quotes 形式
     if "Date" in df_raw.columns:
-        return _normalize_from_jquants(df_raw, symbol=symbol)
+        df = _normalize_from_jquants(df_raw, symbol=symbol)
+        return apply_manual_stock_split_adjustments(df, symbol)
 
     # どちらでもない場合はエラー
     raise ValueError(
@@ -297,6 +390,7 @@ def fetch_and_save_price_csv(symbol: str, start_date: str, end_date: str) -> Pat
     )
     df_raw = client.fetch_daily_quotes(symbol, adjusted_start, adjusted_end)
     df_normalized = _normalize_from_jquants(df_raw, symbol=symbol)
+    df_normalized = apply_manual_stock_split_adjustments(df_normalized, symbol)
 
     PRICE_CSV_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = PRICE_CSV_DIR / f"{symbol}.csv"
