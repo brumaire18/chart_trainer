@@ -860,6 +860,17 @@ def _is_index_etf_symbol(symbol: str, etf_index_map: Dict[str, Optional[str]]) -
     return tag is not None
 
 
+def _compute_recent_avg_volume(volume_series: pd.Series, recent_window: int) -> float:
+    recent_series = volume_series.tail(recent_window)
+    avg_volume = float(recent_series.mean())
+    if not np.isnan(avg_volume):
+        return avg_volume
+    fallback_series = volume_series.dropna()
+    if fallback_series.empty:
+        return avg_volume
+    return float(fallback_series.mean())
+
+
 def _compute_quick_pair_score(
     symbol_a: str,
     symbol_b: str,
@@ -872,9 +883,8 @@ def _compute_quick_pair_score(
     min_samples = compute_min_pair_samples(recent_window)
     if len(df_pair) < min_samples:
         return None
-    volume_window = df_pair.tail(recent_window)
-    avg_volume_a = float(volume_window["volume_a"].mean())
-    avg_volume_b = float(volume_window["volume_b"].mean())
+    avg_volume_a = _compute_recent_avg_volume(df_pair["volume_a"], recent_window)
+    avg_volume_b = _compute_recent_avg_volume(df_pair["volume_b"], recent_window)
     if min_avg_volume is not None:
         if (
             np.isnan(avg_volume_a)
@@ -927,9 +937,8 @@ def compute_pair_metrics(
     min_samples = compute_min_pair_samples(recent_window, long_window)
     if len(df_pair) < min_samples:
         return None
-    volume_window = df_pair.tail(recent_window)
-    avg_volume_a = float(volume_window["volume_a"].mean())
-    avg_volume_b = float(volume_window["volume_b"].mean())
+    avg_volume_a = _compute_recent_avg_volume(df_pair["volume_a"], recent_window)
+    avg_volume_b = _compute_recent_avg_volume(df_pair["volume_b"], recent_window)
     avg_volume_min = float(np.nanmin([avg_volume_a, avg_volume_b]))
     if min_avg_volume is not None:
         if np.isnan(avg_volume_min) or avg_volume_min < min_avg_volume:
