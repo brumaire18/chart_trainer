@@ -833,7 +833,29 @@ def evaluate_pair_candidates(
         finally:
             if progress_callback:
                 progress_callback(idx, total_targets, "指標評価")
-    return pd.DataFrame(results)
+    results_df = pd.DataFrame(results)
+    if results_df.empty:
+        return results_df
+    numeric_columns = [
+        "recent_similarity",
+        "recent_return_corr",
+        "long_similarity",
+        "long_return_corr",
+        "p_value",
+        "half_life",
+        "beta",
+        "spread_mean",
+        "spread_std",
+        "spread_latest",
+        "zscore_latest",
+        "avg_volume_a",
+        "avg_volume_b",
+        "avg_volume_min",
+    ]
+    for column in numeric_columns:
+        if column in results_df.columns:
+            results_df[column] = pd.to_numeric(results_df[column], errors="coerce")
+    return results_df
 
 
 def _is_same_index_etf_pair(
