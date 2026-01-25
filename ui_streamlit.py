@@ -204,6 +204,39 @@ def _limit_pairs_per_sector(
     return pd.concat(limited, ignore_index=True)
 
 
+def _limit_pairs_per_symbol(
+    pairs_df: pd.DataFrame, max_pairs_per_symbol: int
+) -> pd.DataFrame:
+    if pairs_df.empty:
+        return pairs_df
+    if max_pairs_per_symbol < 1:
+        return pairs_df
+    if "symbol_a" not in pairs_df.columns or "symbol_b" not in pairs_df.columns:
+        return pairs_df
+    df = pairs_df.copy()
+    if "p_value" in df.columns:
+        df = df.sort_values("p_value", ascending=True)
+    counts: Dict[str, int] = {}
+    kept_rows = []
+    for _, row in df.iterrows():
+        symbol_a = str(row.get("symbol_a"))
+        symbol_b = str(row.get("symbol_b"))
+        if not symbol_a or symbol_a == "None":
+            continue
+        if not symbol_b or symbol_b == "None":
+            continue
+        if counts.get(symbol_a, 0) >= max_pairs_per_symbol:
+            continue
+        if counts.get(symbol_b, 0) >= max_pairs_per_symbol:
+            continue
+        kept_rows.append(row)
+        counts[symbol_a] = counts.get(symbol_a, 0) + 1
+        counts[symbol_b] = counts.get(symbol_b, 0) + 1
+    if not kept_rows:
+        return pairs_df.iloc[0:0]
+    return pd.DataFrame(kept_rows).reset_index(drop=True)
+
+
 def _load_latest_update_date() -> Optional[date]:
     meta_files = sorted(META_DIR.glob("*.json"))
     if not meta_files:
@@ -2717,6 +2750,15 @@ def main():
                 value=80,
                 step=5,
             )
+        pair_limit_filters = st.columns([1])
+        with pair_limit_filters[0]:
+            max_pairs_per_symbol = st.number_input(
+                "同一銘柄のペア上限(0で無効)",
+                min_value=0,
+                max_value=10,
+                value=3,
+                step=1,
+            )
         similarity_filters = st.columns([1, 1, 1, 1])
         with similarity_filters[0]:
             recent_window = st.number_input(
@@ -2822,6 +2864,9 @@ def main():
         min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
         max_abs_zscore_filter = (
             float(max_abs_zscore) if max_abs_zscore and max_abs_zscore > 0 else None
+        )
+        max_pairs_per_symbol_limit = (
+            int(max_pairs_per_symbol) if max_pairs_per_symbol and max_pairs_per_symbol > 0 else None
         )
         min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
         required_samples = max(min_pair_samples, pair_search_history)
@@ -2982,9 +3027,9 @@ def main():
                     results_df = evaluate_pair_candidates(
                         pair_candidates,
                         recent_window=int(recent_window),
-                        long_window=None,
+                        long_window=long_window,
                         min_similarity=None,
-                        min_long_similarity=None,
+                        min_long_similarity=min_long_similarity,
                         min_return_corr=None,
                         max_p_value=float(max_p_value) if max_p_value is not None else None,
                         max_half_life=None,
@@ -2997,13 +3042,17 @@ def main():
                     )
                     progress_done()
                     results_df = _attach_pair_sector_info(results_df, listed_df)
+                    if max_pairs_per_symbol_limit is not None:
+                        results_df = _limit_pairs_per_symbol(
+                            results_df, max_pairs_per_symbol_limit
+                        )
                     metadata = {
                         "sector17": sector17_filter,
                         "sector33": sector33_filter,
                         "recent_window": int(recent_window),
-                        "long_window": None,
+                        "long_window": long_window,
                         "min_similarity": None,
-                        "min_long_similarity": None,
+                        "min_long_similarity": min_long_similarity,
                         "min_return_corr": None,
                         "max_p_value": float(max_p_value) if max_p_value is not None else None,
                         "max_half_life": None,
@@ -3011,6 +3060,7 @@ def main():
                         "min_avg_volume": min_avg_volume_filter,
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
+                        "max_pairs_per_symbol": max_pairs_per_symbol_limit,
                         "pair_search_history": int(pair_search_history),
                         "cache_scope": cache_scope,
                     }
@@ -3036,6 +3086,10 @@ def main():
                 anchor_symbol,
                 available_symbols=symbols,
             )
+            if max_pairs_per_symbol_limit is not None:
+                filtered_df = _limit_pairs_per_symbol(
+                    filtered_df, max_pairs_per_symbol_limit
+                )
             if max_p_value is not None and "p_value" in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
             if max_abs_zscore_filter is not None and "zscore_latest" in filtered_df.columns:
