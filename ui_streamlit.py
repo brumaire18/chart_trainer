@@ -1163,7 +1163,12 @@ def _build_mini_chart_from_resampled(
     )
     rangebreaks = _build_trading_rangebreaks(df_resampled["date"])
     fig.update_xaxes(tickformat="%Y-%m-%d", title="", rangebreaks=rangebreaks)
-    fig.update_yaxes(title="")
+    use_log_scale = (df_resampled["close"] > 0).all()
+    if use_log_scale:
+        fig.update_yaxes(title="", type="log", row=1, col=1)
+    else:
+        fig.update_yaxes(title="", row=1, col=1)
+    fig.update_yaxes(title="", row=2, col=1)
     return fig
 
 
