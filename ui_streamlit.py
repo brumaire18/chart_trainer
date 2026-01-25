@@ -2994,32 +2994,33 @@ def main():
                     st.success("ペアキャッシュを更新しました。")
                     cached_pairs_df, cached_meta = _load_pair_cache()
 
-        run_pairs = st.button("ペア候補を表示", type="primary")
+        st.caption("ペア候補スクリーニングはペアキャッシュのみを使用します。")
+        cache_ready = cached_pairs_df is not None and not cached_pairs_df.empty
+        run_pairs = st.button(
+            "ペア候補を表示",
+            type="primary",
+            disabled=not cache_ready,
+        )
         if run_pairs:
-            if cached_pairs_df is None or cached_pairs_df.empty:
-                st.warning("ペアキャッシュが未作成です。先に更新してください。")
-                st.session_state["pair_results"] = pd.DataFrame()
-            else:
-                sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
-                sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
-                anchor_symbol = selected_symbol if search_scope == "選択銘柄起点(同一セクター)" else None
-                filtered_df = _filter_cached_pairs(
-                    cached_pairs_df,
-                    sector17_filter,
-                    sector33_filter,
-                    anchor_symbol,
-                    available_symbols=symbols,
-                )
-                if max_p_value is not None and "p_value" in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
-                if (
-                    max_abs_zscore_filter is not None
-                    and "zscore_latest" in filtered_df.columns
-                ):
-                    filtered_df = filtered_df[
-                        filtered_df["zscore_latest"].abs() <= max_abs_zscore_filter
-                    ]
-                st.session_state["pair_results"] = filtered_df.reset_index(drop=True)
+            sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
+            sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
+            anchor_symbol = selected_symbol if search_scope == "選択銘柄起点(同一セクター)" else None
+            filtered_df = _filter_cached_pairs(
+                cached_pairs_df,
+                sector17_filter,
+                sector33_filter,
+                anchor_symbol,
+                available_symbols=symbols,
+            )
+            if max_p_value is not None and "p_value" in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
+            if max_abs_zscore_filter is not None and "zscore_latest" in filtered_df.columns:
+                filtered_df = filtered_df[
+                    filtered_df["zscore_latest"].abs() <= max_abs_zscore_filter
+                ]
+            st.session_state["pair_results"] = filtered_df.reset_index(drop=True)
+        elif not cache_ready:
+            st.warning("ペアキャッシュが未作成です。先に更新してください。")
 
         pair_results = st.session_state.get("pair_results")
         if pair_results is None:
