@@ -876,7 +876,12 @@ def _compute_quick_pair_score(
     avg_volume_a = float(volume_window["volume_a"].mean())
     avg_volume_b = float(volume_window["volume_b"].mean())
     if min_avg_volume is not None:
-        if avg_volume_a < min_avg_volume or avg_volume_b < min_avg_volume:
+        if (
+            np.isnan(avg_volume_a)
+            or np.isnan(avg_volume_b)
+            or avg_volume_a < min_avg_volume
+            or avg_volume_b < min_avg_volume
+        ):
             return None
     similarity = compute_recent_shape_similarity(
         df_pair["close_a"], df_pair["close_b"], window=recent_window
@@ -922,11 +927,12 @@ def compute_pair_metrics(
     min_samples = compute_min_pair_samples(recent_window, long_window)
     if len(df_pair) < min_samples:
         return None
+    volume_window = df_pair.tail(recent_window)
+    avg_volume_a = float(volume_window["volume_a"].mean())
+    avg_volume_b = float(volume_window["volume_b"].mean())
+    avg_volume_min = float(np.nanmin([avg_volume_a, avg_volume_b]))
     if min_avg_volume is not None:
-        volume_window = df_pair.tail(recent_window)
-        avg_volume_a = float(volume_window["volume_a"].mean())
-        avg_volume_b = float(volume_window["volume_b"].mean())
-        if avg_volume_a < min_avg_volume or avg_volume_b < min_avg_volume:
+        if np.isnan(avg_volume_min) or avg_volume_min < min_avg_volume:
             return None
     recent_similarity = compute_recent_shape_similarity(
         df_pair["close_a"],
@@ -984,6 +990,9 @@ def compute_pair_metrics(
         "spread_std": spread_std,
         "spread_latest": float(spread.iloc[-1]),
         "zscore_latest": float(zscore.iloc[-1]),
+        "avg_volume_a": avg_volume_a,
+        "avg_volume_b": avg_volume_b,
+        "avg_volume_min": avg_volume_min,
     }
 
 

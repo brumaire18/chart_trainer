@@ -2790,12 +2790,11 @@ def main():
             )
         with stat_filters[2]:
             max_abs_zscore = st.number_input(
-                "最新Zスコア絶対値の上限",
+                "最新Zスコア絶対値の上限(0で無効)",
                 min_value=0.5,
                 max_value=5.0,
                 value=2.5,
                 step=0.1,
-                disabled=True,
             )
         volume_filters = st.columns([1])
         with volume_filters[0]:
@@ -2815,12 +2814,15 @@ def main():
                 step=10,
                 disabled=True,
             )
-        st.caption("ペア検索の条件は現存銘柄 + p値 + 平均出来高のみを使用します。")
+        st.caption("ペア検索の条件は現存銘柄 + p値 + 平均出来高 + 最新Zスコアのみを使用します。")
 
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
             min_long_similarity = None
         min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
+        max_abs_zscore_filter = (
+            float(max_abs_zscore) if max_abs_zscore and max_abs_zscore > 0 else None
+        )
         min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
         required_samples = max(min_pair_samples, pair_search_history)
         st.caption(
@@ -2846,6 +2848,9 @@ def main():
             st.markdown("- 最新スプレッド: 直近日のスプレッド値。")
             st.markdown("- 最新Zスコア: 直近スプレッドの標準化値。")
             st.markdown("- 平均出来高: 直近比較本数の平均出来高。一定以上を必須にする。")
+            st.markdown(
+                "- 平均出来高(小さい方): 2銘柄の平均出来高のうち小さい方。フィルタ条件に使用。"
+            )
             st.markdown(
                 "- 総合スコア: 直近類似度、最新Zスコア、半減期から簡易スコアを算出し上位のみ評価。"
             )
@@ -2960,7 +2965,7 @@ def main():
                         min_return_corr=None,
                         max_p_value=float(max_p_value) if max_p_value is not None else None,
                         max_half_life=None,
-                        max_abs_zscore=None,
+                        max_abs_zscore=max_abs_zscore_filter,
                         min_avg_volume=min_avg_volume_filter,
                         preselect_top_n=None,
                         listed_df=listed_df,
@@ -2979,7 +2984,7 @@ def main():
                         "min_return_corr": None,
                         "max_p_value": float(max_p_value) if max_p_value is not None else None,
                         "max_half_life": None,
-                        "max_abs_zscore": None,
+                        "max_abs_zscore": max_abs_zscore_filter,
                         "min_avg_volume": min_avg_volume_filter,
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
@@ -3007,6 +3012,13 @@ def main():
                 )
                 if max_p_value is not None and "p_value" in filtered_df.columns:
                     filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
+                if (
+                    max_abs_zscore_filter is not None
+                    and "zscore_latest" in filtered_df.columns
+                ):
+                    filtered_df = filtered_df[
+                        filtered_df["zscore_latest"].abs() <= max_abs_zscore_filter
+                    ]
                 st.session_state["pair_results"] = filtered_df.reset_index(drop=True)
 
         pair_results = st.session_state.get("pair_results")
@@ -3038,6 +3050,7 @@ def main():
                     "スプレッド標準偏差": display_df["spread_std"],
                     "最新スプレッド": display_df["spread_latest"],
                     "最新Zスコア": display_df["zscore_latest"],
+                    "平均出来高(小さい方)": display_df.get("avg_volume_min"),
                 }
             )
             table_df = table_df.round(
@@ -3053,6 +3066,7 @@ def main():
                     "スプレッド標準偏差": 4,
                     "最新スプレッド": 4,
                     "最新Zスコア": 2,
+                    "平均出来高(小さい方)": 0,
                 }
             )
             st.dataframe(table_df, use_container_width=True)
