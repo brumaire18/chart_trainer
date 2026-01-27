@@ -470,6 +470,53 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df_ind
 
 
+def _detect_selling_climax(
+    df: pd.DataFrame,
+    volume_lookback: int = 20,
+    volume_multiplier: float = 2.0,
+    drop_pct: float = 0.04,
+    close_position: float = 0.3,
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=["flag", "volume_ratio", "drop_pct", "close_position"], index=df.index
+        )
+    volume_avg = df["volume"].rolling(volume_lookback).mean()
+    volume_ratio = df["volume"] / volume_avg
+    prev_close = df["close"].shift(1)
+    drop_ratio = (df["close"] - prev_close) / prev_close
+    candle_range = df["high"] - df["low"]
+    close_pos = (df["close"] - df["low"]) / candle_range.replace(0, np.nan)
+    flag = (
+        (df["close"] <= df["open"])
+        & (volume_ratio >= volume_multiplier)
+        & (drop_ratio <= -abs(drop_pct))
+        & (candle_range > 0)
+        & (close_pos <= close_position)
+    )
+    return pd.DataFrame(
+        {
+            "flag": flag.fillna(False),
+            "volume_ratio": volume_ratio,
+            "drop_pct": drop_ratio,
+            "close_position": close_pos,
+        },
+        index=df.index,
+    )
+
+
+def _detect_new_highs(
+    df: pd.DataFrame, lookback: int = 252, enforce_bb_lower: bool = True
+) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype=bool)
+    rolling_high = df["high"].rolling(lookback, min_periods=lookback).max()
+    is_new_high = df["high"] >= rolling_high.shift(1)
+    if enforce_bb_lower and "bb_lower_1" in df.columns:
+        is_new_high &= df["close"] >= df["bb_lower_1"]
+    return is_new_high.fillna(False)
+
+
 def _compute_moving_average(series: pd.Series, period: int, ma_type: str) -> pd.Series:
     if period <= 0:
         return pd.Series([pd.NA] * len(series), index=series.index)
@@ -929,6 +976,11 @@ def _calculate_minimum_data_length(
     apply_volume_condition: bool,
     apply_topix_rs_condition: bool,
     topix_rs_lookback: int,
+    apply_new_high_signal: bool,
+    new_high_lookback: int,
+    apply_selling_climax_signal: bool,
+    selling_volume_lookback: int,
+    signal_lookback_days: int,
     apply_canslim_condition: bool,
     cup_window: int,
     saucer_window: int,
@@ -963,6 +1015,16 @@ def _calculate_minimum_data_length(
     if apply_topix_rs_condition:
         required_length = max(required_length, topix_rs_lookback + 1)
         reasons.append(f"TOPIX RSを{topix_rs_lookback}本前と比較するには十分な期間が必要")
+
+    if apply_new_high_signal:
+        new_high_length = max(new_high_lookback + 1, 20, signal_lookback_days + 1)
+        required_length = max(required_length, new_high_length)
+        reasons.append(f"新高値シグナルの判定には{new_high_length}本以上必要")
+
+    if apply_selling_climax_signal:
+        selling_length = max(selling_volume_lookback, signal_lookback_days + 1)
+        required_length = max(required_length, selling_length)
+        reasons.append(f"セリングクライマックス判定には{selling_length}本以上必要")
 
     if apply_weekly_volume_quartile:
         required_length = max(required_length, 5)
@@ -1498,6 +1560,46 @@ def main():
         value=False,
         help="TOPIXとの相対力(RS=株価/ TOPIX)をオシレーター領域に描画します。",
     )
+    st.sidebar.write("シグナル")
+    show_new_high = st.sidebar.checkbox("新高値を表示", value=False)
+    new_high_lookback = st.sidebar.number_input(
+        "新高値の判定期間",
+        min_value=20,
+        max_value=400,
+        value=252,
+        step=10,
+        help="直近N本で高値更新したタイミングを抽出します。",
+    )
+    show_selling_climax = st.sidebar.checkbox("セリングクライマックスを表示", value=False)
+    selling_volume_lookback = st.sidebar.number_input(
+        "出来高平均期間",
+        min_value=5,
+        max_value=60,
+        value=20,
+        step=1,
+    )
+    selling_volume_multiplier = st.sidebar.number_input(
+        "出来高倍率 (平均比)",
+        min_value=1.0,
+        max_value=10.0,
+        value=2.0,
+        step=0.1,
+    )
+    selling_drop_pct = st.sidebar.number_input(
+        "下落率しきい値 (%)",
+        min_value=0.5,
+        max_value=20.0,
+        value=4.0,
+        step=0.5,
+    )
+    selling_close_position = st.sidebar.slider(
+        "終値が安値寄りの割合",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.3,
+        step=0.05,
+        help="0.0は安値引け、1.0は高値引け。",
+    )
 
     tab_chart, tab_screen, tab_pair, tab_backtest, tab_breadth = st.tabs(
         ["チャート表示", "スクリーナー", "ペアトレード", "バックテスト", "マーケットブレッドス"]
@@ -1858,7 +1960,7 @@ def main():
                     ),
                     row=1,
                     col=1,
-                )
+                    )
 
             if show_trendlines:
                 line_info = _compute_support_resistance(
@@ -1892,6 +1994,82 @@ def main():
                         row=1,
                         col=1,
                     )
+
+            signal_rows = []
+            selling_info = None
+            selling_flags = None
+            if show_selling_climax:
+                selling_info = _detect_selling_climax(
+                    df_problem,
+                    volume_lookback=int(selling_volume_lookback),
+                    volume_multiplier=float(selling_volume_multiplier),
+                    drop_pct=float(selling_drop_pct) / 100,
+                    close_position=float(selling_close_position),
+                )
+                selling_flags = selling_info["flag"]
+                if selling_flags.any():
+                    price_fig.add_trace(
+                        go.Scatter(
+                            x=df_problem.loc[selling_flags, "date"],
+                            y=df_problem.loc[selling_flags, "low"],
+                            mode="markers",
+                            name="セリングクライマックス",
+                            marker=dict(
+                                color="#d62728",
+                                size=10,
+                                symbol="triangle-down",
+                                line=dict(color="#333333", width=1),
+                            ),
+                        ),
+                        row=1,
+                        col=1,
+                    )
+                    for idx, row in df_problem.loc[selling_flags].iterrows():
+                        info = selling_info.loc[idx]
+                        signal_rows.append(
+                            {
+                                "日付": row["date"],
+                                "シグナル": "セリングクライマックス",
+                                "終値": row["close"],
+                                "下落率%": round(info["drop_pct"] * 100, 2)
+                                if pd.notna(info["drop_pct"])
+                                else None,
+                                "出来高倍率": round(info["volume_ratio"], 2)
+                                if pd.notna(info["volume_ratio"])
+                                else None,
+                            }
+                        )
+
+            new_high_flags = None
+            if show_new_high:
+                new_high_flags = _detect_new_highs(df_problem, int(new_high_lookback))
+                if new_high_flags.any():
+                    price_fig.add_trace(
+                        go.Scatter(
+                            x=df_problem.loc[new_high_flags, "date"],
+                            y=df_problem.loc[new_high_flags, "high"],
+                            mode="markers",
+                            name="新高値",
+                            marker=dict(
+                                color="#2ca02c",
+                                size=10,
+                                symbol="triangle-up",
+                                line=dict(color="#333333", width=1),
+                            ),
+                        ),
+                        row=1,
+                        col=1,
+                    )
+                    for idx, row in df_problem.loc[new_high_flags].iterrows():
+                        signal_rows.append(
+                            {
+                                "日付": row["date"],
+                                "シグナル": f"新高値({int(new_high_lookback)})",
+                                "終値": row["close"],
+                                "下落率%": None,
+                                "出来高倍率": None,
+                            }
+                        )
 
             if show_head_shoulders:
                 pattern = _detect_head_and_shoulders(
@@ -2071,6 +2249,18 @@ def main():
         osc_fig.update_yaxes(title_text="MACD / RS", secondary_y=True)
         st.plotly_chart(osc_fig, use_container_width=True)
 
+        if chart_type != "pnf" and (show_selling_climax or show_new_high):
+            if signal_rows:
+                signal_df = pd.DataFrame(signal_rows)
+                signal_df = signal_df.sort_values("日付", ascending=False)
+                st.subheader("直近シグナル一覧")
+                st.dataframe(
+                    signal_df.head(20),
+                    use_container_width=True,
+                )
+            else:
+                st.info("指定された期間内にシグナルは検出されませんでした。")
+
     with tab_screen:
         st.subheader("テクニカル・スクリーナー")
         st.caption("日足データを使い、直近のMACDゴールデンクロスやRSI帯などで抽出します。")
@@ -2185,6 +2375,51 @@ def main():
             value=False,
             help="最新の週出来高がユニバースの上位25%に入る銘柄を抽出します。",
         )
+        st.markdown("**シグナル抽出**")
+        screen_new_high = st.checkbox("新高値シグナルを抽出", value=False)
+        screen_selling_climax = st.checkbox("セリングクライマックスを抽出", value=False)
+        signal_lookback_days = st.slider(
+            "シグナル判定の過去日数",
+            min_value=1,
+            max_value=60,
+            value=10,
+            help="直近N日以内にシグナルがあった銘柄を抽出します。",
+        )
+        signal_new_high_lookback = st.number_input(
+            "新高値の判定期間",
+            min_value=20,
+            max_value=400,
+            value=252,
+            step=10,
+        )
+        signal_selling_volume_lookback = st.number_input(
+            "セリング出来高平均期間",
+            min_value=5,
+            max_value=60,
+            value=20,
+            step=1,
+        )
+        signal_selling_volume_multiplier = st.number_input(
+            "セリング出来高倍率 (平均比)",
+            min_value=1.0,
+            max_value=10.0,
+            value=2.0,
+            step=0.1,
+        )
+        signal_selling_drop_pct = st.number_input(
+            "セリング下落率しきい値 (%)",
+            min_value=0.5,
+            max_value=20.0,
+            value=4.0,
+            step=0.5,
+        )
+        signal_selling_close_position = st.slider(
+            "セリング終値が安値寄りの割合",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.3,
+            step=0.05,
+        )
         topix_cache_key = _get_price_cache_key("topix")
 
         run_screening = st.button("スクリーニングを実行", type="primary")
@@ -2256,6 +2491,11 @@ def main():
                         apply_volume_condition=apply_volume_condition,
                         apply_topix_rs_condition=apply_topix_rs_condition,
                         topix_rs_lookback=topix_rs_lookback,
+                        apply_new_high_signal=screen_new_high,
+                        new_high_lookback=int(signal_new_high_lookback),
+                        apply_selling_climax_signal=screen_selling_climax,
+                        selling_volume_lookback=int(signal_selling_volume_lookback),
+                        signal_lookback_days=signal_lookback_days,
                         apply_weekly_volume_quartile=apply_weekly_volume_quartile,
                         apply_canslim_condition=apply_canslim_condition,
                         cup_window=canslim_cup_window,
@@ -2395,7 +2635,54 @@ def main():
                         else:
                             canslim_ok = False
 
-                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, canslim_ok]):
+                    new_high_ok = True
+                    new_high_date = None
+                    selling_climax_ok = True
+                    selling_climax_date = None
+                    if screen_new_high:
+                        new_high_flags = _detect_new_highs(
+                            df_ind_full, int(signal_new_high_lookback)
+                        )
+                        if len(df_ind_full) >= signal_lookback_days:
+                            recent_flags = new_high_flags.tail(signal_lookback_days)
+                        else:
+                            recent_flags = new_high_flags
+                        if recent_flags.any():
+                            last_idx = recent_flags[recent_flags].index[-1]
+                            new_high_date = df_ind_full.loc[last_idx, "date"]
+                        else:
+                            new_high_ok = False
+                    if screen_selling_climax:
+                        selling_info = _detect_selling_climax(
+                            df_ind_full,
+                            volume_lookback=int(signal_selling_volume_lookback),
+                            volume_multiplier=float(signal_selling_volume_multiplier),
+                            drop_pct=float(signal_selling_drop_pct) / 100,
+                            close_position=float(signal_selling_close_position),
+                        )
+                        selling_flags = selling_info["flag"]
+                        if len(df_ind_full) >= signal_lookback_days:
+                            recent_flags = selling_flags.tail(signal_lookback_days)
+                        else:
+                            recent_flags = selling_flags
+                        if recent_flags.any():
+                            last_idx = recent_flags[recent_flags].index[-1]
+                            selling_climax_date = df_ind_full.loc[last_idx, "date"]
+                        else:
+                            selling_climax_ok = False
+
+                    if all(
+                        [
+                            rsi_ok,
+                            macd_ok,
+                            sma_ok,
+                            vol_ok,
+                            rs_ok,
+                            canslim_ok,
+                            new_high_ok,
+                            selling_climax_ok,
+                        ]
+                    ):
                         weekly_vol_ok = True
                         weekly_volume = None
                     if apply_weekly_volume_quartile:
@@ -2405,7 +2692,18 @@ def main():
                         else:
                             weekly_vol_ok = weekly_volume >= weekly_volume_threshold
 
-                    if all([rsi_ok, macd_ok, sma_ok, vol_ok, rs_ok, weekly_vol_ok]):
+                    if all(
+                        [
+                            rsi_ok,
+                            macd_ok,
+                            sma_ok,
+                            vol_ok,
+                            rs_ok,
+                            weekly_vol_ok,
+                            new_high_ok,
+                            selling_climax_ok,
+                        ]
+                    ):
                         change_pct = (
                             (latest["close"] - df_ind.iloc[-2]["close"]) / df_ind.iloc[-2]["close"] * 100
                             if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
@@ -2426,6 +2724,8 @@ def main():
                                 "週出来高": int(weekly_volume) if weekly_volume is not None else None,
                                 "CAN-SLIMパターン": canslim_pattern,
                                 "CAN-SLIMシグナル日": canslim_signal_date,
+                                "新高値シグナル日": new_high_date,
+                                "セリングクライマックス日": selling_climax_date,
                             }
                         )
                         continue
@@ -2452,6 +2752,10 @@ def main():
                             code_reasons.append("週出来高上位条件不合格")
                     if apply_canslim_condition and not canslim_ok:
                         code_reasons.append("CAN-SLIM条件不合格")
+                    if screen_new_high and not new_high_ok:
+                        code_reasons.append("新高値シグナルなし")
+                    if screen_selling_climax and not selling_climax_ok:
+                        code_reasons.append("セリングクライマックスなし")
 
                     if code_reasons:
                         failure_logs.append(
