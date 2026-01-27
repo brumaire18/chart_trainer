@@ -26,7 +26,6 @@ from app.pair_trading import (
     compute_min_pair_samples,
     compute_spread_series,
     evaluate_pair_candidates,
-    generate_anchor_pair_candidates,
     generate_pairs_by_sector_candidates,
 )
 from app.backtest import grid_search_cup_shape, run_canslim_backtest, scan_canslim_patterns
@@ -42,7 +41,6 @@ from app.jquants_fetcher import (
 from app.pair_trading import (
     PairTradeConfig,
     backtest_pairs,
-    generate_pairs_by_sector,
     optimize_pair_trade_parameters,
 )
 
@@ -3043,7 +3041,7 @@ def main():
             else []
         )
 
-        pair_filters = st.columns([1, 1, 1, 1])
+        pair_filters = st.columns([1, 1, 1])
         with pair_filters[0]:
             sector17_choice = st.selectbox(
                 "sector17 フィルタ",
@@ -3057,16 +3055,8 @@ def main():
         with pair_filters[2]:
             search_scope = st.selectbox(
                 "探索範囲",
-                options=["セクター別(全銘柄)", "選択銘柄起点(同一セクター)"],
-                help="総当たりを避け、セクター内でペア候補を探索します。",
-            )
-        with pair_filters[3]:
-            max_pairs = st.number_input(
-                "セクターあたり候補上限",
-                min_value=10,
-                max_value=300,
-                value=80,
-                step=5,
+                options=["キャッシュ全体", "選択銘柄起点(同一セクター)"],
+                help="ペアキャッシュ内で対象範囲を絞り込みます。",
             )
         pair_limit_filters = st.columns([1])
         with pair_limit_filters[0]:
@@ -3181,7 +3171,7 @@ def main():
                 step=10,
                 disabled=True,
             )
-        st.caption("ペア検索の条件は現存銘柄 + p値 + 平均出来高 + 最新Zスコアのみを使用します。")
+        st.caption("ペア検索はペアキャッシュの範囲でのみ実行します。")
 
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
@@ -3848,51 +3838,43 @@ def main():
             cached_pairs_df, _ = _load_pair_cache()
             if cached_pairs_df is not None and not cached_pairs_df.empty:
                 cached_pairs_df = _attach_pair_sector_info(cached_pairs_df, listed_df)
-            use_cached_pairs = st.checkbox(
-                "キャッシュ済みペアを使用（p値<=0.10）",
-                value=True,
-                help="手動更新したペアキャッシュを使うことでバックテストを高速化します。",
-            )
-            if use_cached_pairs and (cached_pairs_df is None or cached_pairs_df.empty):
+            cache_ready = cached_pairs_df is not None and not cached_pairs_df.empty
+            st.caption("ペアトレードはペアキャッシュの候補のみを使用します。")
+            if not cache_ready:
                 st.warning("ペアキャッシュが未作成です。キャッシュ更新後に利用できます。")
 
-            run_pair_backtest = st.button("ペアトレードを実行", type="primary")
+            run_pair_backtest = st.button(
+                "ペアトレードを実行",
+                type="primary",
+                disabled=not cache_ready,
+            )
             if run_pair_backtest:
-                if use_cached_pairs and cached_pairs_df is not None and not cached_pairs_df.empty:
-                    filtered_pairs = _filter_cached_pairs(
-                        cached_pairs_df,
-                        None,
-                        None,
-                        None,
+                filtered_pairs = _filter_cached_pairs(
+                    cached_pairs_df,
+                    None,
+                    None,
+                    None,
+                )
+                if "p_value" in filtered_pairs.columns:
+                    filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
+                sector_key = "pair_sector33" if sector_col == "sector33" else "pair_sector17"
+                if sector_key in filtered_pairs.columns:
+                    sector_counts = listed_df[sector_col].dropna().astype(str).value_counts()
+                    eligible_sectors = set(
+                        sector_counts[sector_counts >= int(min_symbols)].index
                     )
-                    if "p_value" in filtered_pairs.columns:
-                        filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
-                    sector_key = "pair_sector33" if sector_col == "sector33" else "pair_sector17"
-                    if sector_key in filtered_pairs.columns:
-                        sector_counts = (
-                            listed_df[sector_col].dropna().astype(str).value_counts()
-                        )
-                        eligible_sectors = set(
-                            sector_counts[sector_counts >= int(min_symbols)].index
-                        )
-                        filtered_pairs = filtered_pairs[
-                            filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
-                        ]
-                    filtered_pairs = _limit_pairs_per_sector(
-                        filtered_pairs, sector_col, int(max_pairs_per_sector)
+                    filtered_pairs = filtered_pairs[
+                        filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
+                    ]
+                filtered_pairs = _limit_pairs_per_sector(
+                    filtered_pairs, sector_col, int(max_pairs_per_sector)
+                )
+                pairs = list(
+                    zip(
+                        filtered_pairs["symbol_a"].astype(str).tolist(),
+                        filtered_pairs["symbol_b"].astype(str).tolist(),
                     )
-                    pairs = list(
-                        zip(
-                            filtered_pairs["symbol_a"].astype(str).tolist(),
-                            filtered_pairs["symbol_b"].astype(str).tolist(),
-                        )
-                    )
-                else:
-                    pairs = generate_pairs_by_sector(
-                        sector_col=sector_col,
-                        min_symbols=int(min_symbols),
-                        max_pairs_per_sector=int(max_pairs_per_sector),
-                    )
+                )
                 config = PairTradeConfig(
                     lookback=int(lookback),
                     entry_z=float(entry_z),
@@ -3958,7 +3940,11 @@ def main():
                         value=5,
                         step=1,
                     )
-                run_optimize = st.button("パラメータ探索を実行", type="secondary")
+                run_optimize = st.button(
+                    "パラメータ探索を実行",
+                    type="secondary",
+                    disabled=not cache_ready,
+                )
                 if run_optimize:
                     lookback_values = _parse_grid(grid_lookback, int)
                     entry_values = _parse_grid(grid_entry, float)
@@ -3970,48 +3956,38 @@ def main():
                     ):
                         st.warning("すべての候補値を入力してください。")
                     else:
-                        if use_cached_pairs and cached_pairs_df is not None and not cached_pairs_df.empty:
-                            filtered_pairs = _filter_cached_pairs(
-                                cached_pairs_df,
-                                None,
-                                None,
-                                None,
+                        filtered_pairs = _filter_cached_pairs(
+                            cached_pairs_df,
+                            None,
+                            None,
+                            None,
+                        )
+                        if "p_value" in filtered_pairs.columns:
+                            filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
+                        sector_key = (
+                            "pair_sector33"
+                            if sector_col == "sector33"
+                            else "pair_sector17"
+                        )
+                        if sector_key in filtered_pairs.columns:
+                            sector_counts = (
+                                listed_df[sector_col].dropna().astype(str).value_counts()
                             )
-                            if "p_value" in filtered_pairs.columns:
-                                filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
-                            sector_key = (
-                                "pair_sector33"
-                                if sector_col == "sector33"
-                                else "pair_sector17"
+                            eligible_sectors = set(
+                                sector_counts[sector_counts >= int(min_symbols)].index
                             )
-                            if sector_key in filtered_pairs.columns:
-                                sector_counts = (
-                                    listed_df[sector_col]
-                                    .dropna()
-                                    .astype(str)
-                                    .value_counts()
-                                )
-                                eligible_sectors = set(
-                                    sector_counts[sector_counts >= int(min_symbols)].index
-                                )
-                                filtered_pairs = filtered_pairs[
-                                    filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
-                                ]
-                            filtered_pairs = _limit_pairs_per_sector(
-                                filtered_pairs, sector_col, int(max_pairs_per_sector)
+                            filtered_pairs = filtered_pairs[
+                                filtered_pairs[sector_key].astype(str).isin(eligible_sectors)
+                            ]
+                        filtered_pairs = _limit_pairs_per_sector(
+                            filtered_pairs, sector_col, int(max_pairs_per_sector)
+                        )
+                        pairs = list(
+                            zip(
+                                filtered_pairs["symbol_a"].astype(str).tolist(),
+                                filtered_pairs["symbol_b"].astype(str).tolist(),
                             )
-                            pairs = list(
-                                zip(
-                                    filtered_pairs["symbol_a"].astype(str).tolist(),
-                                    filtered_pairs["symbol_b"].astype(str).tolist(),
-                                )
-                            )
-                        else:
-                            pairs = generate_pairs_by_sector(
-                                sector_col=sector_col,
-                                min_symbols=int(min_symbols),
-                                max_pairs_per_sector=int(max_pairs_per_sector),
-                            )
+                        )
                         param_grid = {
                             "lookback": lookback_values,
                             "entry_z": entry_values,
