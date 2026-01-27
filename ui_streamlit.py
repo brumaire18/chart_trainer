@@ -3149,6 +3149,13 @@ def main():
                 disabled=True,
             )
         with stat_filters[2]:
+            min_abs_zscore = st.number_input(
+                "最新Zスコア絶対値の下限(0で無効)",
+                min_value=0.0,
+                max_value=5.0,
+                value=0.0,
+                step=0.1,
+            )
             max_abs_zscore = st.number_input(
                 "最新Zスコア絶対値の上限(0で無効)",
                 min_value=0.5,
@@ -3180,6 +3187,9 @@ def main():
         if long_window is None:
             min_long_similarity = None
         min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
+        min_abs_zscore_filter = (
+            float(min_abs_zscore) if min_abs_zscore and min_abs_zscore > 0 else None
+        )
         max_abs_zscore_filter = (
             float(max_abs_zscore) if max_abs_zscore and max_abs_zscore > 0 else None
         )
@@ -3351,6 +3361,7 @@ def main():
                         min_return_corr=None,
                         max_p_value=float(max_p_value) if max_p_value is not None else None,
                         max_half_life=None,
+                        min_abs_zscore=min_abs_zscore_filter,
                         max_abs_zscore=max_abs_zscore_filter,
                         min_avg_volume=min_avg_volume_filter,
                         preselect_top_n=None,
@@ -3374,6 +3385,7 @@ def main():
                         "min_return_corr": None,
                         "max_p_value": float(max_p_value) if max_p_value is not None else None,
                         "max_half_life": None,
+                        "min_abs_zscore": min_abs_zscore_filter,
                         "max_abs_zscore": max_abs_zscore_filter,
                         "min_avg_volume": min_avg_volume_filter,
                         "preselect_top_n": None,
@@ -3410,6 +3422,10 @@ def main():
                 )
             if max_p_value is not None and "p_value" in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
+            if min_abs_zscore_filter is not None and "zscore_latest" in filtered_df.columns:
+                filtered_df = filtered_df[
+                    filtered_df["zscore_latest"].abs() >= min_abs_zscore_filter
+                ]
             if max_abs_zscore_filter is not None and "zscore_latest" in filtered_df.columns:
                 filtered_df = filtered_df[
                     filtered_df["zscore_latest"].abs() <= max_abs_zscore_filter
