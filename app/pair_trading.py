@@ -737,6 +737,7 @@ def evaluate_pair_candidates(
     min_return_corr: Optional[float] = None,
     max_p_value: Optional[float] = None,
     max_half_life: Optional[float] = None,
+    min_abs_zscore: Optional[float] = None,
     max_abs_zscore: Optional[float] = None,
     min_avg_volume: Optional[float] = None,
     preselect_top_n: Optional[int] = None,
@@ -820,6 +821,14 @@ def evaluate_pair_candidates(
             if max_half_life is not None:
                 half_life = metrics.get("half_life")
                 if half_life is None or np.isnan(half_life) or half_life > max_half_life:
+                    continue
+            if min_abs_zscore is not None:
+                zscore_latest = metrics.get("zscore_latest")
+                if (
+                    zscore_latest is None
+                    or np.isnan(zscore_latest)
+                    or abs(zscore_latest) < min_abs_zscore
+                ):
                     continue
             if max_abs_zscore is not None:
                 zscore_latest = metrics.get("zscore_latest")
