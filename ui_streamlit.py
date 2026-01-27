@@ -28,7 +28,12 @@ from app.pair_trading import (
     evaluate_pair_candidates,
     generate_pairs_by_sector_candidates,
 )
-from app.backtest import grid_search_cup_shape, run_canslim_backtest, scan_canslim_patterns
+from app.backtest import (
+    grid_search_cup_shape,
+    grid_search_selling_climax,
+    run_canslim_backtest,
+    scan_canslim_patterns,
+)
 from app.jquants_fetcher import (
     append_quotes_for_date,
     build_universe,
@@ -95,6 +100,16 @@ def _build_progress_updater(
         status.text(f"{label} 完了")
 
     return update, done
+
+
+def _parse_grid_values(text: str, cast_type: type) -> List:
+    values = []
+    for raw in text.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        values.append(cast_type(raw))
+    return values
 
 
 def _attach_pair_sector_info(
@@ -3771,6 +3786,100 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
         elif backtest_results is not None:
             st.info("該当するシグナルがありませんでした。")
+
+        st.divider()
+        st.subheader("セリングクライマックスのグリッドサーチ")
+        st.caption(
+            "候補日の高値をk日以内に終値で上抜き、かつ安値割れしないものを成功と定義します。"
+        )
+
+        if "selling_grid_search_results" not in st.session_state:
+            st.session_state["selling_grid_search_results"] = None
+        if "selling_grid_search_summary" not in st.session_state:
+            st.session_state["selling_grid_search_summary"] = None
+
+        sell_col1, sell_col2 = st.columns(2)
+        with sell_col1:
+            sc_volume_lookbacks = st.text_input(
+                "出来高平均期間候補 (例: 20,60)",
+                value="20,60",
+            )
+            sc_volume_multipliers = st.text_input(
+                "出来高倍率候補 (例: 2.0,2.5,3.0)",
+                value="2.0,2.5,3.0",
+            )
+            sc_drop_pcts = st.text_input(
+                "下落率しきい値候補 (%)",
+                value="3,4,5",
+            )
+            sc_close_positions = st.text_input(
+                "終値が安値寄りの割合候補",
+                value="0.3,0.4,0.5",
+            )
+        with sell_col2:
+            sc_confirm_ks = st.text_input(
+                "反転確認期限 (k日) 候補",
+                value="2,3,5",
+            )
+            sc_min_signals = st.number_input(
+                "train/validation の最小シグナル数",
+                min_value=1,
+                max_value=200,
+                value=20,
+                step=1,
+            )
+            sc_gap_penalty = st.number_input(
+                "generalization gap のペナルティ係数",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.5,
+                step=0.1,
+                help="train/validation の差が大きいほどスコアを下げます。",
+            )
+
+        run_sc_grid_search = st.button(
+            "セリングクライマックスのグリッドサーチを実行", type="primary"
+        )
+        if run_sc_grid_search:
+            try:
+                volume_lookbacks = _parse_grid_values(sc_volume_lookbacks, int)
+                volume_multipliers = _parse_grid_values(sc_volume_multipliers, float)
+                drop_pcts = [value / 100 for value in _parse_grid_values(sc_drop_pcts, float)]
+                close_positions = _parse_grid_values(sc_close_positions, float)
+                confirm_ks = _parse_grid_values(sc_confirm_ks, int)
+            except ValueError:
+                st.warning("数値候補の入力が正しくありません。カンマ区切りの数値で入力してください。")
+            else:
+                if not all([volume_lookbacks, volume_multipliers, drop_pcts, close_positions, confirm_ks]):
+                    st.warning("候補値が空になっています。各項目に1つ以上入力してください。")
+                else:
+                    progress_update, progress_done = _build_progress_updater(
+                        "セリングクライマックス グリッドサーチ"
+                    )
+                    eval_df, best_summary = grid_search_selling_climax(
+                        volume_lookbacks=volume_lookbacks,
+                        volume_multipliers=volume_multipliers,
+                        drop_pcts=drop_pcts,
+                        close_positions=close_positions,
+                        confirm_ks=confirm_ks,
+                        min_signals=int(sc_min_signals),
+                        gap_penalty=float(sc_gap_penalty),
+                        progress_callback=progress_update,
+                    )
+                    progress_done()
+                    st.session_state["selling_grid_search_results"] = eval_df
+                    st.session_state["selling_grid_search_summary"] = best_summary
+
+        selling_grid_summary = st.session_state.get("selling_grid_search_summary")
+        selling_grid_results = st.session_state.get("selling_grid_search_results")
+
+        if selling_grid_summary is not None and not selling_grid_summary.empty:
+            st.markdown("#### ベスト設定")
+            st.dataframe(selling_grid_summary, use_container_width=True)
+
+        if selling_grid_results is not None and not selling_grid_results.empty:
+            st.markdown("#### グリッドサーチ結果（上位）")
+            st.dataframe(selling_grid_results.head(200), use_container_width=True)
 
         st.markdown("---")
         st.subheader("ペアトレード バックテスト")
