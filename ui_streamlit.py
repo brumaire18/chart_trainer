@@ -2904,6 +2904,15 @@ def main():
             st.session_state["pair_manual_cache_hit"] = False
 
         cached_pairs_df, cached_meta = _load_pair_cache()
+        cached_pair_symbols: List[str] = []
+        if cached_pairs_df is not None and not cached_pairs_df.empty:
+            if {"symbol_a", "symbol_b"}.issubset(cached_pairs_df.columns):
+                cache_symbols = set(
+                    cached_pairs_df["symbol_a"].dropna().astype(str).tolist()
+                ) | set(cached_pairs_df["symbol_b"].dropna().astype(str).tolist())
+                cached_pair_symbols = sorted(
+                    [symbol for symbol in cache_symbols if symbol in symbols]
+                )
 
         with st.expander("任意の2銘柄を指定して分析", expanded=True):
             use_cached_metrics = st.checkbox(
@@ -2911,21 +2920,32 @@ def main():
                 value=True,
                 help="キャッシュにあるペアは再計算せず、保存済みの指標を表示します。",
             )
+            manual_symbol_options = symbols
+            use_cache_symbols = st.checkbox(
+                "キャッシュ銘柄から選択",
+                value=bool(cached_pair_symbols),
+                help="ペアキャッシュに含まれる銘柄に限定して選択できます。",
+            )
+            if use_cache_symbols:
+                if cached_pair_symbols:
+                    manual_symbol_options = cached_pair_symbols
+                else:
+                    st.info("ペアキャッシュに銘柄がありません。全銘柄を表示します。")
             manual_cols = st.columns(2)
             with manual_cols[0]:
                 manual_symbol_a = st.selectbox(
                     "銘柄A",
-                    symbols,
+                    manual_symbol_options,
                     format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
                     key="pair_manual_symbol_a",
                 )
             with manual_cols[1]:
                 manual_symbol_b = st.selectbox(
                     "銘柄B",
-                    symbols,
+                    manual_symbol_options,
                     format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
                     key="pair_manual_symbol_b",
-                    index=1 if len(symbols) > 1 else 0,
+                    index=1 if len(manual_symbol_options) > 1 else 0,
                 )
 
             manual_window_cols = st.columns(2)
