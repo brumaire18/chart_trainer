@@ -198,6 +198,43 @@ def _filter_cached_pairs(
     return df
 
 
+def _refresh_pair_metrics_latest(
+    pairs_df: pd.DataFrame,
+    recent_window: int,
+    long_window: Optional[int],
+    history_window: Optional[int],
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> pd.DataFrame:
+    if pairs_df.empty:
+        return pairs_df
+    refreshed: List[Dict[str, object]] = []
+    total_pairs = len(pairs_df)
+    for idx, row in enumerate(pairs_df.itertuples(index=False), start=1):
+        try:
+            row_dict = row._asdict()
+            symbol_a = str(row_dict.get("symbol_a", "")).zfill(4)
+            symbol_b = str(row_dict.get("symbol_b", "")).zfill(4)
+            metrics = compute_pair_metrics(
+                symbol_a,
+                symbol_b,
+                recent_window=recent_window,
+                long_window=long_window,
+                history_window=history_window,
+            )
+            if metrics is None:
+                continue
+            row_dict.update(metrics)
+            refreshed.append(row_dict)
+        except FileNotFoundError:
+            continue
+        finally:
+            if progress_callback:
+                progress_callback(idx, total_pairs, "最新データ反映")
+    if not refreshed:
+        return pairs_df.iloc[0:0]
+    return pd.DataFrame(refreshed)
+
+
 def _limit_pairs_per_sector(
     pairs_df: pd.DataFrame, sector_col: str, max_pairs_per_sector: int
 ) -> pd.DataFrame:
@@ -3425,6 +3462,18 @@ def main():
                 filtered_df = _limit_pairs_per_symbol(
                     filtered_df, max_pairs_per_symbol_limit
                 )
+            if not filtered_df.empty:
+                progress_update, progress_done = _build_progress_updater(
+                    "最新株価で指標を再計算"
+                )
+                filtered_df = _refresh_pair_metrics_latest(
+                    filtered_df,
+                    recent_window=int(recent_window),
+                    long_window=long_window,
+                    history_window=pair_search_history,
+                    progress_callback=progress_update,
+                )
+                progress_done()
             if max_p_value is not None and "p_value" in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
             if min_abs_zscore_filter is not None and "zscore_latest" in filtered_df.columns:
