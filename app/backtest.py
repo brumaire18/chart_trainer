@@ -171,6 +171,42 @@ def _detect_pattern(
     return base_info
 
 
+def _detect_selling_climax_candidates(
+    df: pd.DataFrame,
+    volume_lookback: int,
+    volume_multiplier: float,
+    drop_pct: float,
+    close_position: float,
+) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    volume_avg = df["volume"].rolling(volume_lookback, min_periods=volume_lookback).mean()
+    volume_ratio = df["volume"] / volume_avg
+    prev_close = df["close"].shift(1)
+    drop_ratio = (df["close"] - prev_close) / prev_close
+    candle_range = df["high"] - df["low"]
+    close_pos = (df["close"] - df["low"]) / candle_range.replace(0, np.nan)
+
+    candidates = (
+        (df["close"] <= df["open"])
+        & (volume_ratio >= volume_multiplier)
+        & (drop_ratio <= -abs(drop_pct))
+        & (candle_range > 0)
+        & (close_pos <= close_position)
+    )
+    return candidates.fillna(False)
+
+
+def _label_selling_climax_success(df: pd.DataFrame, confirm_k: int) -> pd.Series:
+    if df.empty or confirm_k <= 0:
+        return pd.Series(dtype=bool)
+    max_close_fwd = df["close"].shift(-1).rolling(confirm_k).max().shift(-(confirm_k - 1))
+    min_low_fwd = df["low"].shift(-1).rolling(confirm_k).min().shift(-(confirm_k - 1))
+    success = (max_close_fwd > df["high"]) & (min_low_fwd >= df["low"])
+    return success.fillna(False)
+
+
 def scan_canslim_patterns(
     df: pd.DataFrame,
     lookahead: int = 20,
@@ -384,6 +420,129 @@ def run_canslim_backtest(
     )
 
     return results_df, summary_df
+
+
+def grid_search_selling_climax(
+    symbols: Optional[Iterable[str]] = None,
+    seed: int = 42,
+    train_ratio: float = 0.5,
+    volume_lookbacks: Optional[List[int]] = None,
+    volume_multipliers: Optional[List[float]] = None,
+    drop_pcts: Optional[List[float]] = None,
+    close_positions: Optional[List[float]] = None,
+    confirm_ks: Optional[List[int]] = None,
+    min_signals: int = 20,
+    gap_penalty: float = 0.5,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    セリングクライマックスの検出パラメータをグリッドサーチする。
+
+    train/validation で成功率(precision)を比較し、差分にペナルティを掛けて過剰最適化を抑える。
+    """
+
+    volume_lookbacks = volume_lookbacks or [20]
+    volume_multipliers = volume_multipliers or [2.0, 2.5, 3.0]
+    drop_pcts = drop_pcts or [0.03, 0.04, 0.05]
+    close_positions = close_positions or [0.3, 0.4, 0.5]
+    confirm_ks = confirm_ks or [2, 3, 5]
+
+    target_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    if not target_symbols:
+        return pd.DataFrame(), pd.DataFrame()
+
+    train_symbols, validation_symbols = split_symbols_randomly(
+        target_symbols, seed=seed, train_ratio=train_ratio
+    )
+    train_set = set(train_symbols)
+
+    eval_records = []
+    best_score = float("-inf")
+    best_record: Optional[Dict[str, float]] = None
+
+    total_combos = (
+        len(volume_lookbacks)
+        * len(volume_multipliers)
+        * len(drop_pcts)
+        * len(close_positions)
+        * len(confirm_ks)
+    )
+    combo_index = 0
+
+    for volume_lookback in volume_lookbacks:
+        for volume_multiplier in volume_multipliers:
+            for drop_pct in drop_pcts:
+                for close_position in close_positions:
+                    for confirm_k in confirm_ks:
+                        combo_index += 1
+                        train_signals = 0
+                        train_success = 0
+                        val_signals = 0
+                        val_success = 0
+
+                        for symbol in target_symbols:
+                            try:
+                                df_price = load_price_csv(symbol)
+                            except Exception:
+                                continue
+                            if df_price.empty:
+                                continue
+                            df_sorted = df_price.sort_values("date").reset_index(drop=True)
+                            candidates = _detect_selling_climax_candidates(
+                                df_sorted,
+                                volume_lookback=volume_lookback,
+                                volume_multiplier=volume_multiplier,
+                                drop_pct=drop_pct,
+                                close_position=close_position,
+                            )
+                            if not candidates.any():
+                                continue
+                            success = _label_selling_climax_success(
+                                df_sorted, confirm_k=confirm_k
+                            )
+                            signal_count = int(candidates.sum())
+                            success_count = int((candidates & success).sum())
+                            if symbol in train_set:
+                                train_signals += signal_count
+                                train_success += success_count
+                            else:
+                                val_signals += signal_count
+                                val_success += success_count
+
+                        if progress_callback:
+                            progress_callback(combo_index, total_combos, "グリッドサーチ")
+
+                        if train_signals < min_signals or val_signals < min_signals:
+                            continue
+
+                        train_precision = train_success / train_signals if train_signals else 0.0
+                        val_precision = val_success / val_signals if val_signals else 0.0
+                        score = val_precision - abs(train_precision - val_precision) * gap_penalty
+
+                        record = {
+                            "volume_lookback": volume_lookback,
+                            "volume_multiplier": volume_multiplier,
+                            "drop_pct": drop_pct,
+                            "close_position": close_position,
+                            "confirm_k": confirm_k,
+                            "train_precision": train_precision,
+                            "validation_precision": val_precision,
+                            "train_signals": train_signals,
+                            "validation_signals": val_signals,
+                            "score": score,
+                        }
+                        eval_records.append(record)
+
+                        if score > best_score:
+                            best_score = score
+                            best_record = record
+
+    eval_df = pd.DataFrame(eval_records).sort_values("score", ascending=False)
+    if best_record is None:
+        return eval_df, pd.DataFrame()
+
+    best_summary = pd.DataFrame([best_record])
+    return eval_df, best_summary
 
 
 def optimize_canslim_parameters(
