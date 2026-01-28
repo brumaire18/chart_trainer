@@ -3762,6 +3762,7 @@ def main():
                 value=10,
                 step=1,
                 help="サンプルが少なすぎる組み合わせを除外します。",
+                key="gs_min_signals",
             )
             gs_gap_penalty = st.number_input(
                 "generalization gap のペナルティ係数",
@@ -3770,6 +3771,7 @@ def main():
                 value=0.5,
                 step=0.1,
                 help="train/validation の差が大きいほどスコアを下げます。",
+                key="gs_gap_penalty",
             )
         with grid_col2:
             gs_cup_windows = st.multiselect(
@@ -3876,6 +3878,7 @@ def main():
                 max_value=200,
                 value=20,
                 step=1,
+                key="sc_min_signals",
             )
             sc_gap_penalty = st.number_input(
                 "generalization gap のペナルティ係数",
@@ -3884,6 +3887,7 @@ def main():
                 value=0.5,
                 step=0.1,
                 help="train/validation の差が大きいほどスコアを下げます。",
+                key="sc_gap_penalty",
             )
 
         run_sc_grid_search = st.button(
