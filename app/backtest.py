@@ -65,6 +65,40 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df_ind
 
 
+def _compute_new_high_breakout_indicators(
+    df: pd.DataFrame,
+    high_lookback: int,
+    volume_sma_window: int,
+    sma_short_window: int,
+    sma_long_window: int,
+    sma_slope_lookback: int,
+    atr_window: int,
+) -> pd.DataFrame:
+    """新高値ブレイクアウト向けの指標を計算する。"""
+
+    df_ind = df.copy()
+    df_ind["highest_high"] = df_ind["high"].shift(1).rolling(high_lookback).max()
+    df_ind["volume_sma"] = df_ind["volume"].rolling(volume_sma_window).mean()
+    df_ind["sma_short"] = df_ind["close"].rolling(sma_short_window).mean()
+    df_ind["sma_long"] = df_ind["close"].rolling(sma_long_window).mean()
+    df_ind["sma_short_slope_up"] = df_ind["sma_short"] > df_ind["sma_short"].shift(
+        sma_slope_lookback
+    )
+
+    prev_close = df_ind["close"].shift(1)
+    true_range = pd.concat(
+        [
+            df_ind["high"] - df_ind["low"],
+            (df_ind["high"] - prev_close).abs(),
+            (df_ind["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    df_ind["atr14"] = true_range.rolling(atr_window).mean()
+    df_ind["low10"] = df_ind["low"].shift(1).rolling(10).min()
+    return df_ind
+
+
 def _analyze_cup_base(
     prices: pd.Series,
     depth_min: float,
@@ -420,6 +454,222 @@ def run_canslim_backtest(
     )
 
     return results_df, summary_df
+
+
+def run_new_high_breakout_backtest(
+    symbols: Optional[Iterable[str]] = None,
+    high_lookback: int = 20,
+    volume_sma_window: int = 20,
+    sma_short_window: int = 25,
+    sma_long_window: int = 75,
+    sma_slope_lookback: int = 5,
+    atr_window: int = 14,
+    stop_atr_multiplier: float = 2.0,
+    breakeven_r: float = 1.0,
+    partial_profit_r: float = 1.5,
+    partial_profit_ratio: float = 0.5,
+    trailing_type: str = "atr",
+    atr_trail_multiplier: float = 2.0,
+    time_stop_days: int = 10,
+    time_stop_r: float = 0.8,
+    risk_per_trade: float = 0.01,
+    account_equity: float = 1_000_000.0,
+    setup_condition: Optional[Callable[[pd.Series], bool]] = None,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    新高値ブレイクアウト戦略のバックテストを実施する。
+
+    setup_condition は前日引けで評価されるユーザー定義の条件。
+    """
+
+    target_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    if not target_symbols:
+        return pd.DataFrame(), pd.DataFrame()
+
+    if setup_condition is None:
+
+        def setup_condition(row: pd.Series) -> bool:
+            return bool(
+                pd.notna(row["highest_high"])
+                and pd.notna(row["volume_sma"])
+                and pd.notna(row["sma_short"])
+                and pd.notna(row["sma_long"])
+                and row["close"] >= row["highest_high"]
+                and row["volume"] >= row["volume_sma"]
+                and row["sma_short"] >= row["sma_long"]
+                and row["sma_short_slope_up"]
+            )
+
+    trades: List[Dict[str, object]] = []
+    total_symbols = len(target_symbols)
+
+    for idx, symbol in enumerate(target_symbols, start=1):
+        try:
+            df_price = load_price_csv(symbol)
+        except Exception:
+            if progress_callback:
+                progress_callback(idx, total_symbols, "銘柄スキャン")
+            continue
+
+        if df_price.empty:
+            if progress_callback:
+                progress_callback(idx, total_symbols, "銘柄スキャン")
+            continue
+
+        df_sorted = df_price.sort_values("date").reset_index(drop=True)
+        df_ind = _compute_new_high_breakout_indicators(
+            df_sorted,
+            high_lookback=high_lookback,
+            volume_sma_window=volume_sma_window,
+            sma_short_window=sma_short_window,
+            sma_long_window=sma_long_window,
+            sma_slope_lookback=sma_slope_lookback,
+            atr_window=atr_window,
+        )
+
+        pending_entry: Optional[Dict[str, object]] = None
+        in_position = False
+        entry_price = 0.0
+        entry_index = 0
+        entry_date = pd.Timestamp.min
+        stop_price = 0.0
+        risk_per_share = 0.0
+        qty = 0
+        remaining_qty = 0
+        partial_taken = False
+        realized_proceeds = 0.0
+        exit_reason = ""
+
+        for i in range(1, len(df_ind)):
+            row = df_ind.iloc[i]
+
+            if pending_entry and pending_entry["index"] == i and not in_position:
+                stop_price_candidate = float(pending_entry["stop_price"])
+                if row["high"] >= stop_price_candidate:
+                    if pd.isna(row["atr14"]):
+                        pending_entry = None
+                    else:
+                        entry_price = stop_price_candidate
+                        entry_index = i
+                        entry_date = row["date"]
+                        stop_price = entry_price - stop_atr_multiplier * float(row["atr14"])
+                        risk_per_share = entry_price - stop_price
+                        risk_jpy = account_equity * risk_per_trade
+                        qty = int(np.floor(risk_jpy / risk_per_share)) if risk_per_share > 0 else 0
+                        remaining_qty = qty
+                        partial_taken = False
+                        realized_proceeds = 0.0
+                        exit_reason = ""
+                        if qty > 0:
+                            in_position = True
+                        pending_entry = None
+                else:
+                    pending_entry = None
+
+            if in_position:
+                days_in_trade = i - entry_index + 1
+                if row["low"] <= stop_price:
+                    realized_proceeds += stop_price * remaining_qty
+                    exit_reason = "stop"
+                else:
+                    if not partial_taken and partial_profit_ratio > 0:
+                        target_price = entry_price + partial_profit_r * risk_per_share
+                        partial_qty = int(np.floor(qty * partial_profit_ratio))
+                        if partial_qty > 0 and row["high"] >= target_price:
+                            realized_proceeds += target_price * partial_qty
+                            remaining_qty -= partial_qty
+                            partial_taken = True
+                            if remaining_qty <= 0:
+                                exit_reason = "partial_full"
+                    if not exit_reason:
+                        if (
+                            days_in_trade >= time_stop_days
+                            and row["close"] < entry_price + time_stop_r * risk_per_share
+                        ):
+                            realized_proceeds += row["close"] * remaining_qty
+                            exit_reason = "time_stop"
+                        elif trailing_type == "low10":
+                            if pd.notna(row["low10"]) and row["low"] < row["low10"]:
+                                realized_proceeds += row["close"] * remaining_qty
+                                exit_reason = "low10_break"
+
+                if exit_reason:
+                    total_cost = entry_price * qty
+                    pnl = realized_proceeds - total_cost
+                    r_multiple = pnl / (risk_per_share * qty) if risk_per_share > 0 else 0.0
+                    exit_price = realized_proceeds / qty if qty > 0 else 0.0
+                    trades.append(
+                        {
+                            "symbol": symbol,
+                            "entry_date": entry_date,
+                            "entry_price": entry_price,
+                            "exit_date": row["date"],
+                            "exit_price": exit_price,
+                            "qty": qty,
+                            "pnl": pnl,
+                            "r_multiple": r_multiple,
+                            "holding_days": days_in_trade,
+                            "exit_reason": exit_reason,
+                        }
+                    )
+                    in_position = False
+                    continue
+
+                if row["high"] >= entry_price + breakeven_r * risk_per_share:
+                    stop_price = max(stop_price, entry_price)
+
+                if trailing_type == "atr" and pd.notna(row["atr14"]):
+                    atr_stop = row["close"] - atr_trail_multiplier * float(row["atr14"])
+                    stop_price = max(stop_price, atr_stop)
+
+            if not in_position and pending_entry is None:
+                if setup_condition(row):
+                    if i + 1 < len(df_ind) and pd.notna(row["highest_high"]):
+                        pending_entry = {
+                            "index": i + 1,
+                            "stop_price": float(row["highest_high"]),
+                        }
+
+        if progress_callback:
+            progress_callback(idx, total_symbols, "銘柄スキャン")
+
+    if not trades:
+        return pd.DataFrame(), pd.DataFrame()
+
+    trades_df = pd.DataFrame(trades)
+    trades_df["win"] = trades_df["pnl"] > 0
+
+    summary_records: List[Dict[str, object]] = []
+    for symbol, group in trades_df.groupby("symbol"):
+        win_rate = float(group["win"].mean())
+        avg_pnl = float(group["pnl"].mean())
+        expectancy = float(group["r_multiple"].mean())
+        summary_records.append(
+            {
+                "symbol": symbol,
+                "trades": int(group.shape[0]),
+                "win_rate": win_rate,
+                "avg_pnl": avg_pnl,
+                "expectancy": expectancy,
+            }
+        )
+
+    overall_win_rate = float(trades_df["win"].mean())
+    overall_avg_pnl = float(trades_df["pnl"].mean())
+    overall_expectancy = float(trades_df["r_multiple"].mean())
+    summary_records.append(
+        {
+            "symbol": "ALL",
+            "trades": int(trades_df.shape[0]),
+            "win_rate": overall_win_rate,
+            "avg_pnl": overall_avg_pnl,
+            "expectancy": overall_expectancy,
+        }
+    )
+
+    summary_df = pd.DataFrame(summary_records)
+    return trades_df, summary_df
 
 
 def grid_search_selling_climax(
