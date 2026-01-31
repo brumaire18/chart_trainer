@@ -362,6 +362,116 @@ def scan_canslim_patterns(
     return signals
 
 
+def scan_cup_with_handle_screen(
+    df: pd.DataFrame,
+    lookback_days: int = 30,
+    cup_windows: Optional[List[int]] = None,
+    handle_windows: Optional[List[int]] = None,
+    depth_range: Tuple[float, float] = (0.12, 0.33),
+    recovery_ratio: float = 0.85,
+    handle_max_depth: float = 0.15,
+    min_price_gain: float = 0.3,
+    rs_lookback: int = 20,
+    rs_min_change: float = 0.0,
+    breakout_volume_multiplier: float = 1.5,
+    handle_dry_volume_ratio: float = 0.8,
+) -> List[Dict[str, float]]:
+    """
+    取っ手付きカップのスクリーニング条件を満たすブレイクアウトを探索する。
+
+    Returns:
+        条件を満たしたブレイクアウトの情報を辞書で返す。
+    """
+
+    if df.empty:
+        return []
+
+    cup_windows = cup_windows or [50]
+    handle_windows = handle_windows or [10]
+
+    df_sorted = df.sort_values("date").reset_index(drop=True)
+    df_ind = _compute_indicators(df_sorted)
+
+    results: List[Dict[str, float]] = []
+    max_window = max(cup_windows) + max(handle_windows)
+    start_idx = max(max_window, len(df_ind) - max(lookback_days, 1))
+
+    for idx in range(start_idx, len(df_ind)):
+        breakout_row = df_ind.iloc[idx]
+        volume_sma = breakout_row.get("volume_sma20")
+        if pd.isna(volume_sma) or volume_sma <= 0:
+            continue
+
+        breakout_volume_ratio = float(breakout_row["volume"] / volume_sma)
+        if breakout_volume_ratio < breakout_volume_multiplier:
+            continue
+
+        for cup_window in cup_windows:
+            for handle_window in handle_windows:
+                min_window = cup_window + handle_window
+                if idx - min_window < 0:
+                    continue
+
+                pattern_info = _detect_pattern(
+                    df_ind,
+                    idx,
+                    cup_window=cup_window,
+                    handle_window=handle_window,
+                    depth_range=depth_range,
+                    recovery_ratio=recovery_ratio,
+                    handle_max_depth=handle_max_depth,
+                )
+                if pattern_info is None:
+                    continue
+
+                if breakout_row["close"] <= pattern_info["right_peak"]:
+                    continue
+
+                price_gain = (breakout_row["close"] - pattern_info["bottom"]) / pattern_info["bottom"]
+                if price_gain < min_price_gain:
+                    continue
+
+                handle_slice = df_ind.iloc[idx - handle_window : idx]
+                if handle_slice.empty:
+                    continue
+
+                handle_volume_avg = float(handle_slice["volume"].mean())
+                handle_volume_sma = float(handle_slice["volume_sma20"].mean())
+                if handle_volume_sma <= 0 or handle_volume_avg > handle_volume_sma * handle_dry_volume_ratio:
+                    continue
+
+                handle_low = float(handle_slice["close"].min())
+                handle_sma_max = float(handle_slice["sma50"].max())
+                if pd.isna(handle_sma_max) or handle_low < handle_sma_max:
+                    continue
+
+                if "topix_rs" not in df_ind.columns or idx - rs_lookback < 0:
+                    continue
+                rs_now = df_ind.iloc[idx]["topix_rs"]
+                rs_prev = df_ind.iloc[idx - rs_lookback]["topix_rs"]
+                if pd.isna(rs_now) or pd.isna(rs_prev) or rs_prev == 0:
+                    continue
+                rs_change = (rs_now / rs_prev - 1) * 100
+                if rs_change < rs_min_change:
+                    continue
+
+                results.append(
+                    {
+                        "date": breakout_row["date"],
+                        "cup_window": float(cup_window),
+                        "handle_window": float(handle_window),
+                        "breakout_volume_ratio": breakout_volume_ratio,
+                        "handle_volume_ratio": handle_volume_avg / handle_volume_sma,
+                        "price_gain": float(price_gain),
+                        "rs_change": float(rs_change),
+                        "handle_low": handle_low,
+                        "sma50": handle_sma_max,
+                    }
+                )
+
+    return results
+
+
 def run_canslim_backtest(
     symbols: Optional[Iterable[str]] = None,
     seed: int = 42,
