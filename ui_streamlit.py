@@ -33,6 +33,7 @@ from app.backtest import (
     grid_search_selling_climax,
     run_canslim_backtest,
     scan_canslim_patterns,
+    scan_cup_with_handle_screen,
 )
 from app.jquants_fetcher import (
     append_quotes_for_date,
@@ -1036,6 +1037,9 @@ def _calculate_minimum_data_length(
     saucer_window: int,
     handle_window: int,
     apply_weekly_volume_quartile: bool,
+    apply_cup_handle_condition: bool,
+    cup_handle_max_window: int,
+    cup_handle_rs_lookback: int,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
 
@@ -1084,6 +1088,12 @@ def _calculate_minimum_data_length(
         required_length = max(required_length, base_window + 2)
         reasons.append(
             f"CAN-SLIM判定にはカップ/ソーサー({base_window}本以上)のデータが必要"
+        )
+    if apply_cup_handle_condition:
+        cup_handle_length = max(cup_handle_max_window + 1, 50, cup_handle_rs_lookback + 1)
+        required_length = max(required_length, cup_handle_length)
+        reasons.append(
+            "取っ手付きカップ判定にはカップ+取っ手とRS/移動平均を含む十分な期間が必要"
         )
 
     return required_length, reasons
@@ -2437,6 +2447,72 @@ def main():
             step=0.1,
             help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
         )
+        apply_cup_handle_condition = st.checkbox("取っ手付きカップ条件を適用", value=False)
+        cup_handle_lookback_days = st.slider(
+            "取っ手付きカップのブレイク判定期間（日）",
+            min_value=5,
+            max_value=120,
+            value=30,
+            help="直近N日以内に取っ手付きカップのブレイクがある銘柄を抽出します。",
+        )
+        cup_handle_cup_weeks = st.slider(
+            "カップ形成期間（週）",
+            min_value=7,
+            max_value=65,
+            value=(7, 65),
+            help="取っ手付きカップの形成期間を週数で指定します。",
+        )
+        cup_handle_handle_weeks = st.slider(
+            "取っ手形成期間（週）",
+            min_value=1,
+            max_value=2,
+            value=(1, 2),
+            help="取っ手部分の形成期間を週数で指定します。",
+        )
+        cup_handle_depth_range = st.slider(
+            "カップの調整幅（%）",
+            min_value=5,
+            max_value=50,
+            value=(12, 33),
+            help="左側の頂点から安値までの調整幅の範囲を指定します。",
+        )
+        cup_handle_price_gain = st.slider(
+            "ブレイクまでの上昇率下限（%）",
+            min_value=0,
+            max_value=100,
+            value=30,
+            help="カップ底値からブレイクアウトまでの上昇率が指定以上の銘柄を抽出します。",
+        )
+        cup_handle_rs_lookback = st.slider(
+            "RS改善判定期間（日）",
+            min_value=5,
+            max_value=120,
+            value=20,
+            help="TOPIX RSの改善を判定する期間（日数）です。",
+        )
+        cup_handle_rs_min = st.slider(
+            "RS改善下限（%）",
+            min_value=-50,
+            max_value=50,
+            value=0,
+            help="RS改善率が指定以上の銘柄を抽出します。",
+        )
+        cup_handle_breakout_vol = st.number_input(
+            "ブレイク出来高倍率",
+            min_value=0.5,
+            max_value=10.0,
+            value=1.5,
+            step=0.1,
+            help="ブレイク時の出来高が20日平均の何倍以上かを指定します。",
+        )
+        cup_handle_dry_vol_ratio = st.number_input(
+            "取っ手の薄商い上限（出来高/20日平均）",
+            min_value=0.1,
+            max_value=1.5,
+            value=0.8,
+            step=0.05,
+            help="取っ手期間の出来高が平均より小さいことを判定します。",
+        )
         apply_weekly_volume_quartile = st.checkbox(
             "週出来高上位1/4を抽出",
             value=False,
@@ -2568,6 +2644,11 @@ def main():
                         cup_window=canslim_cup_window,
                         saucer_window=canslim_saucer_window,
                         handle_window=canslim_handle_window,
+                        apply_cup_handle_condition=apply_cup_handle_condition,
+                        cup_handle_max_window=(
+                            max(cup_handle_cup_weeks) * 5 + max(cup_handle_handle_weeks) * 5
+                        ),
+                        cup_handle_rs_lookback=cup_handle_rs_lookback,
                     )
 
                     if len(df_ind_full) < required_length:
@@ -2702,6 +2783,39 @@ def main():
                         else:
                             canslim_ok = False
 
+                    cup_handle_ok = True
+                    cup_handle_signal = None
+                    if apply_cup_handle_condition:
+                        cup_windows = list(
+                            range(cup_handle_cup_weeks[0] * 5, cup_handle_cup_weeks[1] * 5 + 1, 5)
+                        )
+                        handle_windows = list(
+                            range(
+                                cup_handle_handle_weeks[0] * 5,
+                                cup_handle_handle_weeks[1] * 5 + 1,
+                                5,
+                            )
+                        )
+                        signals = scan_cup_with_handle_screen(
+                            df_ind_full,
+                            lookback_days=cup_handle_lookback_days,
+                            cup_windows=cup_windows,
+                            handle_windows=handle_windows,
+                            depth_range=(
+                                cup_handle_depth_range[0] / 100,
+                                cup_handle_depth_range[1] / 100,
+                            ),
+                            min_price_gain=cup_handle_price_gain / 100,
+                            rs_lookback=cup_handle_rs_lookback,
+                            rs_min_change=cup_handle_rs_min,
+                            breakout_volume_multiplier=cup_handle_breakout_vol,
+                            handle_dry_volume_ratio=cup_handle_dry_vol_ratio,
+                        )
+                        if signals:
+                            cup_handle_signal = max(signals, key=lambda item: item["date"])
+                        else:
+                            cup_handle_ok = False
+
                     new_high_ok = True
                     new_high_date = None
                     selling_climax_ok = True
@@ -2756,6 +2870,7 @@ def main():
                             vol_ok,
                             rs_ok,
                             weekly_vol_ok,
+                            cup_handle_ok,
                             new_high_ok,
                             selling_climax_ok,
                         ]
@@ -2765,6 +2880,19 @@ def main():
                             if len(df_ind) >= 2 and df_ind.iloc[-2]["close"] != 0
                             else None
                         )
+                        cup_handle_weeks = None
+                        handle_weeks = None
+                        cup_handle_rs_change = None
+                        cup_handle_gain = None
+                        cup_handle_volume = None
+                        cup_handle_date = None
+                        if cup_handle_signal:
+                            cup_handle_weeks = cup_handle_signal["cup_window"] / 5
+                            handle_weeks = cup_handle_signal["handle_window"] / 5
+                            cup_handle_rs_change = cup_handle_signal["rs_change"]
+                            cup_handle_gain = cup_handle_signal["price_gain"] * 100
+                            cup_handle_volume = cup_handle_signal["breakout_volume_ratio"]
+                            cup_handle_date = cup_handle_signal["date"]
                         screening_results.append(
                             {
                                 "code": code_str,
@@ -2780,6 +2908,20 @@ def main():
                                 "週出来高": int(weekly_volume) if weekly_volume is not None else None,
                                 "CAN-SLIMパターン": canslim_pattern,
                                 "CAN-SLIMシグナル日": canslim_signal_date,
+                                "取っ手付きカップ日": cup_handle_date,
+                                "取っ手付きカップ週数": cup_handle_weeks,
+                                "取っ手週数": handle_weeks,
+                                "取っ手付きカップRS変化%": (
+                                    round(cup_handle_rs_change, 2)
+                                    if cup_handle_rs_change is not None
+                                    else None
+                                ),
+                                "取っ手付きカップ上昇率%": (
+                                    round(cup_handle_gain, 2) if cup_handle_gain is not None else None
+                                ),
+                                "取っ手付きカップ出来高倍率": (
+                                    round(cup_handle_volume, 2) if cup_handle_volume is not None else None
+                                ),
                                 "新高値シグナル日": new_high_date,
                                 "セリングクライマックス日": selling_climax_date,
                             }
@@ -2808,6 +2950,8 @@ def main():
                             code_reasons.append("週出来高上位条件不合格")
                     if apply_canslim_condition and not canslim_ok:
                         code_reasons.append("CAN-SLIM条件不合格")
+                    if apply_cup_handle_condition and not cup_handle_ok:
+                        code_reasons.append("取っ手付きカップ条件不合格")
                     if screen_new_high and not new_high_ok:
                         code_reasons.append("新高値シグナルなし")
                     if screen_selling_climax and not selling_climax_ok:
