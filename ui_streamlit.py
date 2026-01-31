@@ -20,6 +20,7 @@ from app.data_loader import (
     load_topix_csv,
 )
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
+from app.minervini_screen import MinerviniScreenConfig, screen_minervini_trend_template
 from app.pair_trading import (
     coint as cointegration_test,
     compute_pair_metrics,
@@ -2344,6 +2345,8 @@ def main():
 
         if "screening_results" not in st.session_state:
             st.session_state["screening_results"] = None
+        if "minervini_results" not in st.session_state:
+            st.session_state["minervini_results"] = None
         if "macd_debug_logs" not in st.session_state:
             st.session_state["macd_debug_logs"] = []
 
@@ -2351,6 +2354,143 @@ def main():
             "市場 (空欄なら全て)",
             options=sorted(listed_df["market"].dropna().unique()),
         )
+
+        st.markdown("### ミネルヴィニ・トレンドテンプレート")
+        st.caption("52週高値/安値と移動平均の条件でトレンドテンプレートを判定します。")
+        minervini_only_pass = st.checkbox("合格銘柄のみ表示", value=True)
+        minervini_rs_threshold = st.slider(
+            "RS評価の下限(パーセンタイル)",
+            min_value=0.0,
+            max_value=100.0,
+            value=70.0,
+            step=1.0,
+        )
+        minervini_low_from_low = st.slider(
+            "52週安値からの乖離率(下限)",
+            min_value=-0.8,
+            max_value=0.5,
+            value=-0.3,
+            step=0.05,
+            help="負の値は安値に近いほど合格になります。",
+        )
+        minervini_high_from_high = st.slider(
+            "52週高値からの乖離率(上限)",
+            min_value=0.0,
+            max_value=0.5,
+            value=0.25,
+            step=0.05,
+            help="高値からの下落率がこの範囲内であれば合格です。",
+        )
+        minervini_slope_lookback = st.number_input(
+            "SMA200傾き判定の期間(日)",
+            min_value=5,
+            max_value=60,
+            value=20,
+            step=1,
+        )
+        run_minervini = st.button("ミネルヴィニ・スクリーニングを実行", type="secondary")
+        minervini_results = st.session_state.get("minervini_results")
+        if run_minervini:
+            with st.spinner("ミネルヴィニ・トレンドテンプレートを判定しています..."):
+                if target_markets:
+                    market_symbols = [
+                        str(row.code).zfill(4)
+                        for row in listed_df.itertuples(index=False)
+                        if str(getattr(row, "market", "")) in target_markets
+                    ]
+                    target_symbols = [code for code in symbols if code in market_symbols]
+                else:
+                    target_symbols = symbols
+                minervini_config = MinerviniScreenConfig(
+                    rs_threshold=float(minervini_rs_threshold),
+                    low_from_low_pct=float(minervini_low_from_low),
+                    high_from_high_pct=float(minervini_high_from_high),
+                    slope_lookback_days=int(minervini_slope_lookback),
+                )
+                minervini_df = screen_minervini_trend_template(
+                    symbols=target_symbols,
+                    config=minervini_config,
+                )
+                if not minervini_df.empty:
+                    minervini_df["name"] = minervini_df["symbol"].map(name_map)
+                    if "market" in listed_df.columns:
+                        market_map = dict(
+                            zip(
+                                listed_df["code"].astype(str).str.zfill(4),
+                                listed_df["market"],
+                            )
+                        )
+                        minervini_df["market"] = minervini_df["symbol"].map(market_map)
+                    else:
+                        minervini_df["market"] = None
+                    minervini_df["rs_rating"] = minervini_df["rs_rating"].round(1)
+                    minervini_df["return_52w"] = (minervini_df["return_52w"] * 100).round(1)
+                st.session_state["minervini_results"] = minervini_df
+                minervini_results = minervini_df
+
+        if minervini_results is None:
+            st.info("ミネルヴィニの条件を設定して『ミネルヴィニ・スクリーニングを実行』を押してください。")
+        elif minervini_results.empty:
+            st.warning("ミネルヴィニ条件に合致する銘柄はありませんでした。")
+        else:
+            display_df = minervini_results.copy()
+            if minervini_only_pass:
+                display_df = display_df[display_df["passes_trend_template"]]
+            st.success(
+                f"ミネルヴィニ合格: {display_df['passes_trend_template'].sum()}銘柄 / "
+                f"判定対象: {len(minervini_results)}銘柄"
+            )
+            display_df = display_df[
+                [
+                    "symbol",
+                    "name",
+                    "market",
+                    "passes_trend_template",
+                    "rs_rating",
+                    "return_52w",
+                    "close",
+                    "sma50",
+                    "sma150",
+                    "sma200",
+                    "low_52w",
+                    "high_52w",
+                    "price_above_150_200",
+                    "ma150_above_200",
+                    "sma200_rising",
+                    "ma50_above_150_200",
+                    "price_above_50",
+                    "low_condition",
+                    "high_condition",
+                    "rs_condition",
+                ]
+            ].rename(
+                columns={
+                    "symbol": "code",
+                    "name": "name",
+                    "market": "market",
+                    "passes_trend_template": "合格",
+                    "rs_rating": "RS評価",
+                    "return_52w": "52週騰落率(%)",
+                    "close": "終値",
+                    "sma50": "SMA50",
+                    "sma150": "SMA150",
+                    "sma200": "SMA200",
+                    "low_52w": "52週安値",
+                    "high_52w": "52週高値",
+                    "price_above_150_200": "終値>SMA150/200",
+                    "ma150_above_200": "SMA150>SMA200",
+                    "sma200_rising": "SMA200上向き",
+                    "ma50_above_150_200": "SMA50>SMA150/200",
+                    "price_above_50": "終値>SMA50",
+                    "low_condition": "安値条件",
+                    "high_condition": "高値条件",
+                    "rs_condition": "RS条件",
+                }
+            )
+            st.dataframe(display_df, use_container_width=True)
+
+        st.markdown("---")
+
         apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
         apply_topix_rs_condition = st.checkbox(
