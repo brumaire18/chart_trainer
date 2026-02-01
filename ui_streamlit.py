@@ -4100,10 +4100,10 @@ def main():
                 key="minervini_slope_lookback",
             )
 
-        run_minervini_backtest = st.button(
+        run_minervini_backtest_clicked = st.button(
             "ミネルヴィニ・バックテストを実行", type="primary"
         )
-        if run_minervini_backtest:
+        if run_minervini_backtest_clicked:
             progress_update, progress_done = _build_progress_updater(
                 "ミネルヴィニ バックテスト"
             )
