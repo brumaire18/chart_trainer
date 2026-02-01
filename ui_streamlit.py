@@ -1707,6 +1707,14 @@ def main():
                 st.session_state["grid_page"] = min(
                     st.session_state["grid_page"], total_pages - 1
                 )
+                if "grid_page_input" not in st.session_state:
+                    st.session_state["grid_page_input"] = (
+                        st.session_state["grid_page"] + 1
+                    )
+                else:
+                    st.session_state["grid_page_input"] = min(
+                        max(1, st.session_state["grid_page_input"]), total_pages
+                    )
 
                 nav_cols = st.columns([1, 2, 1])
                 with nav_cols[0]:
@@ -1718,15 +1726,10 @@ def main():
                     st.markdown(
                         f"**{st.session_state['grid_page'] + 1}/{total_pages} ページ**"
                     )
-                    if "grid_page_input" not in st.session_state:
-                        st.session_state["grid_page_input"] = (
-                            st.session_state["grid_page"] + 1
-                        )
                     page_input = st.number_input(
                         "ページ指定",
                         min_value=1,
                         max_value=total_pages,
-                        value=st.session_state["grid_page_input"],
                         step=1,
                         key="grid_page_input",
                     )
