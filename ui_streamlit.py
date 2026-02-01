@@ -33,6 +33,7 @@ from app.backtest import (
     grid_search_cup_shape,
     grid_search_selling_climax,
     run_canslim_backtest,
+    run_minervini_backtest,
     scan_canslim_patterns,
     scan_cup_with_handle_screen,
 )
@@ -3877,6 +3878,10 @@ def main():
             st.session_state["grid_search_results"] = None
         if "grid_search_summary" not in st.session_state:
             st.session_state["grid_search_summary"] = None
+        if "minervini_backtest_results" not in st.session_state:
+            st.session_state["minervini_backtest_results"] = None
+        if "minervini_backtest_summary" not in st.session_state:
+            st.session_state["minervini_backtest_summary"] = None
 
         backtest_col1, backtest_col2 = st.columns(2)
         with backtest_col1:
@@ -4016,6 +4021,98 @@ def main():
                     tickformat="%Y-%m-%d",
                     rangebreaks=breakdown_rangebreaks,
                 )
+
+        st.divider()
+        st.subheader("ミネルヴィニ・トレンドテンプレート バックテスト")
+        st.caption(
+            "ミネルヴィニ条件に合致した日をシグナルとして、指定期間のピークリターンで評価します。"
+        )
+
+        minervini_col1, minervini_col2 = st.columns(2)
+        with minervini_col1:
+            minervini_lookahead = st.number_input(
+                "ピーク探索期間（日）",
+                min_value=5,
+                max_value=120,
+                value=20,
+                step=1,
+                key="minervini_lookahead",
+            )
+            minervini_return_threshold = st.number_input(
+                "上昇判定の下限（ピークリターン）",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.05,
+                step=0.01,
+                key="minervini_return_threshold",
+            )
+            minervini_rs_threshold = st.slider(
+                "RS評価の下限（%）",
+                min_value=0,
+                max_value=100,
+                value=70,
+                step=1,
+                key="minervini_rs_threshold",
+            )
+        with minervini_col2:
+            minervini_low_from_low = st.number_input(
+                "52週安値からの乖離率",
+                min_value=-1.0,
+                max_value=1.0,
+                value=-0.3,
+                step=0.05,
+                key="minervini_low_from_low",
+            )
+            minervini_high_from_high = st.number_input(
+                "52週高値からの乖離率",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.25,
+                step=0.05,
+                key="minervini_high_from_high",
+            )
+            minervini_slope_lookback = st.number_input(
+                "200日移動平均の傾き評価期間（日）",
+                min_value=5,
+                max_value=60,
+                value=20,
+                step=1,
+                key="minervini_slope_lookback",
+            )
+
+        run_minervini_backtest = st.button(
+            "ミネルヴィニ・バックテストを実行", type="primary"
+        )
+        if run_minervini_backtest:
+            progress_update, progress_done = _build_progress_updater(
+                "ミネルヴィニ バックテスト"
+            )
+            minervini_config = MinerviniScreenConfig(
+                rs_threshold=float(minervini_rs_threshold),
+                low_from_low_pct=float(minervini_low_from_low),
+                high_from_high_pct=float(minervini_high_from_high),
+                slope_lookback_days=int(minervini_slope_lookback),
+            )
+            results_df, summary_df = run_minervini_backtest(
+                lookahead=int(minervini_lookahead),
+                return_threshold=float(minervini_return_threshold),
+                config=minervini_config,
+                progress_callback=progress_update,
+            )
+            progress_done()
+            st.session_state["minervini_backtest_results"] = results_df
+            st.session_state["minervini_backtest_summary"] = summary_df
+
+        minervini_results = st.session_state.get("minervini_backtest_results")
+        minervini_summary = st.session_state.get("minervini_backtest_summary")
+
+        if minervini_summary is not None and not minervini_summary.empty:
+            st.markdown("#### 集計結果")
+            st.dataframe(minervini_summary, use_container_width=True)
+
+        if minervini_results is not None and not minervini_results.empty:
+            st.markdown("#### シグナル一覧")
+            st.dataframe(minervini_results.head(200), use_container_width=True)
 
         st.divider()
         st.subheader("カップ形状のグリッドサーチ")

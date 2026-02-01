@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .data_loader import get_available_symbols, load_price_csv
+from .minervini_screen import MinerviniScreenConfig, compute_minervini_indicators
 
 
 @dataclass
@@ -563,6 +564,145 @@ def run_canslim_backtest(
         .reset_index(drop=True)
     )
 
+    return results_df, summary_df
+
+
+def run_minervini_backtest(
+    symbols: Optional[Iterable[str]] = None,
+    lookahead: int = 20,
+    return_threshold: float = 0.05,
+    config: Optional[MinerviniScreenConfig] = None,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ミネルヴィニ・トレンドテンプレートの条件に合致した日をシグナルとして扱い、
+    その後のピークリターンで評価するバックテストを行う。
+    """
+
+    config = config or MinerviniScreenConfig()
+    target_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    if not target_symbols:
+        return pd.DataFrame(), pd.DataFrame()
+
+    indicator_frames: List[pd.DataFrame] = []
+    total_symbols = len(target_symbols)
+
+    for idx, symbol in enumerate(target_symbols, start=1):
+        try:
+            price_df = load_price_csv(symbol)
+        except Exception:
+            if progress_callback:
+                progress_callback(idx, total_symbols, "銘柄スキャン")
+            continue
+
+        if price_df.empty:
+            if progress_callback:
+                progress_callback(idx, total_symbols, "銘柄スキャン")
+            continue
+
+        indicator_df = compute_minervini_indicators(
+            price_df, slope_lookback_days=config.slope_lookback_days
+        )
+        if indicator_df.empty:
+            if progress_callback:
+                progress_callback(idx, total_symbols, "銘柄スキャン")
+            continue
+
+        indicator_df = indicator_df.copy()
+        indicator_df["symbol"] = str(symbol).zfill(4)
+
+        if lookahead > 0:
+            future_max = (
+                indicator_df["close"]
+                .shift(-1)
+                .rolling(lookahead)
+                .max()
+                .shift(-(lookahead - 1))
+            )
+        else:
+            future_max = pd.Series(index=indicator_df.index, dtype=float)
+        indicator_df["future_max_close"] = future_max
+
+        indicator_frames.append(indicator_df)
+        if progress_callback:
+            progress_callback(idx, total_symbols, "銘柄スキャン")
+
+    if not indicator_frames:
+        return pd.DataFrame(), pd.DataFrame()
+
+    combined = pd.concat(indicator_frames, ignore_index=True)
+    combined["rs_rating"] = (
+        combined.groupby("date")["return_52w"].rank(pct=True) * 100
+    )
+
+    combined["price_above_150_200"] = (combined["close"] > combined["sma150"]) & (
+        combined["close"] > combined["sma200"]
+    )
+    combined["ma150_above_200"] = combined["sma150"] > combined["sma200"]
+    combined["sma200_rising"] = combined["sma200_slope"] > 0
+    combined["ma50_above_150_200"] = (combined["sma50"] > combined["sma150"]) & (
+        combined["sma50"] > combined["sma200"]
+    )
+    combined["price_above_50"] = combined["close"] > combined["sma50"]
+
+    low_threshold = combined["low_52w"] * (1 + config.low_from_low_pct)
+    if config.low_from_low_pct >= 0:
+        combined["low_condition"] = combined["close"] >= low_threshold
+    else:
+        combined["low_condition"] = combined["close"] <= low_threshold
+
+    combined["high_condition"] = combined["close"] >= combined["high_52w"] * (
+        1 - config.high_from_high_pct
+    )
+    combined["rs_condition"] = combined["rs_rating"] >= config.rs_threshold
+
+    condition_cols = [
+        "price_above_150_200",
+        "ma150_above_200",
+        "sma200_rising",
+        "ma50_above_150_200",
+        "price_above_50",
+        "low_condition",
+        "high_condition",
+        "rs_condition",
+    ]
+    combined["passes_trend_template"] = combined[condition_cols].all(axis=1)
+
+    signals = combined[
+        combined["passes_trend_template"]
+        & combined["future_max_close"].notna()
+        & combined["close"].notna()
+        & (combined["close"] > 0)
+    ].copy()
+    if signals.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    signals["peak_return"] = (signals["future_max_close"] - signals["close"]) / signals[
+        "close"
+    ]
+    signals["label"] = np.where(
+        signals["peak_return"] >= return_threshold, "up", "down"
+    )
+
+    results_cols = [
+        "symbol",
+        "date",
+        "close",
+        "rs_rating",
+        "return_52w",
+        "peak_return",
+        "label",
+    ] + condition_cols
+    results_df = signals[results_cols].sort_values(["date", "symbol"]).reset_index(
+        drop=True
+    )
+
+    summary_df = (
+        results_df.groupby("label", as_index=False)
+        .agg(count=("symbol", "count"), avg_return=("peak_return", "mean"))
+        .sort_values("label")
+        .reset_index(drop=True)
+    )
     return results_df, summary_df
 
 
