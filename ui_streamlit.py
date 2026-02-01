@@ -1722,13 +1722,19 @@ def main():
                         st.session_state["grid_page_input"] - 1
                     )
 
+                if (
+                    "grid_page_input" not in st.session_state
+                    or st.session_state["grid_page_input"]
+                    != st.session_state["grid_page"] + 1
+                ):
+                    st.session_state["grid_page_input"] = (
+                        st.session_state["grid_page"] + 1
+                    )
+
                 nav_cols = st.columns([1, 2, 1])
                 with nav_cols[0]:
                     if st.button("前の16銘柄", disabled=st.session_state["grid_page"] == 0):
                         st.session_state["grid_page"] -= 1
-                        st.session_state["grid_page_input"] = (
-                            st.session_state["grid_page"] + 1
-                        )
                         st.rerun()
                 with nav_cols[1]:
                     st.markdown(
@@ -1751,9 +1757,6 @@ def main():
                         disabled=st.session_state["grid_page"] >= total_pages - 1,
                     ):
                         st.session_state["grid_page"] += 1
-                        st.session_state["grid_page_input"] = (
-                            st.session_state["grid_page"] + 1
-                        )
                         st.rerun()
 
                 start_idx = st.session_state["grid_page"] * 16
