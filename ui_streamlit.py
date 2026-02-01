@@ -1708,29 +1708,41 @@ def main():
                 st.session_state["grid_page"] = min(
                     st.session_state["grid_page"], total_pages - 1
                 )
+                if (
+                    "grid_page_input" not in st.session_state
+                    or st.session_state["grid_page_input"]
+                    != st.session_state["grid_page"] + 1
+                ):
+                    st.session_state["grid_page_input"] = (
+                        st.session_state["grid_page"] + 1
+                    )
+
+                def _update_grid_page_from_input() -> None:
+                    st.session_state["grid_page"] = (
+                        st.session_state["grid_page_input"] - 1
+                    )
 
                 nav_cols = st.columns([1, 2, 1])
                 with nav_cols[0]:
                     if st.button("前の16銘柄", disabled=st.session_state["grid_page"] == 0):
                         st.session_state["grid_page"] -= 1
+                        st.session_state["grid_page_input"] = (
+                            st.session_state["grid_page"] + 1
+                        )
                         st.rerun()
                 with nav_cols[1]:
                     st.markdown(
                         f"**{st.session_state['grid_page'] + 1}/{total_pages} ページ**"
                     )
-                    st.session_state["grid_page_input"] = (
-                        st.session_state["grid_page"] + 1
-                    )
                     page_input = st.number_input(
                         "ページ指定",
                         min_value=1,
                         max_value=total_pages,
-                        value=st.session_state["grid_page_input"],
                         step=1,
                         key="grid_page_input",
+                        on_change=_update_grid_page_from_input,
                     )
                     if page_input - 1 != st.session_state["grid_page"]:
-                        st.session_state["grid_page"] = page_input - 1
                         st.rerun()
                     st.caption(f"全{total_symbols}銘柄のうち上位を表示")
                 with nav_cols[2]:
@@ -1739,6 +1751,9 @@ def main():
                         disabled=st.session_state["grid_page"] >= total_pages - 1,
                     ):
                         st.session_state["grid_page"] += 1
+                        st.session_state["grid_page_input"] = (
+                            st.session_state["grid_page"] + 1
+                        )
                         st.rerun()
 
                 start_idx = st.session_state["grid_page"] * 16
