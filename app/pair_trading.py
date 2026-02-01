@@ -1082,8 +1082,13 @@ def compute_return_correlation(
     return float(np.corrcoef(log_returns.iloc[:, 0], log_returns.iloc[:, 1])[0, 1])
 
 
-def compute_spread_series(symbol_a: str, symbol_b: str) -> Tuple[pd.DataFrame, dict]:
+def compute_spread_series(
+    symbol_a: str,
+    symbol_b: str,
+    history_window: Optional[int] = None,
+) -> Tuple[pd.DataFrame, dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
+    df_pair = _trim_pair_history(df_pair, history_window)
     if df_pair.empty:
         return df_pair, {}
     log_a = np.log(df_pair["close_a"])

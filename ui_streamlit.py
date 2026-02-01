@@ -3880,7 +3880,9 @@ def main():
                 )
 
             df_pair, pair_metrics = compute_spread_series(
-                selected_row["symbol_a"], selected_row["symbol_b"]
+                selected_row["symbol_a"],
+                selected_row["symbol_b"],
+                history_window=pair_search_history,
             )
             _render_pair_spread_chart(df_pair, entry_threshold, exit_threshold, pair_metrics)
 
