@@ -19,6 +19,7 @@ from app.data_loader import (
     load_price_csv,
     load_topix_csv,
 )
+from app.custom_groups import load_custom_groups, save_custom_groups
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.minervini_screen import MinerviniScreenConfig, screen_minervini_trend_template
 from app.pair_trading import (
@@ -1543,6 +1544,90 @@ def main():
         for row in listed_df.itertuples(index=False)
         if getattr(row, "name", None) is not None
     }
+
+    st.sidebar.subheader("手動分類")
+    try:
+        custom_groups = load_custom_groups()
+    except Exception as exc:
+        st.sidebar.warning(f"custom_groups.json の読み込みに失敗しました: {exc}")
+        custom_groups = {}
+
+    group_names = sorted(custom_groups)
+    group_mode = st.sidebar.selectbox(
+        "編集対象グループ",
+        options=["新規作成"] + group_names,
+        key="manual_group_mode",
+    )
+    if group_mode == "新規作成":
+        default_group_name = ""
+        current_group_codes: List[str] = []
+    else:
+        default_group_name = group_mode
+        current_group_codes = custom_groups.get(group_mode, [])
+
+    group_name = st.sidebar.text_input(
+        "グループ名",
+        value=default_group_name,
+        key="manual_group_name",
+        help="新規作成時はここにグループ名を入力してください。",
+    )
+
+    search_text = st.sidebar.text_input(
+        "銘柄検索",
+        value="",
+        key="manual_group_search",
+        help="コードまたは名称の一部で検索できます。",
+    )
+
+    available_symbol_set = set(symbols)
+    all_option_codes = sorted(available_symbol_set | set(current_group_codes))
+    if search_text:
+        keyword = search_text.strip().lower()
+        filtered_codes = [
+            code
+            for code in all_option_codes
+            if keyword in code.lower() or keyword in name_map.get(code, "").lower()
+        ]
+    else:
+        filtered_codes = all_option_codes
+
+    selected_codes = st.sidebar.multiselect(
+        "銘柄を選択",
+        options=filtered_codes,
+        default=current_group_codes,
+        format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+        key="manual_group_codes",
+    )
+
+    col_save, col_delete = st.sidebar.columns(2)
+    with col_save:
+        if st.button("保存/更新", key="manual_group_save"):
+            if not group_name.strip():
+                st.sidebar.error("グループ名を入力してください。")
+            elif group_mode != "新規作成" and group_name != group_mode and group_name in custom_groups:
+                st.sidebar.error("同名のグループが既に存在します。")
+            else:
+                if group_mode != "新規作成" and group_name != group_mode:
+                    custom_groups.pop(group_mode, None)
+                custom_groups[group_name] = selected_codes
+                try:
+                    save_custom_groups(custom_groups)
+                    st.sidebar.success("グループを保存しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.sidebar.error(f"保存に失敗しました: {exc}")
+    with col_delete:
+        if st.button("削除", key="manual_group_delete"):
+            if group_mode == "新規作成":
+                st.sidebar.error("削除対象のグループを選択してください。")
+            else:
+                custom_groups.pop(group_mode, None)
+                try:
+                    save_custom_groups(custom_groups)
+                    st.sidebar.success("グループを削除しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.sidebar.error(f"削除に失敗しました: {exc}")
     if not symbols:
         st.sidebar.warning("data/price_csv にCSVファイルがありません。")
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
