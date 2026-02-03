@@ -1135,7 +1135,7 @@ def optimize_canslim_parameters(
 
     best_summary = best_summary.copy()
     for key, value in best_params.items():
-        best_summary[f"best_{key}"] = value
+        best_summary[f"best_{key}"] = [value] * len(best_summary)
 
     return eval_df, best_summary
 
@@ -1277,7 +1277,7 @@ def grid_search_cup_shape(
 
     best_summary = best_summary.copy()
     for key, value in best_params.items():
-        best_summary[f"best_{key}"] = value
+        best_summary[f"best_{key}"] = [value] * len(best_summary)
 
     return eval_df, best_summary
 
