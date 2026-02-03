@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 import time
 from typing import Callable, Dict, List, Optional, Tuple
@@ -55,6 +55,7 @@ from app.pair_trading import (
 
 LIGHT_PLAN_YEARS = 5
 PAIR_CACHE_PATH = META_DIR / "pair_candidates_cache.json"
+RUN_INPUTS_PATH = META_DIR / "run_input_settings.json"
 
 
 def _format_eta(seconds: Optional[float]) -> str:
@@ -113,6 +114,26 @@ def _parse_grid_values(text: str, cast_type: type) -> List:
             continue
         values.append(cast_type(raw))
     return values
+
+
+def _save_run_inputs(section: str, values: Dict[str, object]) -> None:
+    payload = {
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "values": values,
+    }
+    try:
+        data = {}
+        if RUN_INPUTS_PATH.exists():
+            data = json.loads(RUN_INPUTS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        data[section] = payload
+        RUN_INPUTS_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        st.warning(f"入力値の保存に失敗しました: {exc}")
 
 
 def _attach_pair_sector_info(
@@ -2407,6 +2428,17 @@ def main():
         run_minervini = st.button("ミネルヴィニ・スクリーニングを実行", type="secondary")
         minervini_results = st.session_state.get("minervini_results")
         if run_minervini:
+            _save_run_inputs(
+                "minervini_screening",
+                {
+                    "target_markets": target_markets,
+                    "minervini_only_pass": minervini_only_pass,
+                    "minervini_rs_threshold": float(minervini_rs_threshold),
+                    "minervini_low_from_low": float(minervini_low_from_low),
+                    "minervini_high_from_high": float(minervini_high_from_high),
+                    "minervini_slope_lookback": int(minervini_slope_lookback),
+                },
+            )
             with st.spinner("ミネルヴィニ・トレンドテンプレートを判定しています..."):
                 if target_markets:
                     market_symbols = [
@@ -2725,6 +2757,50 @@ def main():
 
         screening_results = st.session_state.get("screening_results")
         if run_screening:
+            _save_run_inputs(
+                "technical_screening",
+                {
+                    "target_markets": target_markets,
+                    "apply_rsi_condition": apply_rsi_condition,
+                    "rsi_range": list(rsi_range),
+                    "apply_topix_rs_condition": apply_topix_rs_condition,
+                    "topix_rs_lookback": int(topix_rs_lookback),
+                    "topix_rs_threshold": float(topix_rs_threshold),
+                    "macd_condition": macd_condition,
+                    "macd_lookback": int(macd_lookback),
+                    "macd_debug": macd_debug,
+                    "show_detailed_log": show_detailed_log,
+                    "require_sma20_trend": require_sma20_trend,
+                    "sma_trend_lookback": int(sma_trend_lookback),
+                    "apply_volume_condition": apply_volume_condition,
+                    "volume_multiplier": float(volume_multiplier),
+                    "apply_canslim_condition": apply_canslim_condition,
+                    "canslim_recent_days": int(canslim_recent_days),
+                    "canslim_cup_window": int(canslim_cup_window),
+                    "canslim_saucer_window": int(canslim_saucer_window),
+                    "canslim_handle_window": int(canslim_handle_window),
+                    "canslim_volume_multiplier": float(canslim_volume_multiplier),
+                    "apply_cup_handle_condition": apply_cup_handle_condition,
+                    "cup_handle_lookback_days": int(cup_handle_lookback_days),
+                    "cup_handle_cup_weeks": list(cup_handle_cup_weeks),
+                    "cup_handle_handle_weeks": list(cup_handle_handle_weeks),
+                    "cup_handle_depth_range": list(cup_handle_depth_range),
+                    "cup_handle_price_gain": float(cup_handle_price_gain),
+                    "cup_handle_rs_lookback": int(cup_handle_rs_lookback),
+                    "cup_handle_rs_min": float(cup_handle_rs_min),
+                    "cup_handle_breakout_vol": float(cup_handle_breakout_vol),
+                    "cup_handle_dry_vol_ratio": float(cup_handle_dry_vol_ratio),
+                    "apply_weekly_volume_quartile": apply_weekly_volume_quartile,
+                    "screen_new_high": screen_new_high,
+                    "screen_selling_climax": screen_selling_climax,
+                    "signal_lookback_days": int(signal_lookback_days),
+                    "signal_new_high_lookback": int(signal_new_high_lookback),
+                    "signal_selling_volume_lookback": int(signal_selling_volume_lookback),
+                    "signal_selling_volume_multiplier": float(signal_selling_volume_multiplier),
+                    "signal_selling_drop_pct": float(signal_selling_drop_pct),
+                    "signal_selling_close_position": float(signal_selling_close_position),
+                },
+            )
             with st.spinner("スクリーニングを実行しています..."):
                 screening_results = []
                 macd_debug_logs = [] if macd_debug else None
@@ -4426,6 +4502,25 @@ def main():
                 disabled=not cache_ready,
             )
             if run_pair_backtest:
+                _save_run_inputs(
+                    "pair_trade_backtest",
+                    {
+                        "sector_col": sector_col,
+                        "min_symbols": int(min_symbols),
+                        "max_pairs_per_sector": int(max_pairs_per_sector),
+                        "lookback": int(lookback),
+                        "max_holding_days": int(max_holding_days),
+                        "entry_z": float(entry_z),
+                        "exit_z": float(exit_z),
+                        "stop_z": float(stop_z),
+                        "date_range": [
+                            date_range[0].isoformat(),
+                            date_range[1].isoformat(),
+                        ]
+                        if date_range and len(date_range) == 2
+                        else None,
+                    },
+                )
                 filtered_pairs = _filter_cached_pairs(
                     cached_pairs_df,
                     None,
