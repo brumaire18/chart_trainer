@@ -260,6 +260,26 @@ def _refresh_pair_metrics_latest(
     return pd.DataFrame(refreshed)
 
 
+def _get_manual_group_symbols(
+    custom_groups: Dict[str, List[str]],
+    group_name: Optional[str],
+    symbols: List[str],
+) -> List[str]:
+    if not group_name or group_name == "指定なし":
+        return []
+    group_symbols = custom_groups.get(group_name, [])
+    if not group_symbols:
+        return []
+    available_set = {str(symbol).zfill(4) for symbol in symbols}
+    return sorted(
+        {
+            str(code).zfill(4)
+            for code in group_symbols
+            if str(code).zfill(4) in available_set
+        }
+    )
+
+
 def _limit_pairs_per_sector(
     pairs_df: pd.DataFrame, sector_col: str, max_pairs_per_sector: int
 ) -> pd.DataFrame:
@@ -3448,6 +3468,25 @@ def main():
                     manual_symbol_options = cached_pair_symbols
                 else:
                     st.info("ペアキャッシュに銘柄がありません。全銘柄を表示します。")
+            manual_group_choice = st.selectbox(
+                "手動グループから一括選択",
+                options=["指定なし", *group_names],
+                help="手動分類で登録したグループの銘柄を比較対象にまとめて反映します。",
+            )
+            manual_group_symbols = _get_manual_group_symbols(
+                custom_groups, manual_group_choice, symbols
+            )
+            if manual_group_choice != "指定なし" and not manual_group_symbols:
+                st.info("選択した手動グループに比較可能な銘柄がありません。")
+            if manual_group_symbols:
+                manual_symbol_options = [
+                    symbol
+                    for symbol in manual_symbol_options
+                    if symbol in manual_group_symbols
+                ]
+            if not manual_symbol_options:
+                st.warning("比較対象の銘柄がありません。条件を見直してください。")
+                manual_symbol_options = symbols
             manual_cols = st.columns(2)
             with manual_cols[0]:
                 manual_symbol_a = st.selectbox(
@@ -3505,42 +3544,65 @@ def main():
                     key="pair_manual_exit_threshold",
                 )
 
-            run_manual_pair = st.button("選択ペアを分析", type="primary", key="pair_manual_run")
-            if run_manual_pair:
-                if manual_symbol_a == manual_symbol_b:
+            def _run_manual_pair_analysis(symbol_a: str, symbol_b: str) -> None:
+                if symbol_a == symbol_b:
                     st.warning("異なる銘柄を選択してください。")
                     st.session_state["pair_manual_result"] = pd.DataFrame()
                     st.session_state["pair_manual_metrics"] = None
                     st.session_state["pair_manual_spread_metrics"] = None
                     st.session_state["pair_manual_cache_hit"] = False
-                else:
-                    with st.spinner("ペア指標を計算しています..."):
-                        df_pair, spread_metrics = compute_spread_series(
-                            manual_symbol_a, manual_symbol_b
+                    return
+                with st.spinner("ペア指標を計算しています..."):
+                    df_pair, spread_metrics = compute_spread_series(
+                        symbol_a, symbol_b
+                    )
+                    manual_long_window = (
+                        int(manual_long_window_input)
+                        if manual_long_window_input and manual_long_window_input >= 5
+                        else None
+                    )
+                    cached_metrics = _lookup_cached_pair_metrics(
+                        cached_pairs_df, symbol_a, symbol_b
+                    )
+                    st.session_state["pair_manual_cache_hit"] = (
+                        cached_metrics is not None
+                    )
+                    if use_cached_metrics and cached_metrics is not None:
+                        manual_metrics = cached_metrics
+                    else:
+                        manual_metrics = compute_pair_metrics(
+                            symbol_a,
+                            symbol_b,
+                            recent_window=int(manual_recent_window),
+                            long_window=manual_long_window,
                         )
-                        manual_long_window = (
-                            int(manual_long_window_input)
-                            if manual_long_window_input and manual_long_window_input >= 5
-                            else None
-                        )
-                        cached_metrics = _lookup_cached_pair_metrics(
-                            cached_pairs_df, manual_symbol_a, manual_symbol_b
-                        )
-                        st.session_state["pair_manual_cache_hit"] = (
-                            cached_metrics is not None
-                        )
-                        if use_cached_metrics and cached_metrics is not None:
-                            manual_metrics = cached_metrics
-                        else:
-                            manual_metrics = compute_pair_metrics(
-                                manual_symbol_a,
-                                manual_symbol_b,
-                                recent_window=int(manual_recent_window),
-                                long_window=manual_long_window,
-                            )
-                        st.session_state["pair_manual_result"] = df_pair
-                        st.session_state["pair_manual_metrics"] = manual_metrics
-                        st.session_state["pair_manual_spread_metrics"] = spread_metrics
+                    st.session_state["pair_manual_result"] = df_pair
+                    st.session_state["pair_manual_metrics"] = manual_metrics
+                    st.session_state["pair_manual_spread_metrics"] = spread_metrics
+
+            run_buttons = st.columns([1, 1])
+            with run_buttons[0]:
+                run_manual_pair = st.button(
+                    "選択ペアを分析", type="primary", key="pair_manual_run"
+                )
+            with run_buttons[1]:
+                group_pair_disabled = not manual_group_symbols or len(manual_group_symbols) < 2
+                run_group_pair = st.button(
+                    "グループ内比較を実行",
+                    type="secondary",
+                    disabled=group_pair_disabled,
+                    key="pair_manual_group_run",
+                )
+            if run_manual_pair:
+                _run_manual_pair_analysis(manual_symbol_a, manual_symbol_b)
+            if run_group_pair and manual_group_symbols and len(manual_group_symbols) >= 2:
+                group_symbol_a = manual_group_symbols[0]
+                group_symbol_b = manual_group_symbols[1]
+                st.session_state["pair_manual_symbol_a"] = group_symbol_a
+                st.session_state["pair_manual_symbol_b"] = group_symbol_b
+                _run_manual_pair_analysis(group_symbol_a, group_symbol_b)
+            elif run_group_pair:
+                st.warning("グループ内の銘柄が2件以上必要です。")
 
             manual_result = st.session_state.get("pair_manual_result")
             if manual_result is not None:
@@ -3571,7 +3633,7 @@ def main():
             else []
         )
 
-        pair_filters = st.columns([1, 1, 1])
+        pair_filters = st.columns([1, 1, 1, 1])
         with pair_filters[0]:
             sector17_choice = st.selectbox(
                 "sector17 フィルタ",
@@ -3587,6 +3649,12 @@ def main():
                 "探索範囲",
                 options=["キャッシュ全体", "選択銘柄起点(同一セクター)"],
                 help="ペアキャッシュ内で対象範囲を絞り込みます。",
+            )
+        with pair_filters[3]:
+            manual_group_filter = st.selectbox(
+                "手動グループ",
+                options=["指定なし", *group_names],
+                help="手動グループに含まれる銘柄だけに絞り込みます。",
             )
         pair_limit_filters = st.columns([1])
         with pair_limit_filters[0]:
@@ -3716,6 +3784,11 @@ def main():
         max_pairs_per_symbol_limit = (
             int(max_pairs_per_symbol) if max_pairs_per_symbol and max_pairs_per_symbol > 0 else None
         )
+        manual_group_symbols = _get_manual_group_symbols(
+            custom_groups, manual_group_filter, symbols
+        )
+        if manual_group_filter != "指定なし" and not manual_group_symbols:
+            st.info("選択した手動グループに比較可能な銘柄がありません。")
         min_pair_samples = compute_min_pair_samples(int(recent_window), long_window)
         required_samples = max(min_pair_samples, pair_search_history)
         st.caption(
@@ -3830,6 +3903,16 @@ def main():
             st.caption(
                 "ペアキャッシュ更新時は対象セクターを絞り込んで作成できます。"
             )
+            manual_group_cache = st.selectbox(
+                "手動グループ(任意)",
+                options=["指定なし", *group_names],
+                help="手動グループ内の銘柄だけでペア候補を作成します。",
+            )
+            manual_group_cache_symbols = _get_manual_group_symbols(
+                custom_groups, manual_group_cache, symbols
+            )
+            if manual_group_cache != "指定なし" and not manual_group_cache_symbols:
+                st.info("選択した手動グループにキャッシュ対象の銘柄がありません。")
             cache_scope = st.selectbox(
                 "キャッシュ作成対象",
                 options=["全セクター", "sector17", "sector33"],
@@ -3857,9 +3940,17 @@ def main():
             if update_cache:
                 sector17_filter = cache_sector17
                 sector33_filter = cache_sector33
+                target_symbols = (
+                    manual_group_cache_symbols
+                    if manual_group_cache != "指定なし"
+                    else symbols
+                )
+                if manual_group_cache != "指定なし" and len(target_symbols) < 2:
+                    st.warning("手動グループ内の銘柄が2件以上必要です。")
+                    target_symbols = []
                 pair_candidates = generate_pairs_by_sector_candidates(
                     listed_df=listed_df,
-                    symbols=symbols,
+                    symbols=target_symbols,
                     sector17=sector17_filter,
                     sector33=sector33_filter,
                     max_pairs_per_sector=None,
@@ -3913,6 +4004,9 @@ def main():
                         "max_pairs_per_symbol": max_pairs_per_symbol_limit,
                         "pair_search_history": int(pair_search_history),
                         "cache_scope": cache_scope,
+                        "manual_group": manual_group_cache
+                        if manual_group_cache != "指定なし"
+                        else None,
                     }
                     _save_pair_cache(results_df, metadata)
                     st.success("ペアキャッシュを更新しました。")
@@ -3929,13 +4023,18 @@ def main():
             sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
             sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
             anchor_symbol = selected_symbol if search_scope == "選択銘柄起点(同一セクター)" else None
-            filtered_df = _filter_cached_pairs(
-                cached_pairs_df,
-                sector17_filter,
-                sector33_filter,
-                anchor_symbol,
-                available_symbols=symbols,
-            )
+            if manual_group_filter != "指定なし" and not manual_group_symbols:
+                filtered_df = cached_pairs_df.iloc[0:0]
+                st.warning("手動グループ内の銘柄が2件以上必要です。")
+            else:
+                available_symbols = manual_group_symbols or symbols
+                filtered_df = _filter_cached_pairs(
+                    cached_pairs_df,
+                    sector17_filter,
+                    sector33_filter,
+                    anchor_symbol,
+                    available_symbols=available_symbols,
+                )
             if max_pairs_per_symbol_limit is not None:
                 filtered_df = _limit_pairs_per_symbol(
                     filtered_df, max_pairs_per_symbol_limit
