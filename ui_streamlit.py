@@ -1750,7 +1750,7 @@ def main():
     group_mode = st.sidebar.selectbox(
         "編集対象グループ",
         options=["新規作成"] + group_names,
-        key="manual_group_mode",
+        key="manual_group_mode_sidebar",
     )
     if group_mode == "新規作成":
         default_group_name = ""
@@ -1762,14 +1762,14 @@ def main():
     group_name = st.sidebar.text_input(
         "グループ名",
         value=default_group_name,
-        key="manual_group_name",
+        key="manual_group_name_sidebar",
         help="新規作成時はここにグループ名を入力してください。",
     )
 
     search_text = st.sidebar.text_input(
         "銘柄検索",
         value="",
-        key="manual_group_search",
+        key="manual_group_search_sidebar",
         help="コードまたは名称の一部で検索できます。",
     )
 
@@ -1784,7 +1784,7 @@ def main():
         sector_filter_label = st.sidebar.selectbox(
             "セクター分類",
             options=["指定なし"] + sector_choices,
-            key="manual_group_sector_type",
+            key="manual_group_sector_type_sidebar",
             help="業種分類を選ぶとサブカテゴリ（業種）で絞り込みできます。",
         )
         if sector_filter_label != "指定なし":
@@ -1805,7 +1805,7 @@ def main():
             sector_filter_value = st.sidebar.selectbox(
                 "サブカテゴリ（業種）",
                 options=["指定なし"] + sector_values,
-                key="manual_group_sector_value",
+                key="manual_group_sector_value_sidebar",
                 help="業種名でさらに絞り込みできます。",
             )
 
@@ -1829,7 +1829,7 @@ def main():
         filtered_codes = all_option_codes
 
     selected_codes = list(
-        st.session_state.get("manual_group_codes", current_group_codes)
+        st.session_state.get("manual_group_codes_sidebar", current_group_codes)
     )
     if sector_filter_label and sector_filter_label != "指定なし":
         selected_codes = [
@@ -1845,16 +1845,16 @@ def main():
     with col_bulk_add:
         if st.button("検索結果を追加", key="manual_group_bulk_add"):
             merged = list(dict.fromkeys(selected_codes + filtered_codes))
-            st.session_state["manual_group_codes"] = merged
+            st.session_state["manual_group_codes_sidebar"] = merged
             st.rerun()
     with col_bulk_remove:
         if st.button("検索結果を除外", key="manual_group_bulk_remove"):
             remaining = [code for code in selected_codes if code not in filtered_codes]
-            st.session_state["manual_group_codes"] = remaining
+            st.session_state["manual_group_codes_sidebar"] = remaining
             st.rerun()
     with col_bulk_clear:
         if st.button("選択をクリア", key="manual_group_bulk_clear"):
-            st.session_state["manual_group_codes"] = []
+            st.session_state["manual_group_codes_sidebar"] = []
             st.rerun()
 
     selected_codes = st.sidebar.multiselect(
@@ -1862,7 +1862,7 @@ def main():
         options=option_codes,
         default=selected_codes,
         format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
-        key="manual_group_codes",
+        key="manual_group_codes_sidebar",
     )
     st.sidebar.caption(f"選択中: {len(selected_codes)}件")
 
@@ -1871,7 +1871,7 @@ def main():
             sector_display_label = st.selectbox(
                 "表示するセクター分類",
                 options=sector_choices,
-                key="manual_group_sector_display",
+                key="manual_group_sector_display_sidebar",
             )
             sector_display_column = sector_columns[sector_display_label]
             sector_display_df = listed_df[["code", "name", sector_display_column]].copy()
@@ -1898,7 +1898,7 @@ def main():
 
     col_save, col_delete = st.sidebar.columns(2)
     with col_save:
-        if st.button("保存/更新", key="manual_group_save"):
+        if st.button("保存/更新", key="manual_group_save_sidebar"):
             if not group_name.strip():
                 st.sidebar.error("グループ名を入力してください。")
             elif group_mode != "新規作成" and group_name != group_mode and group_name in custom_groups:
@@ -1914,7 +1914,7 @@ def main():
                 except Exception as exc:
                     st.sidebar.error(f"保存に失敗しました: {exc}")
     with col_delete:
-        if st.button("削除", key="manual_group_delete"):
+        if st.button("削除", key="manual_group_delete_sidebar"):
             if group_mode == "新規作成":
                 st.sidebar.error("削除対象のグループを選択してください。")
             else:
