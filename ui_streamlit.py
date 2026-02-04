@@ -197,6 +197,180 @@ def _save_pair_cache(pairs_df: pd.DataFrame, metadata: Dict[str, object]) -> Non
     PAIR_CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _render_manual_group_ui(
+    custom_groups: Dict[str, List[str]],
+    symbols: List[str],
+    listed_df: pd.DataFrame,
+    name_map: Dict[str, str],
+    load_error: Optional[str] = None,
+) -> None:
+    st.subheader("手動分類")
+    if load_error:
+        st.warning(load_error)
+
+    group_names = sorted(custom_groups)
+    group_mode = st.selectbox(
+        "編集対象グループ",
+        options=["新規作成"] + group_names,
+        key="manual_group_mode",
+    )
+    if group_mode == "新規作成":
+        default_group_name = ""
+        current_group_codes: List[str] = []
+    else:
+        default_group_name = group_mode
+        current_group_codes = custom_groups.get(group_mode, [])
+
+    group_name = st.text_input(
+        "グループ名",
+        value=default_group_name,
+        key="manual_group_name",
+        help="新規作成時はここにグループ名を入力してください。",
+    )
+
+    search_text = st.text_input(
+        "銘柄検索",
+        value="",
+        key="manual_group_search",
+        help="コードまたは名称の一部で検索できます。",
+    )
+
+    sector_columns = {"17業種": "sector17", "33業種": "sector33"}
+    sector_choices = [
+        label for label, col in sector_columns.items() if col in listed_df.columns
+    ]
+    sector_filter_label = None
+    sector_filter_value = None
+    sector_map: Dict[str, str] = {}
+    if sector_choices:
+        sector_filter_label = st.selectbox(
+            "セクター分類",
+            options=["指定なし"] + sector_choices,
+            key="manual_group_sector_type",
+            help="業種分類を選ぶとサブカテゴリ（業種）で絞り込みできます。",
+        )
+        if sector_filter_label != "指定なし":
+            sector_column = sector_columns[sector_filter_label]
+            sector_map = dict(
+                zip(
+                    listed_df["code"].astype(str).str.zfill(4),
+                    listed_df[sector_column].astype(str),
+                )
+            )
+            sector_values = sorted(
+                {
+                    value
+                    for value in sector_map.values()
+                    if value and value != "nan"
+                }
+            )
+            sector_filter_value = st.selectbox(
+                "サブカテゴリ（業種）",
+                options=["指定なし"] + sector_values,
+                key="manual_group_sector_value",
+                help="業種名でさらに絞り込みできます。",
+            )
+
+    available_symbol_set = set(symbols)
+    all_option_codes = sorted(available_symbol_set | set(current_group_codes))
+    if sector_filter_label and sector_filter_label != "指定なし" and sector_filter_value:
+        if sector_filter_value != "指定なし":
+            all_option_codes = [
+                code
+                for code in all_option_codes
+                if sector_map.get(code) == sector_filter_value
+            ]
+    if search_text:
+        keyword = search_text.strip().lower()
+        filtered_codes = [
+            code
+            for code in all_option_codes
+            if keyword in code.lower() or keyword in name_map.get(code, "").lower()
+        ]
+    else:
+        filtered_codes = all_option_codes
+
+    selected_codes = list(current_group_codes)
+    if sector_filter_label and sector_filter_label != "指定なし":
+        selected_codes = [
+            code
+            for code in selected_codes
+            if sector_filter_value in (None, "指定なし")
+            or sector_map.get(code) == sector_filter_value
+        ]
+    selected_codes = list(dict.fromkeys(selected_codes))
+    option_codes = sorted(set(filtered_codes) | set(selected_codes))
+
+    selected_codes = st.multiselect(
+        "銘柄を選択",
+        options=option_codes,
+        default=current_group_codes,
+        format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+        key="manual_group_codes",
+    )
+    st.caption(f"選択中: {len(selected_codes)}件")
+
+    with st.expander("セクター別の銘柄一覧", expanded=False):
+        if sector_choices:
+            sector_display_label = st.selectbox(
+                "表示するセクター分類",
+                options=sector_choices,
+                key="manual_group_sector_display",
+            )
+            sector_display_column = sector_columns[sector_display_label]
+            sector_display_df = listed_df[["code", "name", sector_display_column]].copy()
+            sector_display_df["code"] = sector_display_df["code"].astype(str).str.zfill(4)
+            sector_display_df.rename(
+                columns={
+                    "code": "コード",
+                    "name": "名称",
+                    sector_display_column: "業種",
+                },
+                inplace=True,
+            )
+            if sector_filter_value and sector_filter_value != "指定なし":
+                sector_display_df = sector_display_df[
+                    sector_display_df["業種"] == sector_filter_value
+                ]
+            st.dataframe(
+                sector_display_df.sort_values(["業種", "コード"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("銘柄マスタにセクター情報がありません。")
+
+    col_save, col_delete = st.columns(2)
+    with col_save:
+        if st.button("保存/更新", key="manual_group_save"):
+            if not group_name.strip():
+                st.error("グループ名を入力してください。")
+            elif group_mode != "新規作成" and group_name != group_mode and group_name in custom_groups:
+                st.error("同名のグループが既に存在します。")
+            else:
+                if group_mode != "新規作成" and group_name != group_mode:
+                    custom_groups.pop(group_mode, None)
+                custom_groups[group_name] = selected_codes
+                try:
+                    save_custom_groups(custom_groups)
+                    st.success("グループを保存しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"保存に失敗しました: {exc}")
+    with col_delete:
+        if st.button("削除", key="manual_group_delete"):
+            if group_mode == "新規作成":
+                st.error("削除対象のグループを選択してください。")
+            else:
+                custom_groups.pop(group_mode, None)
+                try:
+                    save_custom_groups(custom_groups)
+                    st.success("グループを削除しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"削除に失敗しました: {exc}")
+
+
 def _filter_cached_pairs(
     pairs_df: pd.DataFrame,
     sector17: Optional[str],
@@ -1566,13 +1740,12 @@ def main():
         if getattr(row, "name", None) is not None
     }
 
-    st.sidebar.subheader("手動分類")
     try:
         custom_groups = load_custom_groups()
+        custom_groups_error = None
     except Exception as exc:
-        st.sidebar.warning(f"custom_groups.json の読み込みに失敗しました: {exc}")
         custom_groups = {}
-
+        custom_groups_error = f"custom_groups.json の読み込みに失敗しました: {exc}"
     group_names = sorted(custom_groups)
     group_mode = st.sidebar.selectbox(
         "編集対象グループ",
@@ -1893,8 +2066,15 @@ def main():
         help="0.0は安値引け、1.0は高値引け。",
     )
 
-    tab_chart, tab_screen, tab_pair, tab_backtest, tab_breadth = st.tabs(
-        ["チャート表示", "スクリーナー", "ペアトレード", "バックテスト", "マーケットブレッドス"]
+    tab_chart, tab_screen, tab_pair, tab_backtest, tab_breadth, tab_manual = st.tabs(
+        [
+            "チャート表示",
+            "スクリーナー",
+            "ペアトレード",
+            "バックテスト",
+            "マーケットブレッドス",
+            "手動分類",
+        ]
     )
 
     with tab_chart:
@@ -5227,6 +5407,15 @@ def main():
         fig_trin.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300)
         fig_trin.update_xaxes(type="category")
         st.plotly_chart(fig_trin, use_container_width=True)
+
+    with tab_manual:
+        _render_manual_group_ui(
+            custom_groups=custom_groups,
+            symbols=symbols,
+            listed_df=listed_df,
+            name_map=name_map,
+            load_error=custom_groups_error,
+        )
 
 if __name__ == "__main__":
     main()
