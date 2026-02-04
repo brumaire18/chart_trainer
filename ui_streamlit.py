@@ -1746,6 +1746,7 @@ def main():
     except Exception as exc:
         custom_groups = {}
         custom_groups_error = f"custom_groups.json の読み込みに失敗しました: {exc}"
+    group_names = sorted(custom_groups)
     if not symbols:
         st.sidebar.warning("data/price_csv にCSVファイルがありません。")
         st.info("先に data/price_csv に株価CSVを置くか、J-Quantsからダウンロードしてください。")
