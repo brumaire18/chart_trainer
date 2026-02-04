@@ -35,6 +35,7 @@ from app.backtest import (
     grid_search_selling_climax,
     run_canslim_backtest,
     run_minervini_backtest,
+    run_minervini_grid_search,
     scan_canslim_patterns,
     scan_cup_with_handle_screen,
 )
@@ -4393,6 +4394,96 @@ def main():
         if minervini_results is not None and not minervini_results.empty:
             st.markdown("#### シグナル一覧")
             st.dataframe(minervini_results.head(200), use_container_width=True)
+
+        st.markdown("#### ミネルヴィニ条件グリッドサーチ")
+        st.caption(
+            "候補値の組み合わせでバックテスト指標を比較し、緩和条件の当たりを探します。"
+        )
+        grid_col1, grid_col2 = st.columns(2)
+        with grid_col1:
+            grid_rs_values = st.text_input(
+                "RS評価の候補（カンマ区切り）",
+                value="50,60,70",
+                key="minervini_grid_rs_values",
+            )
+            grid_low_values = st.text_input(
+                "52週安値乖離の候補（カンマ区切り）",
+                value="-0.4,-0.3,-0.2",
+                key="minervini_grid_low_values",
+            )
+            grid_slope_values = st.text_input(
+                "SMA200傾きの候補（日, カンマ区切り）",
+                value="10,20,30",
+                key="minervini_grid_slope_values",
+            )
+        with grid_col2:
+            grid_high_values = st.text_input(
+                "52週高値乖離の候補（カンマ区切り）",
+                value="0.2,0.25,0.3",
+                key="minervini_grid_high_values",
+            )
+            grid_min_signals = st.number_input(
+                "最小シグナル数（少なすぎる条件を除外）",
+                min_value=1,
+                max_value=500,
+                value=10,
+                step=1,
+                key="minervini_grid_min_signals",
+            )
+
+        run_minervini_grid = st.button(
+            "ミネルヴィニ条件グリッドサーチを実行",
+            type="secondary",
+            key="minervini_grid_run",
+        )
+        if run_minervini_grid:
+            try:
+                rs_values = _parse_grid_values(grid_rs_values, float)
+                low_values = _parse_grid_values(grid_low_values, float)
+                high_values = _parse_grid_values(grid_high_values, float)
+                slope_values = _parse_grid_values(grid_slope_values, int)
+            except ValueError:
+                st.error("候補値の入力形式が正しくありません。数値をカンマ区切りで入力してください。")
+                st.stop()
+            if not rs_values or not low_values or not high_values or not slope_values:
+                st.error("候補値は空にできません。")
+                st.stop()
+
+            grid_progress, grid_done = _build_progress_updater(
+                "ミネルヴィニ グリッドサーチ"
+            )
+            grid_results = run_minervini_grid_search(
+                lookahead=int(minervini_lookahead),
+                return_threshold=float(minervini_return_threshold),
+                rs_thresholds=rs_values,
+                low_from_low_pcts=low_values,
+                high_from_high_pcts=high_values,
+                slope_lookback_days_list=slope_values,
+                min_signals=int(grid_min_signals),
+                progress_callback=grid_progress,
+            )
+            grid_done()
+            st.session_state["minervini_grid_results"] = grid_results
+
+        grid_results = st.session_state.get("minervini_grid_results")
+        if grid_results is not None and not grid_results.empty:
+            display_grid = grid_results.copy()
+            display_grid["win_rate"] = (display_grid["win_rate"] * 100).round(1)
+            display_grid["avg_return"] = (display_grid["avg_return"] * 100).round(2)
+            display_grid["median_return"] = (display_grid["median_return"] * 100).round(2)
+            display_grid = display_grid.rename(
+                columns={
+                    "rs_threshold": "RS評価",
+                    "low_from_low_pct": "52週安値乖離",
+                    "high_from_high_pct": "52週高値乖離",
+                    "slope_lookback_days": "SMA200傾き(日)",
+                    "signal_count": "シグナル数",
+                    "win_rate": "勝率(%)",
+                    "avg_return": "平均ピークリターン(%)",
+                    "median_return": "中央値ピークリターン(%)",
+                }
+            )
+            st.dataframe(display_grid, use_container_width=True)
 
         st.divider()
         st.subheader("カップ形状のグリッドサーチ")

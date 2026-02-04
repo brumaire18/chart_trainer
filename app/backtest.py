@@ -567,22 +567,15 @@ def run_canslim_backtest(
     return results_df, summary_df
 
 
-def run_minervini_backtest(
-    symbols: Optional[Iterable[str]] = None,
-    lookahead: int = 20,
-    return_threshold: float = 0.05,
-    config: Optional[MinerviniScreenConfig] = None,
+def _build_minervini_panel(
+    symbols: Optional[Iterable[str]],
+    lookahead: int,
+    slope_lookback_days: int,
     progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    ミネルヴィニ・トレンドテンプレートの条件に合致した日をシグナルとして扱い、
-    その後のピークリターンで評価するバックテストを行う。
-    """
-
-    config = config or MinerviniScreenConfig()
+) -> pd.DataFrame:
     target_symbols = list(symbols) if symbols is not None else get_available_symbols()
     if not target_symbols:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
     indicator_frames: List[pd.DataFrame] = []
     total_symbols = len(target_symbols)
@@ -601,7 +594,7 @@ def run_minervini_backtest(
             continue
 
         indicator_df = compute_minervini_indicators(
-            price_df, slope_lookback_days=config.slope_lookback_days
+            price_df, slope_lookback_days=slope_lookback_days
         )
         if indicator_df.empty:
             if progress_callback:
@@ -628,33 +621,39 @@ def run_minervini_backtest(
             progress_callback(idx, total_symbols, "銘柄スキャン")
 
     if not indicator_frames:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
     combined = pd.concat(indicator_frames, ignore_index=True)
     combined["rs_rating"] = (
         combined.groupby("date")["return_52w"].rank(pct=True) * 100
     )
+    return combined
 
-    combined["price_above_150_200"] = (combined["close"] > combined["sma150"]) & (
-        combined["close"] > combined["sma200"]
-    )
-    combined["ma150_above_200"] = combined["sma150"] > combined["sma200"]
-    combined["sma200_rising"] = combined["sma200_slope"] > 0
-    combined["ma50_above_150_200"] = (combined["sma50"] > combined["sma150"]) & (
-        combined["sma50"] > combined["sma200"]
-    )
-    combined["price_above_50"] = combined["close"] > combined["sma50"]
 
-    low_threshold = combined["low_52w"] * (1 + config.low_from_low_pct)
+def _apply_minervini_conditions(
+    combined: pd.DataFrame, config: MinerviniScreenConfig
+) -> pd.DataFrame:
+    enriched = combined.copy()
+    enriched["price_above_150_200"] = (enriched["close"] > enriched["sma150"]) & (
+        enriched["close"] > enriched["sma200"]
+    )
+    enriched["ma150_above_200"] = enriched["sma150"] > enriched["sma200"]
+    enriched["sma200_rising"] = enriched["sma200_slope"] > 0
+    enriched["ma50_above_150_200"] = (enriched["sma50"] > enriched["sma150"]) & (
+        enriched["sma50"] > enriched["sma200"]
+    )
+    enriched["price_above_50"] = enriched["close"] > enriched["sma50"]
+
+    low_threshold = enriched["low_52w"] * (1 + config.low_from_low_pct)
     if config.low_from_low_pct >= 0:
-        combined["low_condition"] = combined["close"] >= low_threshold
+        enriched["low_condition"] = enriched["close"] >= low_threshold
     else:
-        combined["low_condition"] = combined["close"] <= low_threshold
+        enriched["low_condition"] = enriched["close"] <= low_threshold
 
-    combined["high_condition"] = combined["close"] >= combined["high_52w"] * (
+    enriched["high_condition"] = enriched["close"] >= enriched["high_52w"] * (
         1 - config.high_from_high_pct
     )
-    combined["rs_condition"] = combined["rs_rating"] >= config.rs_threshold
+    enriched["rs_condition"] = enriched["rs_rating"] >= config.rs_threshold
 
     condition_cols = [
         "price_above_150_200",
@@ -666,7 +665,72 @@ def run_minervini_backtest(
         "high_condition",
         "rs_condition",
     ]
-    combined["passes_trend_template"] = combined[condition_cols].all(axis=1)
+    enriched["passes_trend_template"] = enriched[condition_cols].all(axis=1)
+    return enriched
+
+
+def _evaluate_minervini_config(
+    combined: pd.DataFrame,
+    config: MinerviniScreenConfig,
+    return_threshold: float,
+) -> Optional[Dict[str, float]]:
+    enriched = _apply_minervini_conditions(combined, config)
+    signals = enriched[
+        enriched["passes_trend_template"]
+        & enriched["future_max_close"].notna()
+        & enriched["close"].notna()
+        & (enriched["close"] > 0)
+    ].copy()
+    if signals.empty:
+        return None
+
+    signals["peak_return"] = (signals["future_max_close"] - signals["close"]) / signals[
+        "close"
+    ]
+    win_mask = signals["peak_return"] >= return_threshold
+    signal_count = float(len(signals))
+    win_rate = float(win_mask.mean()) if signal_count else 0.0
+    return {
+        "signal_count": signal_count,
+        "win_rate": win_rate,
+        "avg_return": float(signals["peak_return"].mean()),
+        "median_return": float(signals["peak_return"].median()),
+    }
+
+
+def run_minervini_backtest(
+    symbols: Optional[Iterable[str]] = None,
+    lookahead: int = 20,
+    return_threshold: float = 0.05,
+    config: Optional[MinerviniScreenConfig] = None,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ミネルヴィニ・トレンドテンプレートの条件に合致した日をシグナルとして扱い、
+    その後のピークリターンで評価するバックテストを行う。
+    """
+
+    config = config or MinerviniScreenConfig()
+    combined = _build_minervini_panel(
+        symbols=symbols,
+        lookahead=lookahead,
+        slope_lookback_days=config.slope_lookback_days,
+        progress_callback=progress_callback,
+    )
+    if combined.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    combined = _apply_minervini_conditions(combined, config)
+    condition_cols = [
+        "price_above_150_200",
+        "ma150_above_200",
+        "sma200_rising",
+        "ma50_above_150_200",
+        "price_above_50",
+        "low_condition",
+        "high_condition",
+        "rs_condition",
+    ]
 
     signals = combined[
         combined["passes_trend_template"]
@@ -704,6 +768,87 @@ def run_minervini_backtest(
         .reset_index(drop=True)
     )
     return results_df, summary_df
+
+
+def run_minervini_grid_search(
+    symbols: Optional[Iterable[str]] = None,
+    lookahead: int = 20,
+    return_threshold: float = 0.05,
+    rs_thresholds: Optional[Iterable[float]] = None,
+    low_from_low_pcts: Optional[Iterable[float]] = None,
+    high_from_high_pcts: Optional[Iterable[float]] = None,
+    slope_lookback_days_list: Optional[Iterable[int]] = None,
+    min_signals: int = 10,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+) -> pd.DataFrame:
+    rs_thresholds = list(rs_thresholds) if rs_thresholds is not None else [70.0]
+    low_from_low_pcts = (
+        list(low_from_low_pcts) if low_from_low_pcts is not None else [-0.3]
+    )
+    high_from_high_pcts = (
+        list(high_from_high_pcts) if high_from_high_pcts is not None else [0.25]
+    )
+    slope_lookback_days_list = (
+        list(slope_lookback_days_list)
+        if slope_lookback_days_list is not None
+        else [20]
+    )
+
+    results: List[Dict[str, float]] = []
+    total_configs = (
+        len(rs_thresholds)
+        * len(low_from_low_pcts)
+        * len(high_from_high_pcts)
+        * len(slope_lookback_days_list)
+    )
+    progress_count = 0
+
+    for slope_lookback_days in slope_lookback_days_list:
+        combined = _build_minervini_panel(
+            symbols=symbols,
+            lookahead=lookahead,
+            slope_lookback_days=slope_lookback_days,
+            progress_callback=None,
+        )
+        if combined.empty:
+            continue
+
+        for rs_threshold in rs_thresholds:
+            for low_from_low_pct in low_from_low_pcts:
+                for high_from_high_pct in high_from_high_pcts:
+                    progress_count += 1
+                    if progress_callback:
+                        progress_callback(progress_count, total_configs, "条件評価")
+                    config = MinerviniScreenConfig(
+                        rs_threshold=float(rs_threshold),
+                        low_from_low_pct=float(low_from_low_pct),
+                        high_from_high_pct=float(high_from_high_pct),
+                        slope_lookback_days=int(slope_lookback_days),
+                    )
+                    stats = _evaluate_minervini_config(
+                        combined, config, return_threshold
+                    )
+                    if stats is None:
+                        continue
+                    if stats["signal_count"] < min_signals:
+                        continue
+                    results.append(
+                        {
+                            "rs_threshold": float(rs_threshold),
+                            "low_from_low_pct": float(low_from_low_pct),
+                            "high_from_high_pct": float(high_from_high_pct),
+                            "slope_lookback_days": int(slope_lookback_days),
+                            **stats,
+                        }
+                    )
+
+    if not results:
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(results)
+    return result_df.sort_values(
+        ["win_rate", "avg_return", "signal_count"], ascending=[False, False, False]
+    ).reset_index(drop=True)
 
 
 def run_new_high_breakout_backtest(
