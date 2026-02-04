@@ -1655,7 +1655,9 @@ def main():
     else:
         filtered_codes = all_option_codes
 
-    selected_codes = list(current_group_codes)
+    selected_codes = list(
+        st.session_state.get("manual_group_codes", current_group_codes)
+    )
     if sector_filter_label and sector_filter_label != "指定なし":
         selected_codes = [
             code
@@ -1666,10 +1668,26 @@ def main():
     selected_codes = list(dict.fromkeys(selected_codes))
     option_codes = sorted(set(filtered_codes) | set(selected_codes))
 
+    col_bulk_add, col_bulk_remove, col_bulk_clear = st.sidebar.columns(3)
+    with col_bulk_add:
+        if st.button("検索結果を追加", key="manual_group_bulk_add"):
+            merged = list(dict.fromkeys(selected_codes + filtered_codes))
+            st.session_state["manual_group_codes"] = merged
+            st.rerun()
+    with col_bulk_remove:
+        if st.button("検索結果を除外", key="manual_group_bulk_remove"):
+            remaining = [code for code in selected_codes if code not in filtered_codes]
+            st.session_state["manual_group_codes"] = remaining
+            st.rerun()
+    with col_bulk_clear:
+        if st.button("選択をクリア", key="manual_group_bulk_clear"):
+            st.session_state["manual_group_codes"] = []
+            st.rerun()
+
     selected_codes = st.sidebar.multiselect(
         "銘柄を選択",
         options=option_codes,
-        default=current_group_codes,
+        default=selected_codes,
         format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
         key="manual_group_codes",
     )
