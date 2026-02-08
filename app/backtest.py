@@ -213,6 +213,18 @@ def _detect_selling_climax_candidates(
     volume_multiplier: float,
     drop_pct: float,
     close_position: float,
+    atr_lookback: Optional[int] = None,
+    drop_atr_mult: Optional[float] = None,
+    drop_condition_mode: str = "drop_pct_only",
+    trend_ma_len: Optional[int] = None,
+    trend_mode: str = "none",
+    min_avg_dollar_volume: Optional[float] = None,
+    min_avg_volume: Optional[float] = None,
+    liquidity_lookback: int = 20,
+    vol_percentile_threshold: Optional[float] = None,
+    vol_lookback2: Optional[int] = None,
+    max_gap_pct: Optional[float] = None,
+    index_filter_mask: Optional[pd.Series] = None,
 ) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=bool)
@@ -224,22 +236,143 @@ def _detect_selling_climax_candidates(
     candle_range = df["high"] - df["low"]
     close_pos = (df["close"] - df["low"]) / candle_range.replace(0, np.nan)
 
+    drop_pct_condition = drop_ratio <= -abs(drop_pct)
+
+    drop_atr_condition = pd.Series(False, index=df.index)
+    if atr_lookback is not None and drop_atr_mult is not None and atr_lookback > 0:
+        true_range = pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - prev_close).abs(),
+                (df["low"] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = true_range.rolling(atr_lookback, min_periods=atr_lookback).mean()
+        drop_atr_condition = (-drop_ratio * prev_close) >= (atr * float(drop_atr_mult))
+
+    if drop_condition_mode == "drop_atr_only":
+        drop_condition = drop_atr_condition
+    elif drop_condition_mode == "both":
+        drop_condition = drop_pct_condition & drop_atr_condition
+    else:
+        drop_condition = drop_pct_condition
+
+    trend_condition = pd.Series(True, index=df.index)
+    if trend_ma_len is not None and trend_ma_len > 1 and trend_mode != "none":
+        trend_ma = df["close"].rolling(trend_ma_len, min_periods=trend_ma_len).mean()
+        ma_slope_up = trend_ma > trend_ma.shift(1)
+        close_above_ma = df["close"] >= trend_ma
+        if trend_mode == "reversion_only_in_uptrend":
+            trend_condition = close_above_ma & ma_slope_up
+        elif trend_mode == "exclude_downtrend":
+            trend_condition = ma_slope_up
+        elif trend_mode == "ma_slope_positive":
+            trend_condition = ma_slope_up
+
+    liquidity_condition = pd.Series(True, index=df.index)
+    if min_avg_volume is not None:
+        avg_volume = df["volume"].rolling(liquidity_lookback, min_periods=liquidity_lookback).mean()
+        liquidity_condition &= avg_volume >= float(min_avg_volume)
+    if min_avg_dollar_volume is not None:
+        avg_dollar_volume = (df["close"] * df["volume"]).rolling(
+            liquidity_lookback, min_periods=liquidity_lookback
+        ).mean()
+        liquidity_condition &= avg_dollar_volume >= float(min_avg_dollar_volume)
+
+    volume_shape_condition = pd.Series(True, index=df.index)
+    if vol_percentile_threshold is not None and vol_lookback2 is not None and vol_lookback2 > 1:
+        volume_quantile = (
+            df["volume"].shift(1).rolling(vol_lookback2, min_periods=vol_lookback2).quantile(
+                float(vol_percentile_threshold) / 100.0
+            )
+        )
+        volume_shape_condition = df["volume"] >= volume_quantile
+
+    gap_condition = pd.Series(True, index=df.index)
+    if max_gap_pct is not None:
+        gap_ratio = (df["open"] - prev_close) / prev_close
+        gap_condition = gap_ratio <= float(max_gap_pct)
+
     candidates = (
         (df["close"] <= df["open"])
         & (volume_ratio >= volume_multiplier)
-        & (drop_ratio <= -abs(drop_pct))
+        & drop_condition
         & (candle_range > 0)
         & (close_pos <= close_position)
+        & trend_condition
+        & liquidity_condition
+        & volume_shape_condition
+        & gap_condition
     )
+    if index_filter_mask is not None:
+        candidates &= index_filter_mask.reindex(df.index).fillna(False)
     return candidates.fillna(False)
 
 
-def _label_selling_climax_success(df: pd.DataFrame, confirm_k: int) -> pd.Series:
+def _label_selling_climax_success(
+    df: pd.DataFrame,
+    confirm_k: int,
+    time_stop_bars: Optional[int] = None,
+    stop_atr_mult: Optional[float] = None,
+    trailing_atr_mult: Optional[float] = None,
+    atr_lookback: int = 14,
+) -> pd.Series:
     if df.empty or confirm_k <= 0:
         return pd.Series(dtype=bool)
-    max_close_fwd = df["close"].shift(-1).rolling(confirm_k).max().shift(-(confirm_k - 1))
-    min_low_fwd = df["low"].shift(-1).rolling(confirm_k).min().shift(-(confirm_k - 1))
-    success = (max_close_fwd > df["high"]) & (min_low_fwd >= df["low"])
+    prev_close = df["close"].shift(1)
+    true_range = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = true_range.rolling(atr_lookback, min_periods=atr_lookback).mean()
+
+    max_hold = int(time_stop_bars) if time_stop_bars is not None and time_stop_bars > 0 else confirm_k
+    max_hold = max(max_hold, confirm_k)
+
+    success = pd.Series(False, index=df.index)
+    for i in range(len(df)):
+        if i + 1 >= len(df):
+            continue
+        entry_price = float(df.iloc[i]["close"])
+        trigger_high = float(df.iloc[i]["high"])
+        atr_value = atr.iloc[i]
+        stop_price = -np.inf
+        if stop_atr_mult is not None and pd.notna(atr_value):
+            stop_price = entry_price - float(stop_atr_mult) * float(atr_value)
+
+        highest_close = entry_price
+        is_success = False
+        is_failed = False
+
+        for offset in range(1, max_hold + 1):
+            j = i + offset
+            if j >= len(df):
+                break
+            row = df.iloc[j]
+
+            highest_close = max(highest_close, float(row["close"]))
+            if trailing_atr_mult is not None and pd.notna(atr_value):
+                trail_stop = highest_close - float(trailing_atr_mult) * float(atr_value)
+                stop_price = max(stop_price, trail_stop)
+
+            if stop_price != -np.inf and float(row["low"]) <= stop_price:
+                is_failed = True
+                break
+
+            if offset <= confirm_k and float(row["close"]) > trigger_high:
+                is_success = True
+                break
+
+            if time_stop_bars is not None and offset >= int(time_stop_bars):
+                break
+
+        success.iloc[i] = is_success and (not is_failed)
+
     return success.fillna(False)
 
 
@@ -1081,6 +1214,20 @@ def grid_search_selling_climax(
     drop_pcts: Optional[List[float]] = None,
     close_positions: Optional[List[float]] = None,
     confirm_ks: Optional[List[int]] = None,
+    atr_lookbacks: Optional[List[int]] = None,
+    drop_atr_mults: Optional[List[float]] = None,
+    drop_condition_modes: Optional[List[str]] = None,
+    trend_ma_lens: Optional[List[int]] = None,
+    trend_modes: Optional[List[str]] = None,
+    stop_atr_mults: Optional[List[float]] = None,
+    time_stop_bars_list: Optional[List[int]] = None,
+    trailing_atr_mults: Optional[List[float]] = None,
+    min_avg_dollar_volumes: Optional[List[float]] = None,
+    min_avg_volumes: Optional[List[float]] = None,
+    liquidity_lookback: int = 20,
+    vol_percentile_thresholds: Optional[List[float]] = None,
+    vol_lookback2s: Optional[List[int]] = None,
+    max_gap_pcts: Optional[List[float]] = None,
     min_signals: int = 20,
     gap_penalty: float = 0.5,
     progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
@@ -1096,6 +1243,19 @@ def grid_search_selling_climax(
     drop_pcts = drop_pcts or [0.03, 0.04, 0.05]
     close_positions = close_positions or [0.3, 0.4, 0.5]
     confirm_ks = confirm_ks or [2, 3, 5]
+    atr_lookbacks = atr_lookbacks or [14]
+    drop_atr_mults = drop_atr_mults or [2.0]
+    drop_condition_modes = drop_condition_modes or ["drop_pct_only"]
+    trend_ma_lens = trend_ma_lens or [50]
+    trend_modes = trend_modes or ["none"]
+    stop_atr_mults = stop_atr_mults or [1.5]
+    time_stop_bars_list = time_stop_bars_list or [5]
+    trailing_atr_mults = trailing_atr_mults or [None]
+    min_avg_dollar_volumes = min_avg_dollar_volumes or [None]
+    min_avg_volumes = min_avg_volumes or [None]
+    vol_percentile_thresholds = vol_percentile_thresholds or [None]
+    vol_lookback2s = vol_lookback2s or [20]
+    max_gap_pcts = max_gap_pcts or [None]
 
     target_symbols = list(symbols) if symbols is not None else get_available_symbols()
     if not target_symbols:
@@ -1110,82 +1270,140 @@ def grid_search_selling_climax(
     best_score = float("-inf")
     best_record: Optional[Dict[str, float]] = None
 
-    total_combos = (
-        len(volume_lookbacks)
-        * len(volume_multipliers)
-        * len(drop_pcts)
-        * len(close_positions)
-        * len(confirm_ks)
+    combinations = list(
+        product(
+            volume_lookbacks,
+            volume_multipliers,
+            drop_pcts,
+            close_positions,
+            confirm_ks,
+            atr_lookbacks,
+            drop_atr_mults,
+            drop_condition_modes,
+            trend_ma_lens,
+            trend_modes,
+            stop_atr_mults,
+            time_stop_bars_list,
+            trailing_atr_mults,
+            min_avg_dollar_volumes,
+            min_avg_volumes,
+            vol_percentile_thresholds,
+            vol_lookback2s,
+            max_gap_pcts,
+        )
     )
-    combo_index = 0
+    total_combos = len(combinations)
 
-    for volume_lookback in volume_lookbacks:
-        for volume_multiplier in volume_multipliers:
-            for drop_pct in drop_pcts:
-                for close_position in close_positions:
-                    for confirm_k in confirm_ks:
-                        combo_index += 1
-                        train_signals = 0
-                        train_success = 0
-                        val_signals = 0
-                        val_success = 0
+    for combo_index, (
+        volume_lookback,
+        volume_multiplier,
+        drop_pct,
+        close_position,
+        confirm_k,
+        atr_lookback,
+        drop_atr_mult,
+        drop_condition_mode,
+        trend_ma_len,
+        trend_mode,
+        stop_atr_mult,
+        time_stop_bars,
+        trailing_atr_mult,
+        min_avg_dollar_volume,
+        min_avg_volume,
+        vol_percentile_threshold,
+        vol_lookback2,
+        max_gap_pct,
+    ) in enumerate(combinations, start=1):
+        train_signals = 0
+        train_success = 0
+        val_signals = 0
+        val_success = 0
 
-                        for symbol in target_symbols:
-                            try:
-                                df_price = load_price_csv(symbol)
-                            except Exception:
-                                continue
-                            if df_price.empty:
-                                continue
-                            df_sorted = df_price.sort_values("date").reset_index(drop=True)
-                            candidates = _detect_selling_climax_candidates(
-                                df_sorted,
-                                volume_lookback=volume_lookback,
-                                volume_multiplier=volume_multiplier,
-                                drop_pct=drop_pct,
-                                close_position=close_position,
-                            )
-                            if not candidates.any():
-                                continue
-                            success = _label_selling_climax_success(
-                                df_sorted, confirm_k=confirm_k
-                            )
-                            signal_count = int(candidates.sum())
-                            success_count = int((candidates & success).sum())
-                            if symbol in train_set:
-                                train_signals += signal_count
-                                train_success += success_count
-                            else:
-                                val_signals += signal_count
-                                val_success += success_count
+        for symbol in target_symbols:
+            try:
+                df_price = load_price_csv(symbol)
+            except Exception:
+                continue
+            if df_price.empty:
+                continue
+            df_sorted = df_price.sort_values("date").reset_index(drop=True)
+            candidates = _detect_selling_climax_candidates(
+                df_sorted,
+                volume_lookback=volume_lookback,
+                volume_multiplier=volume_multiplier,
+                drop_pct=drop_pct,
+                close_position=close_position,
+                atr_lookback=atr_lookback,
+                drop_atr_mult=drop_atr_mult,
+                drop_condition_mode=drop_condition_mode,
+                trend_ma_len=trend_ma_len,
+                trend_mode=trend_mode,
+                min_avg_dollar_volume=min_avg_dollar_volume,
+                min_avg_volume=min_avg_volume,
+                liquidity_lookback=liquidity_lookback,
+                vol_percentile_threshold=vol_percentile_threshold,
+                vol_lookback2=vol_lookback2,
+                max_gap_pct=max_gap_pct,
+            )
+            if not candidates.any():
+                continue
+            success = _label_selling_climax_success(
+                df_sorted,
+                confirm_k=confirm_k,
+                time_stop_bars=time_stop_bars,
+                stop_atr_mult=stop_atr_mult,
+                trailing_atr_mult=trailing_atr_mult,
+                atr_lookback=atr_lookback,
+            )
+            signal_count = int(candidates.sum())
+            success_count = int((candidates & success).sum())
+            if symbol in train_set:
+                train_signals += signal_count
+                train_success += success_count
+            else:
+                val_signals += signal_count
+                val_success += success_count
 
-                        if progress_callback:
-                            progress_callback(combo_index, total_combos, "グリッドサーチ")
+        if progress_callback:
+            progress_callback(combo_index, total_combos, "グリッドサーチ")
 
-                        if train_signals < min_signals or val_signals < min_signals:
-                            continue
+        if train_signals < min_signals or val_signals < min_signals:
+            continue
 
-                        train_precision = train_success / train_signals if train_signals else 0.0
-                        val_precision = val_success / val_signals if val_signals else 0.0
-                        score = val_precision - abs(train_precision - val_precision) * gap_penalty
+        train_precision = train_success / train_signals if train_signals else 0.0
+        val_precision = val_success / val_signals if val_signals else 0.0
+        score = val_precision - abs(train_precision - val_precision) * gap_penalty
 
-                        record = {
-                            "volume_lookback": volume_lookback,
-                            "volume_multiplier": volume_multiplier,
-                            "drop_pct": drop_pct,
-                            "close_position": close_position,
-                            "confirm_k": confirm_k,
-                            "train_precision": train_precision,
-                            "validation_precision": val_precision,
-                            "train_signals": train_signals,
-                            "validation_signals": val_signals,
-                            "score": score,
-                        }
-                        eval_records.append(record)
+        record = {
+            "volume_lookback": volume_lookback,
+            "volume_multiplier": volume_multiplier,
+            "drop_pct": drop_pct,
+            "close_position": close_position,
+            "confirm_k": confirm_k,
+            "atr_lookback": atr_lookback,
+            "drop_atr_mult": drop_atr_mult,
+            "drop_condition_mode": drop_condition_mode,
+            "trend_ma_len": trend_ma_len,
+            "trend_mode": trend_mode,
+            "stop_atr_mult": stop_atr_mult,
+            "time_stop_bars": time_stop_bars,
+            "trailing_atr_mult": trailing_atr_mult,
+            "min_avg_dollar_volume": min_avg_dollar_volume,
+            "min_avg_volume": min_avg_volume,
+            "vol_percentile_threshold": vol_percentile_threshold,
+            "vol_lookback2": vol_lookback2,
+            "max_gap_pct": max_gap_pct,
+            "train_precision": train_precision,
+            "validation_precision": val_precision,
+            "train_signals": train_signals,
+            "validation_signals": val_signals,
+            "score": score,
+        }
+        eval_records.append(record)
 
-                        if score > best_score:
-                            best_score = score
-                            best_record = record
+        if score > best_score:
+            best_score = score
+            best_record = record
 
     eval_df = pd.DataFrame(eval_records).sort_values("score", ascending=False)
     if best_record is None:
