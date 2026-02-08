@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from itertools import product
 import random
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -1303,6 +1304,8 @@ def grid_search_cup_shape(
     depth_ranges: Optional[List[Tuple[float, float]]] = None,
     recovery_ratios: Optional[List[float]] = None,
     handle_max_depths: Optional[List[float]] = None,
+    top_k: Optional[int] = None,
+    coarse_stride: int = 1,
     progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -1336,105 +1339,194 @@ def grid_search_cup_shape(
     best_results = pd.DataFrame()
     best_summary = pd.DataFrame()
 
-    total_combos = (
-        len(cup_windows)
-        * len(handle_windows)
-        * len(depth_ranges)
-        * len(recovery_ratios)
-        * len(handle_max_depths)
+    def _evaluate_combo(
+        cup_window: int,
+        handle_window: int,
+        depth_range: Tuple[float, float],
+        recovery_ratio: float,
+        handle_max_depth: float,
+    ) -> Optional[Dict[str, float]]:
+        results_df, summary_df = run_canslim_backtest(
+            symbols=target_symbols,
+            symbol_price_data=symbol_price_data,
+            seed=seed,
+            train_ratio=train_ratio,
+            lookahead=lookahead,
+            return_threshold=return_threshold,
+            volume_multiplier=volume_multiplier,
+            cup_window=cup_window,
+            handle_window=handle_window,
+            cup_depth_range=depth_range,
+            cup_recovery_ratio=recovery_ratio,
+            cup_handle_max_depth=handle_max_depth,
+        )
+
+        if results_df.empty:
+            return None
+
+        train_signals = results_df[results_df["dataset"] == "train"].shape[0]
+        val_signals = results_df[results_df["dataset"] == "validation"].shape[0]
+        if train_signals < min_signals or val_signals < min_signals:
+            return None
+
+        train_up = summary_df[
+            (summary_df["dataset"] == "train")
+            & (summary_df["pattern"] == "cup_with_handle")
+            & (summary_df["label"] == "up")
+        ]
+        val_up = summary_df[
+            (summary_df["dataset"] == "validation")
+            & (summary_df["pattern"] == "cup_with_handle")
+            & (summary_df["label"] == "up")
+        ]
+        train_up_avg = float(train_up["avg_return"].mean()) if not train_up.empty else 0.0
+        val_up_avg = float(val_up["avg_return"].mean()) if not val_up.empty else 0.0
+        generalization_gap = abs(train_up_avg - val_up_avg)
+        score = val_up_avg - gap_penalty * generalization_gap
+
+        return {
+            "cup_window": cup_window,
+            "handle_window": handle_window,
+            "depth_min": depth_range[0],
+            "depth_max": depth_range[1],
+            "recovery_ratio": recovery_ratio,
+            "handle_max_depth": handle_max_depth,
+            "train_up_avg_return": train_up_avg,
+            "validation_up_avg_return": val_up_avg,
+            "generalization_gap": generalization_gap,
+            "score": score,
+            "train_signals": int(train_signals),
+            "validation_signals": int(val_signals),
+            "_results_df": results_df,
+            "_summary_df": summary_df,
+        }
+
+    use_two_stage = top_k is not None and top_k > 0 and coarse_stride > 1
+    all_combos = list(
+        product(cup_windows, handle_windows, depth_ranges, recovery_ratios, handle_max_depths)
     )
-    combo_index = 0
-    for cup_window in cup_windows:
-        for handle_window in handle_windows:
-            for depth_range in depth_ranges:
-                for recovery_ratio in recovery_ratios:
-                    for handle_max_depth in handle_max_depths:
-                        combo_index += 1
-                        results_df, summary_df = run_canslim_backtest(
-                            symbols=target_symbols,
-                            symbol_price_data=symbol_price_data,
-                            seed=seed,
-                            train_ratio=train_ratio,
-                            lookahead=lookahead,
-                            return_threshold=return_threshold,
-                            volume_multiplier=volume_multiplier,
-                            cup_window=cup_window,
-                            handle_window=handle_window,
-                            cup_depth_range=depth_range,
-                            cup_recovery_ratio=recovery_ratio,
-                            cup_handle_max_depth=handle_max_depth,
+
+    if use_two_stage:
+        coarse_cup_windows = cup_windows[::coarse_stride]
+        if cup_windows[-1] not in coarse_cup_windows:
+            coarse_cup_windows = coarse_cup_windows + [cup_windows[-1]]
+        coarse_recovery_ratios = recovery_ratios[::coarse_stride]
+        if recovery_ratios[-1] not in coarse_recovery_ratios:
+            coarse_recovery_ratios = coarse_recovery_ratios + [recovery_ratios[-1]]
+
+        coarse_combos = list(
+            product(
+                coarse_cup_windows,
+                handle_windows,
+                depth_ranges,
+                coarse_recovery_ratios,
+                handle_max_depths,
+            )
+        )
+        top_candidates: List[Tuple[int, int, Tuple[float, float], float, float]] = []
+        coarse_records: List[Dict[str, float]] = []
+
+        for combo in coarse_combos:
+            score_record = _evaluate_combo(*combo)
+            if score_record is not None:
+                coarse_records.append(score_record)
+
+        if coarse_records:
+            coarse_records_sorted = sorted(coarse_records, key=lambda x: x["score"], reverse=True)
+            top_candidates = [
+                (
+                    int(record["cup_window"]),
+                    int(record["handle_window"]),
+                    (float(record["depth_min"]), float(record["depth_max"])),
+                    float(record["recovery_ratio"]),
+                    float(record["handle_max_depth"]),
+                )
+                for record in coarse_records_sorted[:top_k]
+            ]
+
+        cup_window_to_idx = {value: idx for idx, value in enumerate(cup_windows)}
+        refine_combos = set()
+        for candidate in top_candidates:
+            cup_window, handle_window, depth_range, recovery_ratio, handle_max_depth = candidate
+            cup_idx = cup_window_to_idx[cup_window]
+            for near_cup_idx in [max(0, cup_idx - 1), cup_idx, min(len(cup_windows) - 1, cup_idx + 1)]:
+                near_cup_window = cup_windows[near_cup_idx]
+                for near_handle_depth in handle_max_depths:
+                    if abs(near_handle_depth - handle_max_depth) <= 0.02:
+                        refine_combos.add(
+                            (
+                                near_cup_window,
+                                handle_window,
+                                depth_range,
+                                recovery_ratio,
+                                near_handle_depth,
+                            )
                         )
 
-                        if results_df.empty:
-                            if progress_callback:
-                                progress_callback(combo_index, total_combos, "グリッドサーチ")
-                            continue
+        total_combos = len(coarse_combos) + len(refine_combos)
+        combo_index = 0
 
-                        train_signals = results_df[results_df["dataset"] == "train"].shape[
-                            0
-                        ]
-                        val_signals = results_df[
-                            results_df["dataset"] == "validation"
-                        ].shape[0]
-                        if train_signals < min_signals or val_signals < min_signals:
-                            if progress_callback:
-                                progress_callback(combo_index, total_combos, "グリッドサーチ")
-                            continue
+        for _ in coarse_combos:
+            combo_index += 1
+            if progress_callback:
+                progress_callback(combo_index, total_combos, "グリッドサーチ(粗探索)")
 
-                        train_up = summary_df[
-                            (summary_df["dataset"] == "train")
-                            & (summary_df["pattern"] == "cup_with_handle")
-                            & (summary_df["label"] == "up")
-                        ]
-                        val_up = summary_df[
-                            (summary_df["dataset"] == "validation")
-                            & (summary_df["pattern"] == "cup_with_handle")
-                            & (summary_df["label"] == "up")
-                        ]
-                        train_up_avg = (
-                            float(train_up["avg_return"].mean())
-                            if not train_up.empty
-                            else 0.0
-                        )
-                        val_up_avg = (
-                            float(val_up["avg_return"].mean()) if not val_up.empty else 0.0
-                        )
-                        generalization_gap = abs(train_up_avg - val_up_avg)
-                        score = val_up_avg - gap_penalty * generalization_gap
+        for combo in refine_combos:
+            combo_index += 1
+            score_record = _evaluate_combo(*combo)
+            if score_record is not None:
+                eval_records.append(score_record)
+                if score_record["score"] > best_score:
+                    best_score = score_record["score"]
+                    best_params = {
+                        "cup_window": score_record["cup_window"],
+                        "handle_window": score_record["handle_window"],
+                        "cup_depth_range": (
+                            score_record["depth_min"],
+                            score_record["depth_max"],
+                        ),
+                        "cup_recovery_ratio": score_record["recovery_ratio"],
+                        "cup_handle_max_depth": score_record["handle_max_depth"],
+                        "volume_multiplier": volume_multiplier,
+                    }
+                    best_results = score_record["_results_df"]
+                    best_summary = score_record["_summary_df"]
+            if progress_callback:
+                progress_callback(combo_index, total_combos, "グリッドサーチ(詳細探索)")
+    else:
+        total_combos = len(all_combos)
+        combo_index = 0
+        for combo in all_combos:
+            combo_index += 1
+            score_record = _evaluate_combo(*combo)
+            if score_record is not None:
+                eval_records.append(score_record)
+                if score_record["score"] > best_score:
+                    best_score = score_record["score"]
+                    best_params = {
+                        "cup_window": score_record["cup_window"],
+                        "handle_window": score_record["handle_window"],
+                        "cup_depth_range": (
+                            score_record["depth_min"],
+                            score_record["depth_max"],
+                        ),
+                        "cup_recovery_ratio": score_record["recovery_ratio"],
+                        "cup_handle_max_depth": score_record["handle_max_depth"],
+                        "volume_multiplier": volume_multiplier,
+                    }
+                    best_results = score_record["_results_df"]
+                    best_summary = score_record["_summary_df"]
+            if progress_callback:
+                progress_callback(combo_index, total_combos, "グリッドサーチ")
 
-                        eval_records.append(
-                            {
-                                "cup_window": cup_window,
-                                "handle_window": handle_window,
-                                "depth_min": depth_range[0],
-                                "depth_max": depth_range[1],
-                                "recovery_ratio": recovery_ratio,
-                                "handle_max_depth": handle_max_depth,
-                                "train_up_avg_return": train_up_avg,
-                                "validation_up_avg_return": val_up_avg,
-                                "generalization_gap": generalization_gap,
-                                "score": score,
-                                "train_signals": int(train_signals),
-                                "validation_signals": int(val_signals),
-                            }
-                        )
-                        if progress_callback:
-                            progress_callback(combo_index, total_combos, "グリッドサーチ")
-
-                        if score > best_score:
-                            best_score = score
-                            best_params = {
-                                "cup_window": cup_window,
-                                "handle_window": handle_window,
-                                "cup_depth_range": depth_range,
-                                "cup_recovery_ratio": recovery_ratio,
-                                "cup_handle_max_depth": handle_max_depth,
-                                "volume_multiplier": volume_multiplier,
-                            }
-                            best_results = results_df
-                            best_summary = summary_df
-
-    eval_df = pd.DataFrame(eval_records).sort_values("score", ascending=False)
+    if eval_records:
+        eval_df = (
+            pd.DataFrame(eval_records)
+            .drop(columns=["_results_df", "_summary_df"], errors="ignore")
+            .sort_values("score", ascending=False)
+        )
+    else:
+        eval_df = pd.DataFrame()
     if best_params is None:
         return eval_df, pd.DataFrame()
 
