@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 
 from ui_streamlit import (
-    _apply_bulk_group_assignments,
+    _apply_sector_group_assignment,
     _calculate_minimum_data_length,
     _has_macd_cross,
     _latest_has_required_data,
@@ -150,40 +150,41 @@ class CalculateMinimumDataLengthTest(unittest.TestCase):
 
 
 
-class BulkManualGroupAssignmentTest(unittest.TestCase):
-    def test_parse_bulk_group_lines(self):
-        assignments, errors = _parse_bulk_group_lines(
-            "7203,自動車|大型株\n6758,ハイテク\nabc,不正\n"
-        )
-
-        self.assertEqual(
-            assignments,
+class SectorGroupAssignmentTest(unittest.TestCase):
+    def test_add_and_remove_sector_codes(self):
+        listed_df = pd.DataFrame(
             [
-                ("7203", ["自動車", "大型株"]),
-                ("6758", ["ハイテク"]),
-            ],
+                {"code": "7203", "sector17": "輸送用機器"},
+                {"code": "7267", "sector17": "輸送用機器"},
+                {"code": "6758", "sector17": "電気機器"},
+            ]
         )
-        self.assertEqual(len(errors), 1)
+        groups = {"既存": ["6758"]}
 
-    def test_apply_bulk_group_assignments(self):
-        groups = {"既存": ["7203"]}
-        assignments = [
-            ("7203", ["既存", "自動車"]),
-            ("6758", ["ハイテク"]),
-            ("9999", ["対象外"]),
-        ]
-
-        updated, applied_count, created_group_count, unknown_symbols = _apply_bulk_group_assignments(
+        updated_add, changed_add = _apply_sector_group_assignment(
             groups,
-            assignments,
-            symbols=["7203", "6758"],
+            listed_df,
+            symbols=["7203", "7267", "6758"],
+            sector_column="sector17",
+            sector_value="輸送用機器",
+            target_group="自動車",
+            action="add",
         )
+        self.assertEqual(changed_add, 2)
+        self.assertEqual(updated_add["自動車"], ["7203", "7267"])
 
-        self.assertEqual(updated["既存"], ["7203"])
-        self.assertEqual(updated["自動車"], ["7203"])
-        self.assertEqual(updated["ハイテク"], ["6758"])
-        self.assertEqual(applied_count, 2)
-        self.assertEqual(created_group_count, 2)
-        self.assertEqual(unknown_symbols, ["9999"])
+        updated_remove, changed_remove = _apply_sector_group_assignment(
+            {"自動車": ["7203", "7267", "6758"]},
+            listed_df,
+            symbols=["7203", "7267", "6758"],
+            sector_column="sector17",
+            sector_value="輸送用機器",
+            target_group="自動車",
+            action="remove",
+        )
+        self.assertEqual(changed_remove, 2)
+        self.assertEqual(updated_remove["自動車"], ["6758"])
+
+
 if __name__ == "__main__":
     unittest.main()
