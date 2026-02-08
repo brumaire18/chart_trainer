@@ -351,10 +351,12 @@ def _render_manual_group_ui(
             st.session_state["manual_group_codes"] = []
             st.rerun()
 
+    if "manual_group_codes" not in st.session_state:
+        st.session_state["manual_group_codes"] = selected_codes
+
     selected_codes = st.multiselect(
         "銘柄を選択",
         options=option_codes,
-        default=selected_codes,
         format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
         key="manual_group_codes",
     )
@@ -1984,10 +1986,12 @@ def main():
     selected_codes = list(dict.fromkeys(selected_codes))
     option_codes = sorted(set(filtered_codes) | set(selected_codes))
 
+    if "manual_group_codes_sidebar" not in st.session_state:
+        st.session_state["manual_group_codes_sidebar"] = selected_codes
+
     selected_codes = st.sidebar.multiselect(
         "銘柄を選択",
         options=option_codes,
-        default=selected_codes,
         format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
         key="manual_group_codes_sidebar",
     )
