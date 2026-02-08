@@ -7,6 +7,7 @@ from ui_streamlit import (
     _calculate_minimum_data_length,
     _has_macd_cross,
     _latest_has_required_data,
+    _parse_bulk_group_lines,
 )
 
 
