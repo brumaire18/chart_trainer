@@ -640,17 +640,17 @@ def _load_price_for_grid(symbol: str, cache_key: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _compute_weekly_volume_map(
+def _compute_weekly_turnover_map(
     symbols: List[str], cache_key: str
 ) -> Tuple[dict, dict]:
     """
-    週足出来高の最新値と週足データをまとめて計算する。
+    週足売買代金(終値×出来高)の最新値と週足データをまとめて計算する。
 
     cache_key を引数に含めることで、PRICE_CSV_DIR 更新時にキャッシュが破棄される。
     """
 
     _ = cache_key  # キャッシュ用に参照だけ行う
-    weekly_volume_map = {}
+    weekly_turnover_map = {}
     weekly_df_map = {}
     for symbol in symbols:
         price_cache_key = _get_price_cache_key(symbol)
@@ -662,10 +662,12 @@ def _compute_weekly_volume_map(
         if weekly_df.empty:
             continue
         weekly_df_map[symbol] = weekly_df
-        latest_weekly_vol = weekly_df.iloc[-1]["volume"]
-        if pd.notna(latest_weekly_vol):
-            weekly_volume_map[symbol] = float(latest_weekly_vol)
-    return weekly_volume_map, weekly_df_map
+        latest_week = weekly_df.iloc[-1]
+        latest_weekly_close = latest_week.get("close")
+        latest_weekly_volume = latest_week.get("volume")
+        if pd.notna(latest_weekly_close) and pd.notna(latest_weekly_volume):
+            weekly_turnover_map[symbol] = float(latest_weekly_close * latest_weekly_volume)
+    return weekly_turnover_map, weekly_df_map
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -749,17 +751,18 @@ def _detect_selling_climax(
 ) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(
-            columns=["flag", "volume_ratio", "drop_pct", "close_position"], index=df.index
+            columns=["flag", "turnover_ratio", "drop_pct", "close_position"], index=df.index
         )
-    volume_avg = df["volume"].rolling(volume_lookback).mean()
-    volume_ratio = df["volume"] / volume_avg
+    turnover = df["close"] * df["volume"]
+    turnover_avg = turnover.rolling(volume_lookback).mean()
+    turnover_ratio = turnover / turnover_avg
     prev_close = df["close"].shift(1)
     drop_ratio = (df["close"] - prev_close) / prev_close
     candle_range = df["high"] - df["low"]
     close_pos = (df["close"] - df["low"]) / candle_range.replace(0, np.nan)
     flag = (
         (df["close"] <= df["open"])
-        & (volume_ratio >= volume_multiplier)
+        & (turnover_ratio >= volume_multiplier)
         & (drop_ratio <= -abs(drop_pct))
         & (candle_range > 0)
         & (close_pos <= close_position)
@@ -767,7 +770,7 @@ def _detect_selling_climax(
     return pd.DataFrame(
         {
             "flag": flag.fillna(False),
-            "volume_ratio": volume_ratio,
+            "turnover_ratio": turnover_ratio,
             "drop_pct": drop_ratio,
             "close_position": close_pos,
         },
@@ -1283,7 +1286,7 @@ def _calculate_minimum_data_length(
 
     if apply_volume_condition:
         required_length = max(required_length, 20)
-        reasons.append("20日平均出来高を計算するには20本以上必要")
+        reasons.append("20日平均売買代金を計算するには20本以上必要")
 
     if apply_topix_rs_condition:
         required_length = max(required_length, topix_rs_lookback + 1)
@@ -1301,7 +1304,7 @@ def _calculate_minimum_data_length(
 
     if apply_weekly_volume_quartile:
         required_length = max(required_length, 5)
-        reasons.append("週出来高判定には最低1週間分(5本程度)のデータが必要")
+        reasons.append("週足売買代金判定には最低1週間分(5本程度)のデータが必要")
     if apply_canslim_condition:
         base_window = max(cup_window, saucer_window) + handle_window
         required_length = max(required_length, base_window + 2)
@@ -2082,7 +2085,7 @@ def main():
         topix_cache_key = _get_price_cache_key("topix")
 
         with st.expander("4x4グリッド表示", expanded=False):
-            st.caption("全銘柄の週出来高上位1/4に該当する銘柄を週足で表示します。")
+            st.caption("全銘柄の週足売買代金(終値×出来高)上位1/4に該当する銘柄を週足で表示します。")
             grid_symbols = symbols
             if "grid_compute" not in st.session_state:
                 st.session_state["grid_compute"] = False
@@ -2091,24 +2094,24 @@ def main():
 
             if grid_symbols and st.session_state["grid_compute"]:
                 cache_key = _get_price_csv_dir_cache_key()
-                weekly_volume_map, weekly_df_map = _compute_weekly_volume_map(
+                weekly_turnover_map, weekly_df_map = _compute_weekly_turnover_map(
                     grid_symbols, cache_key
                 )
-                weekly_volumes = list(weekly_volume_map.values())
+                weekly_turnovers = list(weekly_turnover_map.values())
 
-                if weekly_volumes:
-                    threshold = pd.Series(weekly_volumes).quantile(0.75)
+                if weekly_turnovers:
+                    threshold = pd.Series(weekly_turnovers).quantile(0.75)
                     filtered_symbols = [
                         symbol
                         for symbol in grid_symbols
-                        if weekly_volume_map.get(symbol, 0) >= threshold
+                        if weekly_turnover_map.get(symbol, 0) >= threshold
                     ]
                 else:
                     filtered_symbols = []
 
                 filtered_symbols = sorted(
                     filtered_symbols,
-                    key=lambda s: weekly_volume_map.get(s, 0),
+                    key=lambda s: weekly_turnover_map.get(s, 0),
                     reverse=True,
                 )
                 total_symbols = len(filtered_symbols)
@@ -2173,7 +2176,7 @@ def main():
                 grid_symbols = filtered_symbols[start_idx:start_idx + 16]
 
                 if not grid_symbols:
-                    st.info("週出来高上位1/4に該当する銘柄がありません。")
+                    st.info("週足売買代金上位1/4に該当する銘柄がありません。")
                     grid_symbols = []
 
                 if grid_symbols:
@@ -2196,7 +2199,7 @@ def main():
                                     continue
                                 st.plotly_chart(fig, use_container_width=True)
             elif grid_symbols:
-                st.info("「計算を開始」を押すと週出来高の集計を開始します。")
+                st.info("「計算を開始」を押すと週足売買代金の集計を開始します。")
 
         cache_key = _get_price_cache_key(selected_symbol)
         daily_lookback = _estimate_daily_lookback(lookback, timeframe)
@@ -2538,8 +2541,8 @@ def main():
                                 "下落率%": round(info["drop_pct"] * 100, 2)
                                 if pd.notna(info["drop_pct"])
                                 else None,
-                                "出来高倍率": round(info["volume_ratio"], 2)
-                                if pd.notna(info["volume_ratio"])
+                                "売買代金倍率": round(info["turnover_ratio"], 2)
+                                if pd.notna(info["turnover_ratio"])
                                 else None,
                             }
                         )
@@ -2978,14 +2981,14 @@ def main():
         )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
-        apply_volume_condition = st.checkbox("出来高条件を適用", value=True)
+        apply_volume_condition = st.checkbox("売買代金条件を適用", value=True)
         volume_multiplier = st.number_input(
-            "出来高/20日平均の下限 (倍)",
+            "売買代金/20日平均の下限 (倍)",
             min_value=0.0,
             max_value=10.0,
             value=0.8,
             step=0.1,
-            help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は出来高が取得できる銘柄のみ合格します。",
+            help="条件を外したい場合はチェックを外してください。0.0 を指定した場合は売買代金が計算できる銘柄のみ合格します。",
         )
         apply_canslim_condition = st.checkbox("CAN-SLIMパターン条件を適用", value=False)
         canslim_recent_days = st.slider(
@@ -3091,9 +3094,9 @@ def main():
             help="取っ手期間の出来高が平均より小さいことを判定します。",
         )
         apply_weekly_volume_quartile = st.checkbox(
-            "週出来高上位1/4を抽出",
+            "週足売買代金上位1/4を抽出",
             value=False,
-            help="最新の週出来高がユニバースの上位25%に入る銘柄を抽出します。",
+            help="最新の週足売買代金(終値×出来高)がユニバースの上位25%に入る銘柄を抽出します。",
         )
         st.markdown("**シグナル抽出**")
         screen_new_high = st.checkbox("新高値シグナルを抽出", value=False)
@@ -3113,14 +3116,14 @@ def main():
             step=10,
         )
         signal_selling_volume_lookback = st.number_input(
-            "セリング出来高平均期間",
+            "セリング売買代金平均期間",
             min_value=5,
             max_value=60,
             value=20,
             step=1,
         )
         signal_selling_volume_multiplier = st.number_input(
-            "セリング出来高倍率 (平均比)",
+            "セリング売買代金倍率 (平均比)",
             min_value=1.0,
             max_value=10.0,
             value=2.0,
@@ -3195,8 +3198,8 @@ def main():
                 macd_debug_logs = [] if macd_debug else None
                 failure_logs = []
                 reason_counter = Counter()
-                weekly_volume_map = {}
-                weekly_volume_threshold = None
+                weekly_turnover_map = {}
+                weekly_turnover_threshold = None
 
                 def _market_filter(code_str: str) -> bool:
                     if not target_markets:
@@ -3205,7 +3208,7 @@ def main():
                     return not code_market.empty and code_market.iloc[0] in target_markets
 
                 if apply_weekly_volume_quartile:
-                    weekly_volumes = []
+                    weekly_turnovers = []
                     for code in symbols:
                         code_str = str(code).strip().zfill(4)
                         if not _market_filter(code_str):
@@ -3220,12 +3223,15 @@ def main():
                         weekly_df = _resample_ohlc(df_ind_full, "weekly")
                         if weekly_df.empty:
                             continue
-                        latest_weekly_vol = weekly_df.iloc[-1]["volume"]
-                        if pd.notna(latest_weekly_vol):
-                            weekly_volume_map[code_str] = float(latest_weekly_vol)
-                            weekly_volumes.append(float(latest_weekly_vol))
-                    if weekly_volumes:
-                        weekly_volume_threshold = pd.Series(weekly_volumes).quantile(0.75)
+                        latest_week = weekly_df.iloc[-1]
+                        latest_weekly_close = latest_week.get("close")
+                        latest_weekly_volume = latest_week.get("volume")
+                        if pd.notna(latest_weekly_close) and pd.notna(latest_weekly_volume):
+                            weekly_turnover = float(latest_weekly_close * latest_weekly_volume)
+                            weekly_turnover_map[code_str] = weekly_turnover
+                            weekly_turnovers.append(weekly_turnover)
+                    if weekly_turnovers:
+                        weekly_turnover_threshold = pd.Series(weekly_turnovers).quantile(0.75)
 
                 for code in symbols:
                     code_str = str(code).strip().zfill(4)
@@ -3354,13 +3360,16 @@ def main():
                         else:
                             sma_ok = False
 
-                    avg_vol20 = df_ind["volume"].tail(20).mean()
+                    turnover_series = df_ind["close"] * df_ind["volume"]
+                    avg_turnover20 = turnover_series.tail(20).mean()
+                    latest_turnover = latest["close"] * latest["volume"]
                     vol_ok = True
                     if apply_volume_condition:
                         vol_ok = (
-                            pd.notna(avg_vol20)
-                            and avg_vol20 > 0
-                            and latest["volume"] >= avg_vol20 * volume_multiplier
+                            pd.notna(avg_turnover20)
+                            and avg_turnover20 > 0
+                            and pd.notna(latest_turnover)
+                            and latest_turnover >= avg_turnover20 * volume_multiplier
                         )
                     rs_ok = True
                     rs_change = None
@@ -3474,14 +3483,14 @@ def main():
                             selling_climax_ok = False
 
                     if apply_weekly_volume_quartile:
-                        weekly_volume = weekly_volume_map.get(code_str)
-                        if weekly_volume_threshold is None or weekly_volume is None:
+                        weekly_turnover = weekly_turnover_map.get(code_str)
+                        if weekly_turnover_threshold is None or weekly_turnover is None:
                             weekly_vol_ok = False
                         else:
-                            weekly_vol_ok = weekly_volume >= weekly_volume_threshold
+                            weekly_vol_ok = weekly_turnover >= weekly_turnover_threshold
                     else:
                         weekly_vol_ok = True
-                        weekly_volume = None
+                        weekly_turnover = None
 
                     if all(
                         [
@@ -3522,11 +3531,11 @@ def main():
                                 "RSI14": round(latest["rsi14"], 2),
                                 "MACD": round(latest["macd"], 3),
                                 "Signal": round(latest["macd_signal"], 3),
-                                "出来高": int(latest["volume"]),
-                                "20日平均出来高": int(avg_vol20) if pd.notna(avg_vol20) else None,
+                                "売買代金": int(latest_turnover) if pd.notna(latest_turnover) else None,
+                                "20日平均売買代金": int(avg_turnover20) if pd.notna(avg_turnover20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
                                 "RS(対TOPIX)%": round(rs_change, 2) if rs_change is not None else None,
-                                "週出来高": int(weekly_volume) if weekly_volume is not None else None,
+                                "週足売買代金": int(weekly_turnover) if weekly_turnover is not None else None,
                                 "CAN-SLIMパターン": canslim_pattern,
                                 "CAN-SLIMシグナル日": canslim_signal_date,
                                 "取っ手付きカップ日": cup_handle_date,
@@ -3556,7 +3565,7 @@ def main():
                     if require_sma20_trend and not sma_ok:
                         code_reasons.append("SMAトレンド不合格")
                     if apply_volume_condition and not vol_ok:
-                        code_reasons.append("出来高条件不合格")
+                        code_reasons.append("売買代金条件不合格")
                     if apply_topix_rs_condition and not rs_ok:
                         if "topix_rs" not in df_ind.columns:
                             code_reasons.append("TOPIX RSデータなし")
@@ -3565,10 +3574,10 @@ def main():
                         else:
                             code_reasons.append("TOPIX RS条件不合格")
                     if apply_weekly_volume_quartile and not weekly_vol_ok:
-                        if weekly_volume_threshold is None or weekly_volume is None:
-                            code_reasons.append("週出来高データ不足")
+                        if weekly_turnover_threshold is None or weekly_turnover is None:
+                            code_reasons.append("週足売買代金データ不足")
                         else:
-                            code_reasons.append("週出来高上位条件不合格")
+                            code_reasons.append("週足売買代金上位条件不合格")
                     if apply_canslim_condition and not canslim_ok:
                         code_reasons.append("CAN-SLIM条件不合格")
                     if apply_cup_handle_condition and not cup_handle_ok:
