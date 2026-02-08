@@ -19,7 +19,12 @@ from app.data_loader import (
     load_price_csv,
     load_topix_csv,
 )
-from app.custom_groups import load_custom_groups, save_custom_groups
+from app.custom_groups import (
+    load_custom_groups,
+    load_group_master,
+    save_custom_groups,
+    save_group_master,
+)
 from app.market_breadth import aggregate_market_breadth, compute_breadth_indicators
 from app.minervini_screen import MinerviniScreenConfig, screen_minervini_trend_template
 from app.pair_trading import (
@@ -118,6 +123,54 @@ def _parse_grid_values(text: str, cast_type: type) -> List:
     return values
 
 
+def _parse_bulk_group_lines(text: str) -> Tuple[List[Tuple[str, List[str]]], List[str]]:
+    assignments: List[Tuple[str, List[str]]] = []
+    errors: List[str] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "," not in line:
+            errors.append(f"{line_no}行目: `銘柄コード,グループ` 形式で入力してください。")
+            continue
+        code_raw, groups_raw = [part.strip() for part in line.split(",", 1)]
+        code = code_raw.zfill(4)
+        if not code_raw.isdigit() or len(code_raw) > 4:
+            errors.append(f"{line_no}行目: 銘柄コードが不正です。")
+            continue
+        group_names = [g.strip() for g in groups_raw.split("|") if g.strip()]
+        if not group_names:
+            errors.append(f"{line_no}行目: グループ名を1件以上指定してください。")
+            continue
+        assignments.append((code, group_names))
+    return assignments, errors
+
+
+def _apply_bulk_group_assignments(
+    custom_groups: Dict[str, List[str]],
+    assignments: List[Tuple[str, List[str]]],
+    symbols: List[str],
+) -> Tuple[Dict[str, List[str]], int, int, List[str]]:
+    updated = {group: [str(code).zfill(4) for code in codes] for group, codes in custom_groups.items()}
+    available = {str(symbol).zfill(4) for symbol in symbols}
+    applied_count = 0
+    created_group_count = 0
+    unknown_symbols: List[str] = []
+
+    for code, groups in assignments:
+        if code not in available:
+            unknown_symbols.append(code)
+            continue
+        for group in groups:
+            if group not in updated:
+                updated[group] = []
+                created_group_count += 1
+            if code not in updated[group]:
+                updated[group].append(code)
+                applied_count += 1
+    return updated, applied_count, created_group_count, sorted(set(unknown_symbols))
+
+
 def _apply_sector_group_assignment(
     custom_groups: Dict[str, List[str]],
     listed_df: pd.DataFrame,
@@ -149,6 +202,46 @@ def _apply_sector_group_assignment(
     updated_groups[target_group] = merged
     return updated_groups, changed_count
 
+
+
+def _sector_column_from_master_type(sector_type: str) -> Optional[str]:
+    sector_map = {"17業種": "sector17", "33業種": "sector33"}
+    return sector_map.get(str(sector_type).strip())
+
+
+def _filter_codes_by_group_master(
+    codes: List[str],
+    group_master: Dict[str, Dict[str, str]],
+    group_name: str,
+    listed_df: pd.DataFrame,
+) -> List[str]:
+    config = group_master.get(group_name, {})
+    sector_column = _sector_column_from_master_type(config.get("sector_type", ""))
+    sector_value = str(config.get("sector_value", "")).strip()
+    if not sector_column or not sector_value:
+        return list(codes)
+    if sector_column not in listed_df.columns or "code" not in listed_df.columns:
+        return list(codes)
+
+    listed = listed_df[["code", sector_column]].copy()
+    listed["code"] = listed["code"].astype(str).str.zfill(4)
+    listed[sector_column] = listed[sector_column].astype(str)
+    allowed = set(
+        listed.loc[listed[sector_column] == sector_value, "code"].tolist()
+    )
+    return [code for code in codes if str(code).zfill(4) in allowed]
+
+
+def _format_group_master_label(
+    group_name: str,
+    group_master: Dict[str, Dict[str, str]],
+) -> str:
+    config = group_master.get(group_name, {})
+    sector_type = str(config.get("sector_type", "")).strip()
+    sector_value = str(config.get("sector_value", "")).strip()
+    if not sector_type or not sector_value:
+        return f"{group_name}（マスタ未設定）"
+    return f"{group_name}（{sector_type}: {sector_value}）"
 
 def _save_run_inputs(section: str, values: Dict[str, object]) -> None:
     payload = {
@@ -231,14 +324,18 @@ def _save_pair_cache(pairs_df: pd.DataFrame, metadata: Dict[str, object]) -> Non
 
 def _render_manual_group_ui(
     custom_groups: Dict[str, List[str]],
+    group_master: Dict[str, Dict[str, str]],
     symbols: List[str],
     listed_df: pd.DataFrame,
     name_map: Dict[str, str],
     load_error: Optional[str] = None,
+    master_load_error: Optional[str] = None,
 ) -> None:
     st.subheader("手動分類")
     if load_error:
         st.warning(load_error)
+    if master_load_error:
+        st.warning(master_load_error)
 
     group_names = sorted(custom_groups)
     group_mode = st.selectbox(
@@ -251,7 +348,12 @@ def _render_manual_group_ui(
         current_group_codes: List[str] = []
     else:
         default_group_name = group_mode
-        current_group_codes = custom_groups.get(group_mode, [])
+        current_group_codes = _filter_codes_by_group_master(
+            custom_groups.get(group_mode, []),
+            group_master,
+            group_mode,
+            listed_df,
+        )
 
     group_name = st.text_input(
         "グループ名",
@@ -259,6 +361,75 @@ def _render_manual_group_ui(
         key="manual_group_name",
         help="新規作成時はここにグループ名を入力してください。",
     )
+
+    with st.expander("グループマスタ（セクター固定）", expanded=False):
+        st.caption("グループにセクター条件を設定すると、対象業種の銘柄だけを表示・保存します。")
+        master_group = st.selectbox(
+            "マスタ対象グループ",
+            options=["新規作成"] + group_names,
+            key="group_master_target",
+            format_func=lambda g: g if g == "新規作成" else _format_group_master_label(g, group_master),
+        )
+        default_master_name = "" if master_group == "新規作成" else master_group
+        master_group_name = st.text_input(
+            "マスタ登録グループ名",
+            value=default_master_name,
+            key="group_master_name",
+        )
+        master_sector_type = st.selectbox(
+            "セクター分類",
+            options=["17業種", "33業種"],
+            key="group_master_sector_type",
+        )
+        master_sector_column = _sector_column_from_master_type(master_sector_type)
+        master_sector_values: List[str] = []
+        if master_sector_column and master_sector_column in listed_df.columns:
+            master_sector_values = sorted(
+                {
+                    str(value)
+                    for value in listed_df[master_sector_column].astype(str)
+                    if value and str(value) != "nan"
+                }
+            )
+        master_sector_value = st.selectbox(
+            "対象業種",
+            options=master_sector_values if master_sector_values else ["該当なし"],
+            key="group_master_sector_value",
+        )
+
+        col_master_save, col_master_delete = st.columns(2)
+        with col_master_save:
+            if st.button("マスタ保存", key="group_master_save"):
+                if not master_group_name.strip():
+                    st.error("マスタ登録グループ名を入力してください。")
+                elif not master_sector_values or master_sector_value == "該当なし":
+                    st.error("対象業種が存在しません。")
+                else:
+                    group_master[master_group_name.strip()] = {
+                        "sector_type": master_sector_type,
+                        "sector_value": master_sector_value,
+                    }
+                    if master_group_name.strip() not in custom_groups:
+                        custom_groups[master_group_name.strip()] = []
+                    try:
+                        save_group_master(group_master)
+                        save_custom_groups(custom_groups)
+                        st.success("グループマスタを保存しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"グループマスタ保存に失敗しました: {exc}")
+        with col_master_delete:
+            if st.button("マスタ削除", key="group_master_delete"):
+                if master_group == "新規作成":
+                    st.error("削除対象のマスタグループを選択してください。")
+                else:
+                    group_master.pop(master_group, None)
+                    try:
+                        save_group_master(group_master)
+                        st.success("グループマスタを削除しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"グループマスタ削除に失敗しました: {exc}")
 
     search_text = st.text_input(
         "銘柄検索",
@@ -492,9 +663,19 @@ def _render_manual_group_ui(
             else:
                 if group_mode != "新規作成" and group_name != group_mode:
                     custom_groups.pop(group_mode, None)
-                custom_groups[group_name] = selected_codes
+                    if group_mode in group_master:
+                        group_master[group_name] = dict(group_master.pop(group_mode))
+                normalized_codes = [str(code).zfill(4) for code in selected_codes]
+                filtered_codes = _filter_codes_by_group_master(
+                    normalized_codes,
+                    group_master,
+                    group_name,
+                    listed_df,
+                )
+                custom_groups[group_name] = filtered_codes
                 try:
                     save_custom_groups(custom_groups)
+                    save_group_master(group_master)
                     st.success("グループを保存しました。")
                     st.rerun()
                 except Exception as exc:
@@ -505,8 +686,10 @@ def _render_manual_group_ui(
                 st.error("削除対象のグループを選択してください。")
             else:
                 custom_groups.pop(group_mode, None)
+                group_master.pop(group_mode, None)
                 try:
                     save_custom_groups(custom_groups)
+                    save_group_master(group_master)
                     st.success("グループを削除しました。")
                     st.rerun()
                 except Exception as exc:
@@ -1891,6 +2074,14 @@ def main():
     except Exception as exc:
         custom_groups = {}
         custom_groups_error = f"custom_groups.json の読み込みに失敗しました: {exc}"
+
+    try:
+        group_master = load_group_master()
+        group_master_error = None
+    except Exception as exc:
+        group_master = {}
+        group_master_error = f"group_master.json の読み込みに失敗しました: {exc}"
+
     group_names = sorted(custom_groups)
     group_mode = st.sidebar.selectbox(
         "編集対象グループ",
@@ -1902,7 +2093,12 @@ def main():
         current_group_codes: List[str] = []
     else:
         default_group_name = group_mode
-        current_group_codes = custom_groups.get(group_mode, [])
+        current_group_codes = _filter_codes_by_group_master(
+            custom_groups.get(group_mode, []),
+            group_master,
+            group_mode,
+            listed_df,
+        )
 
     group_name = st.sidebar.text_input(
         "グループ名",
@@ -1910,6 +2106,80 @@ def main():
         key="manual_group_name_sidebar",
         help="新規作成時はここにグループ名を入力してください。",
     )
+
+    if custom_groups_error:
+        st.sidebar.warning(custom_groups_error)
+    if group_master_error:
+        st.sidebar.warning(group_master_error)
+
+    with st.sidebar.expander("グループマスタ（セクター固定）", expanded=False):
+        st.caption("グループにセクター条件を設定すると、対象業種の銘柄だけを表示・保存します。")
+        master_group = st.selectbox(
+            "マスタ対象グループ",
+            options=["新規作成"] + group_names,
+            key="group_master_target_sidebar",
+            format_func=lambda g: g if g == "新規作成" else _format_group_master_label(g, group_master),
+        )
+        default_master_name = "" if master_group == "新規作成" else master_group
+        master_group_name = st.text_input(
+            "マスタ登録グループ名",
+            value=default_master_name,
+            key="group_master_name_sidebar",
+        )
+        master_sector_type = st.selectbox(
+            "セクター分類",
+            options=["17業種", "33業種"],
+            key="group_master_sector_type_sidebar",
+        )
+        master_sector_column = _sector_column_from_master_type(master_sector_type)
+        master_sector_values: List[str] = []
+        if master_sector_column and master_sector_column in listed_df.columns:
+            master_sector_values = sorted(
+                {
+                    str(value)
+                    for value in listed_df[master_sector_column].astype(str)
+                    if value and str(value) != "nan"
+                }
+            )
+        master_sector_value = st.selectbox(
+            "対象業種",
+            options=master_sector_values if master_sector_values else ["該当なし"],
+            key="group_master_sector_value_sidebar",
+        )
+
+        col_master_save, col_master_delete = st.columns(2)
+        with col_master_save:
+            if st.button("マスタ保存", key="group_master_save_sidebar"):
+                if not master_group_name.strip():
+                    st.sidebar.error("マスタ登録グループ名を入力してください。")
+                elif not master_sector_values or master_sector_value == "該当なし":
+                    st.sidebar.error("対象業種が存在しません。")
+                else:
+                    group_master[master_group_name.strip()] = {
+                        "sector_type": master_sector_type,
+                        "sector_value": master_sector_value,
+                    }
+                    if master_group_name.strip() not in custom_groups:
+                        custom_groups[master_group_name.strip()] = []
+                    try:
+                        save_group_master(group_master)
+                        save_custom_groups(custom_groups)
+                        st.sidebar.success("グループマスタを保存しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.sidebar.error(f"グループマスタ保存に失敗しました: {exc}")
+        with col_master_delete:
+            if st.button("マスタ削除", key="group_master_delete_sidebar"):
+                if master_group == "新規作成":
+                    st.sidebar.error("削除対象のマスタグループを選択してください。")
+                else:
+                    group_master.pop(master_group, None)
+                    try:
+                        save_group_master(group_master)
+                        st.sidebar.success("グループマスタを削除しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.sidebar.error(f"グループマスタ削除に失敗しました: {exc}")
 
     search_text = st.sidebar.text_input(
         "銘柄検索",
@@ -2126,9 +2396,19 @@ def main():
             else:
                 if group_mode != "新規作成" and group_name != group_mode:
                     custom_groups.pop(group_mode, None)
-                custom_groups[group_name] = selected_codes
+                    if group_mode in group_master:
+                        group_master[group_name] = dict(group_master.pop(group_mode))
+                normalized_codes = [str(code).zfill(4) for code in selected_codes]
+                filtered_codes = _filter_codes_by_group_master(
+                    normalized_codes,
+                    group_master,
+                    group_name,
+                    listed_df,
+                )
+                custom_groups[group_name] = filtered_codes
                 try:
                     save_custom_groups(custom_groups)
+                    save_group_master(group_master)
                     st.sidebar.success("グループを保存しました。")
                     st.rerun()
                 except Exception as exc:
@@ -2139,8 +2419,10 @@ def main():
                 st.sidebar.error("削除対象のグループを選択してください。")
             else:
                 custom_groups.pop(group_mode, None)
+                group_master.pop(group_mode, None)
                 try:
                     save_custom_groups(custom_groups)
+                    save_group_master(group_master)
                     st.sidebar.success("グループを削除しました。")
                     st.rerun()
                 except Exception as exc:
@@ -5682,10 +5964,12 @@ def main():
     with tab_manual:
         _render_manual_group_ui(
             custom_groups=custom_groups,
+            group_master=group_master,
             symbols=symbols,
             listed_df=listed_df,
             name_map=name_map,
             load_error=custom_groups_error,
+            master_load_error=group_master_error,
         )
 
 if __name__ == "__main__":
