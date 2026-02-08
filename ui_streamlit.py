@@ -5122,27 +5122,33 @@ def main():
 
         sell_col1, sell_col2 = st.columns(2)
         with sell_col1:
-            sc_volume_lookbacks = st.text_input(
-                "出来高平均期間候補 (例: 20,60)",
-                value="20,60",
+            sc_volume_lookbacks = st.text_input("出来高平均期間候補 (例: 20,60)", value="20,60")
+            sc_volume_multipliers = st.text_input("出来高倍率候補 (例: 2.0,2.5,3.0)", value="2.0,2.5,3.0")
+            sc_drop_pcts = st.text_input("下落率しきい値候補 (%)", value="3,4,5")
+            sc_close_positions = st.text_input("終値が安値寄りの割合候補", value="0.3,0.4,0.5")
+            sc_atr_lookbacks = st.text_input("ATR期間候補", value="10,14,20")
+            sc_drop_atr_mults = st.text_input("下落幅(ATR倍)候補", value="1.5,2.0,2.5")
+            sc_drop_condition_modes = st.multiselect(
+                "下落条件モード",
+                options=["drop_pct_only", "drop_atr_only", "both"],
+                default=["both"],
             )
-            sc_volume_multipliers = st.text_input(
-                "出来高倍率候補 (例: 2.0,2.5,3.0)",
-                value="2.0,2.5,3.0",
+            sc_trend_ma_lens = st.text_input("トレンドMA期間候補", value="20,50,100")
+            sc_trend_modes = st.multiselect(
+                "トレンドフィルタ",
+                options=["none", "reversion_only_in_uptrend", "exclude_downtrend", "ma_slope_positive"],
+                default=["exclude_downtrend"],
             )
-            sc_drop_pcts = st.text_input(
-                "下落率しきい値候補 (%)",
-                value="3,4,5",
-            )
-            sc_close_positions = st.text_input(
-                "終値が安値寄りの割合候補",
-                value="0.3,0.4,0.5",
-            )
+            sc_stop_atr_mults = st.text_input("損切りATR倍候補", value="1.0,1.5,2.0")
         with sell_col2:
-            sc_confirm_ks = st.text_input(
-                "反転確認期限 (k日) 候補",
-                value="2,3,5",
-            )
+            sc_confirm_ks = st.text_input("反転確認期限 (k日) 候補", value="2,3,5")
+            sc_time_stop_bars = st.text_input("タイムストップ(日数)候補", value="3,5,10")
+            sc_trailing_atr_mults = st.text_input("トレーリングATR倍候補 (空で無効)", value="1.0,1.5")
+            sc_min_avg_dollar_volumes = st.text_input("最低平均売買代金候補 (円, 例: 100000000)", value="100000000,300000000,1000000000")
+            sc_min_avg_volumes = st.text_input("最低平均出来高候補", value="100000,300000,1000000")
+            sc_vol_percentile_thresholds = st.text_input("出来高分位しきい値候補", value="80,90,95")
+            sc_vol_lookback2s = st.text_input("出来高分位ルックバック候補", value="20,60")
+            sc_max_gap_pcts = st.text_input("ギャップ上限候補(%, 例: 2,0,-2)", value="2,0,-2")
             sc_min_signals = st.number_input(
                 "train/validation の最小シグナル数",
                 min_value=1,
@@ -5171,21 +5177,60 @@ def main():
                 drop_pcts = [value / 100 for value in _parse_grid_values(sc_drop_pcts, float)]
                 close_positions = _parse_grid_values(sc_close_positions, float)
                 confirm_ks = _parse_grid_values(sc_confirm_ks, int)
+                atr_lookbacks = _parse_grid_values(sc_atr_lookbacks, int)
+                drop_atr_mults = _parse_grid_values(sc_drop_atr_mults, float)
+                trend_ma_lens = _parse_grid_values(sc_trend_ma_lens, int)
+                stop_atr_mults = _parse_grid_values(sc_stop_atr_mults, float)
+                time_stop_bars_list = _parse_grid_values(sc_time_stop_bars, int)
+                trailing_atr_mults = _parse_grid_values(sc_trailing_atr_mults, float)
+                min_avg_dollar_volumes = _parse_grid_values(sc_min_avg_dollar_volumes, float)
+                min_avg_volumes = _parse_grid_values(sc_min_avg_volumes, float)
+                vol_percentile_thresholds = _parse_grid_values(sc_vol_percentile_thresholds, float)
+                vol_lookback2s = _parse_grid_values(sc_vol_lookback2s, int)
+                max_gap_pcts = [value / 100 for value in _parse_grid_values(sc_max_gap_pcts, float)]
             except ValueError:
                 st.warning("数値候補の入力が正しくありません。カンマ区切りの数値で入力してください。")
             else:
-                if not all([volume_lookbacks, volume_multipliers, drop_pcts, close_positions, confirm_ks]):
+                required_lists = [
+                    volume_lookbacks,
+                    volume_multipliers,
+                    drop_pcts,
+                    close_positions,
+                    confirm_ks,
+                    atr_lookbacks,
+                    drop_atr_mults,
+                    trend_ma_lens,
+                    stop_atr_mults,
+                    time_stop_bars_list,
+                    min_avg_dollar_volumes,
+                    min_avg_volumes,
+                    vol_percentile_thresholds,
+                    vol_lookback2s,
+                    max_gap_pcts,
+                ]
+                if (not all(required_lists)) or (not sc_drop_condition_modes) or (not sc_trend_modes):
                     st.warning("候補値が空になっています。各項目に1つ以上入力してください。")
                 else:
-                    progress_update, progress_done = _build_progress_updater(
-                        "セリングクライマックス グリッドサーチ"
-                    )
+                    progress_update, progress_done = _build_progress_updater("セリングクライマックス グリッドサーチ")
                     eval_df, best_summary = grid_search_selling_climax(
                         volume_lookbacks=volume_lookbacks,
                         volume_multipliers=volume_multipliers,
                         drop_pcts=drop_pcts,
                         close_positions=close_positions,
                         confirm_ks=confirm_ks,
+                        atr_lookbacks=atr_lookbacks,
+                        drop_atr_mults=drop_atr_mults,
+                        drop_condition_modes=sc_drop_condition_modes,
+                        trend_ma_lens=trend_ma_lens,
+                        trend_modes=sc_trend_modes,
+                        stop_atr_mults=stop_atr_mults,
+                        time_stop_bars_list=time_stop_bars_list,
+                        trailing_atr_mults=trailing_atr_mults,
+                        min_avg_dollar_volumes=min_avg_dollar_volumes,
+                        min_avg_volumes=min_avg_volumes,
+                        vol_percentile_thresholds=vol_percentile_thresholds,
+                        vol_lookback2s=vol_lookback2s,
+                        max_gap_pcts=max_gap_pcts,
                         min_signals=int(sc_min_signals),
                         gap_penalty=float(sc_gap_penalty),
                         progress_callback=progress_update,

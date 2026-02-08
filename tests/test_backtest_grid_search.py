@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from app.backtest import grid_search_cup_shape
+from app.backtest import grid_search_cup_shape, grid_search_selling_climax
 
 
 class GridSearchCupShapePreloadTests(unittest.TestCase):
@@ -215,3 +215,63 @@ class GridSearchCupShapePreloadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GridSearchSellingClimaxExtendedParamsTests(unittest.TestCase):
+    @patch("app.backtest.load_price_csv")
+    def test_grid_search_selling_climax_accepts_extended_parameters(self, mock_load_price_csv):
+        rows = 80
+        base_dates = pd.date_range("2024-01-01", periods=rows, freq="D")
+        close = [100.0] * rows
+        open_ = [100.0] * rows
+        high = [101.0] * rows
+        low = [99.0] * rows
+        volume = [1000.0] * rows
+        close[30] = 94.0
+        open_[30] = 100.0
+        high[30] = 100.5
+        low[30] = 93.0
+        volume[30] = 10000.0
+        close[31] = 101.0
+        high[31] = 102.0
+
+        price_df = pd.DataFrame(
+            {
+                "date": base_dates,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            }
+        )
+        mock_load_price_csv.return_value = price_df
+
+        eval_df, best_summary = grid_search_selling_climax(
+            symbols=["1111", "2222"],
+            min_signals=0,
+            volume_lookbacks=[20],
+            volume_multipliers=[1.1],
+            drop_pcts=[0.03],
+            close_positions=[0.5],
+            confirm_ks=[2],
+            atr_lookbacks=[14],
+            drop_atr_mults=[1.5],
+            drop_condition_modes=["both"],
+            trend_ma_lens=[20],
+            trend_modes=["exclude_downtrend"],
+            stop_atr_mults=[1.0],
+            time_stop_bars_list=[3],
+            trailing_atr_mults=[1.0],
+            min_avg_dollar_volumes=[50000.0],
+            min_avg_volumes=[500.0],
+            vol_percentile_thresholds=[80.0],
+            vol_lookback2s=[20],
+            max_gap_pcts=[0.03],
+        )
+
+        self.assertFalse(eval_df.empty)
+        self.assertFalse(best_summary.empty)
+        self.assertIn("drop_atr_mult", eval_df.columns)
+        self.assertIn("trend_mode", eval_df.columns)
+        self.assertIn("stop_atr_mult", eval_df.columns)
