@@ -203,6 +203,53 @@ def _apply_sector_group_assignment(
     return updated_groups, changed_count
 
 
+def _build_search_result_df(
+    codes: List[str],
+    name_map: Dict[str, str],
+    sector_map: Dict[str, str],
+    checked_codes: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    checked_set = {str(code).zfill(4) for code in (checked_codes or [])}
+    rows = []
+    for code in codes:
+        normalized = str(code).zfill(4)
+        rows.append(
+            {
+                "選択": normalized in checked_set,
+                "コード": normalized,
+                "名称": name_map.get(normalized, "名称未登録"),
+                "業種": sector_map.get(normalized, ""),
+            }
+        )
+    return pd.DataFrame(rows, columns=["選択", "コード", "名称", "業種"])
+
+
+def _apply_checked_codes_to_groups(
+    custom_groups: Dict[str, List[str]],
+    checked_codes: List[str],
+    target_groups: List[str],
+) -> Tuple[Dict[str, List[str]], int, int]:
+    updated_groups = {group: list(codes) for group, codes in custom_groups.items()}
+    normalized_codes = [str(code).zfill(4) for code in checked_codes]
+    applied_count = 0
+    created_group_count = 0
+
+    for group in target_groups:
+        group_name = str(group).strip()
+        if not group_name:
+            continue
+        if group_name not in updated_groups:
+            updated_groups[group_name] = []
+            created_group_count += 1
+        existing = updated_groups[group_name]
+        for code in normalized_codes:
+            if code not in existing:
+                existing.append(code)
+                applied_count += 1
+
+    return updated_groups, applied_count, created_group_count
+
+
 
 def _sector_column_from_master_type(sector_type: str) -> Optional[str]:
     sector_map = {"17業種": "sector17", "33業種": "sector33"}
@@ -506,24 +553,77 @@ def _render_manual_group_ui(
     selected_codes = list(dict.fromkeys(selected_codes))
     option_codes = sorted(set(filtered_codes) | set(selected_codes))
 
+    if "manual_group_codes" not in st.session_state:
+        st.session_state["manual_group_codes"] = selected_codes
+
+    search_result_df = _build_search_result_df(
+        filtered_codes,
+        name_map,
+        sector_map,
+        checked_codes=st.session_state.get("manual_group_search_checked_codes", []),
+    )
+    edited_search_result_df = st.data_editor(
+        search_result_df,
+        hide_index=True,
+        use_container_width=True,
+        key="manual_group_search_result_editor",
+        disabled=["コード", "名称", "業種"],
+        column_config={
+            "選択": st.column_config.CheckboxColumn("選択"),
+        },
+    )
+    checked_codes = (
+        edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
+        .astype(str)
+        .str.zfill(4)
+        .tolist()
+    )
+    st.session_state["manual_group_search_checked_codes"] = checked_codes
+
+    target_groups = st.multiselect(
+        "チェックした銘柄の一括追加先グループ",
+        options=sorted(custom_groups),
+        key="manual_group_bulk_target_groups",
+    )
+    new_target_group_text = st.text_input(
+        "新規追加先グループ（カンマ区切りで複数可）",
+        value="",
+        key="manual_group_bulk_new_groups",
+    )
+
     col_bulk_add, col_bulk_remove, col_bulk_clear = st.columns(3)
     with col_bulk_add:
-        if st.button("検索結果を追加", key="manual_group_bulk_add_main"):
+        if st.button("チェック銘柄を一括グループ追加", key="manual_group_bulk_assign_checked_main"):
+            additional_groups = [g.strip() for g in new_target_group_text.split(",") if g.strip()]
+            target_group_names = list(dict.fromkeys(target_groups + additional_groups))
+            if not checked_codes:
+                st.warning("追加対象の銘柄をチェックしてください。")
+            elif not target_group_names:
+                st.warning("追加先グループを1つ以上選択または入力してください。")
+            else:
+                updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
+                    custom_groups,
+                    checked_codes,
+                    target_group_names,
+                )
+                try:
+                    save_custom_groups(updated_groups)
+                    st.success(
+                        f"チェック銘柄を一括追加しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）。"
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"チェック銘柄の一括追加に失敗しました: {exc}")
+    with col_bulk_remove:
+        if st.button("検索結果を選択へ追加", key="manual_group_bulk_add_main"):
             merged = list(dict.fromkeys(selected_codes + filtered_codes))
             st.session_state["manual_group_codes"] = merged
-            st.rerun()
-    with col_bulk_remove:
-        if st.button("検索結果を除外", key="manual_group_bulk_remove_main"):
-            remaining = [code for code in selected_codes if code not in filtered_codes]
-            st.session_state["manual_group_codes"] = remaining
             st.rerun()
     with col_bulk_clear:
         if st.button("選択をクリア", key="manual_group_bulk_clear_main"):
             st.session_state["manual_group_codes"] = []
+            st.session_state["manual_group_search_checked_codes"] = []
             st.rerun()
-
-    if "manual_group_codes" not in st.session_state:
-        st.session_state["manual_group_codes"] = selected_codes
 
     selected_codes = st.multiselect(
         "銘柄を選択",
@@ -2258,6 +2358,71 @@ def main():
 
     if "manual_group_codes_sidebar" not in st.session_state:
         st.session_state["manual_group_codes_sidebar"] = selected_codes
+
+    search_result_df_sidebar = _build_search_result_df(
+        filtered_codes,
+        name_map,
+        sector_map,
+        checked_codes=st.session_state.get("manual_group_search_checked_codes_sidebar", []),
+    )
+    edited_search_result_df_sidebar = st.sidebar.data_editor(
+        search_result_df_sidebar,
+        hide_index=True,
+        use_container_width=True,
+        key="manual_group_search_result_editor_sidebar",
+        disabled=["コード", "名称", "業種"],
+        column_config={
+            "選択": st.column_config.CheckboxColumn("選択"),
+        },
+    )
+    checked_codes_sidebar = (
+        edited_search_result_df_sidebar.loc[
+            edited_search_result_df_sidebar["選択"], "コード"
+        ]
+        .astype(str)
+        .str.zfill(4)
+        .tolist()
+    )
+    st.session_state["manual_group_search_checked_codes_sidebar"] = checked_codes_sidebar
+
+    target_groups_sidebar = st.sidebar.multiselect(
+        "チェックした銘柄の一括追加先グループ",
+        options=sorted(custom_groups),
+        key="manual_group_bulk_target_groups_sidebar",
+    )
+    new_target_group_text_sidebar = st.sidebar.text_input(
+        "新規追加先グループ（カンマ区切り）",
+        value="",
+        key="manual_group_bulk_new_groups_sidebar",
+    )
+    if st.sidebar.button(
+        "チェック銘柄を一括グループ追加",
+        key="manual_group_bulk_assign_checked_sidebar",
+    ):
+        additional_groups_sidebar = [
+            g.strip() for g in new_target_group_text_sidebar.split(",") if g.strip()
+        ]
+        target_group_names_sidebar = list(
+            dict.fromkeys(target_groups_sidebar + additional_groups_sidebar)
+        )
+        if not checked_codes_sidebar:
+            st.sidebar.warning("追加対象の銘柄をチェックしてください。")
+        elif not target_group_names_sidebar:
+            st.sidebar.warning("追加先グループを1つ以上選択または入力してください。")
+        else:
+            updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
+                custom_groups,
+                checked_codes_sidebar,
+                target_group_names_sidebar,
+            )
+            try:
+                save_custom_groups(updated_groups)
+                st.sidebar.success(
+                    f"チェック銘柄を一括追加しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.sidebar.error(f"チェック銘柄の一括追加に失敗しました: {exc}")
 
     selected_codes = st.sidebar.multiselect(
         "銘柄を選択",
