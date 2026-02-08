@@ -3,7 +3,9 @@ import unittest
 import pandas as pd
 
 from ui_streamlit import (
+    _apply_checked_codes_to_groups,
     _apply_sector_group_assignment,
+    _build_search_result_df,
     _calculate_minimum_data_length,
     _has_macd_cross,
     _latest_has_required_data,
@@ -184,6 +186,32 @@ class SectorGroupAssignmentTest(unittest.TestCase):
         )
         self.assertEqual(changed_remove, 2)
         self.assertEqual(updated_remove["自動車"], ["6758"])
+
+
+class SearchResultBulkGroupingTest(unittest.TestCase):
+    def test_build_search_result_df_marks_checked_codes(self):
+        df = _build_search_result_df(
+            codes=["7203", "6758"],
+            name_map={"7203": "トヨタ", "6758": "ソニー"},
+            sector_map={"7203": "輸送用機器", "6758": "電気機器"},
+            checked_codes=["6758"],
+        )
+
+        self.assertEqual(df.loc[0, "選択"], False)
+        self.assertEqual(df.loc[1, "選択"], True)
+        self.assertEqual(df.loc[0, "名称"], "トヨタ")
+
+    def test_apply_checked_codes_to_groups_creates_and_appends(self):
+        updated, applied_count, created_group_count = _apply_checked_codes_to_groups(
+            custom_groups={"既存": ["7203"]},
+            checked_codes=["7203", "6758"],
+            target_groups=["既存", "成長株"],
+        )
+
+        self.assertEqual(created_group_count, 1)
+        self.assertEqual(applied_count, 3)
+        self.assertEqual(updated["既存"], ["7203", "6758"])
+        self.assertEqual(updated["成長株"], ["7203", "6758"])
 
 
 if __name__ == "__main__":
