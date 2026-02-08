@@ -118,6 +118,55 @@ def _parse_grid_values(text: str, cast_type: type) -> List:
     return values
 
 
+def _parse_bulk_group_lines(text: str) -> Tuple[List[Tuple[str, List[str]]], List[str]]:
+    assignments: List[Tuple[str, List[str]]] = []
+    errors: List[str] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "," not in line:
+            errors.append(f"{line_no}行目: 区切り文字 ',' がありません。")
+            continue
+        symbol_raw, groups_raw = line.split(",", 1)
+        symbol = str(symbol_raw).strip().zfill(4)
+        groups = [group.strip() for group in groups_raw.split("|") if group.strip()]
+        if not symbol.isdigit() or len(symbol) != 4:
+            errors.append(f"{line_no}行目: 銘柄コード '{symbol_raw}' が不正です。")
+            continue
+        if not groups:
+            errors.append(f"{line_no}行目: グループ名がありません。")
+            continue
+        assignments.append((symbol, groups))
+    return assignments, errors
+
+
+def _apply_bulk_group_assignments(
+    custom_groups: Dict[str, List[str]],
+    assignments: List[Tuple[str, List[str]]],
+    symbols: List[str],
+) -> Tuple[Dict[str, List[str]], int, int, List[str]]:
+    available_symbols = {str(symbol).zfill(4) for symbol in symbols}
+    updated_groups = {group: list(codes) for group, codes in custom_groups.items()}
+    unknown_symbols = set()
+    applied_count = 0
+    created_group_count = 0
+
+    for symbol, groups in assignments:
+        if symbol not in available_symbols:
+            unknown_symbols.add(symbol)
+            continue
+        for group in groups:
+            if group not in updated_groups:
+                updated_groups[group] = []
+                created_group_count += 1
+            if symbol not in updated_groups[group]:
+                updated_groups[group].append(symbol)
+                applied_count += 1
+
+    return updated_groups, applied_count, created_group_count, sorted(unknown_symbols)
+
+
 def _save_run_inputs(section: str, values: Dict[str, object]) -> None:
     payload = {
         "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -290,7 +339,9 @@ def _render_manual_group_ui(
     else:
         filtered_codes = all_option_codes
 
-    selected_codes = list(current_group_codes)
+    selected_codes = list(
+        st.session_state.get("manual_group_codes", current_group_codes)
+    )
     if sector_filter_label and sector_filter_label != "指定なし":
         selected_codes = [
             code
@@ -301,14 +352,68 @@ def _render_manual_group_ui(
     selected_codes = list(dict.fromkeys(selected_codes))
     option_codes = sorted(set(filtered_codes) | set(selected_codes))
 
+    col_bulk_add, col_bulk_remove, col_bulk_clear = st.columns(3)
+    with col_bulk_add:
+        if st.button("検索結果を追加", key="manual_group_bulk_add_main"):
+            merged = list(dict.fromkeys(selected_codes + filtered_codes))
+            st.session_state["manual_group_codes"] = merged
+            st.rerun()
+    with col_bulk_remove:
+        if st.button("検索結果を除外", key="manual_group_bulk_remove_main"):
+            remaining = [code for code in selected_codes if code not in filtered_codes]
+            st.session_state["manual_group_codes"] = remaining
+            st.rerun()
+    with col_bulk_clear:
+        if st.button("選択をクリア", key="manual_group_bulk_clear_main"):
+            st.session_state["manual_group_codes"] = []
+            st.rerun()
+
     selected_codes = st.multiselect(
         "銘柄を選択",
         options=option_codes,
-        default=current_group_codes,
+        default=selected_codes,
         format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
         key="manual_group_codes",
     )
     st.caption(f"選択中: {len(selected_codes)}件")
+
+    with st.expander("一括カテゴリ分け（複数グループに同時追加）", expanded=False):
+        st.caption(
+            "1行に `銘柄コード,グループA|グループB` 形式で入力してください。例: `7203,自動車|大型株`"
+        )
+        bulk_text = st.text_area(
+            "一括入力",
+            key="manual_group_bulk_assign_text",
+            height=140,
+        )
+        if st.button("一括反映", key="manual_group_bulk_assign_apply"):
+            assignments, errors = _parse_bulk_group_lines(bulk_text)
+            if errors:
+                st.error("入力エラー:\n" + "\n".join(errors))
+            elif not assignments:
+                st.warning("有効な入力行がありません。")
+            else:
+                (
+                    updated_groups,
+                    applied_count,
+                    created_group_count,
+                    unknown_symbols,
+                ) = _apply_bulk_group_assignments(custom_groups, assignments, symbols)
+                try:
+                    save_custom_groups(updated_groups)
+                    if unknown_symbols:
+                        preview = ", ".join(unknown_symbols[:10])
+                        suffix = "..." if len(unknown_symbols) > 10 else ""
+                        st.warning(
+                            "CSV未取得のため追加できなかった銘柄: "
+                            f"{preview}{suffix}"
+                        )
+                    st.success(
+                        f"一括反映しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）"
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"一括反映に失敗しました: {exc}")
 
     with st.expander("セクター別の銘柄一覧", expanded=False):
         if sector_choices:
@@ -1868,6 +1973,44 @@ def main():
         key="manual_group_codes_sidebar",
     )
     st.sidebar.caption(f"選択中: {len(selected_codes)}件")
+
+    with st.sidebar.expander("一括カテゴリ分け（複数グループに同時追加）", expanded=False):
+        st.caption(
+            "1行に `銘柄コード,グループA|グループB` 形式で入力してください。"
+        )
+        bulk_text_sidebar = st.text_area(
+            "一括入力",
+            key="manual_group_bulk_assign_text_sidebar",
+            height=120,
+        )
+        if st.button("一括反映", key="manual_group_bulk_assign_apply_sidebar"):
+            assignments, errors = _parse_bulk_group_lines(bulk_text_sidebar)
+            if errors:
+                st.sidebar.error("入力エラー:\n" + "\n".join(errors))
+            elif not assignments:
+                st.sidebar.warning("有効な入力行がありません。")
+            else:
+                (
+                    updated_groups,
+                    applied_count,
+                    created_group_count,
+                    unknown_symbols,
+                ) = _apply_bulk_group_assignments(custom_groups, assignments, symbols)
+                try:
+                    save_custom_groups(updated_groups)
+                    if unknown_symbols:
+                        preview = ", ".join(unknown_symbols[:10])
+                        suffix = "..." if len(unknown_symbols) > 10 else ""
+                        st.sidebar.warning(
+                            "CSV未取得のため追加できなかった銘柄: "
+                            f"{preview}{suffix}"
+                        )
+                    st.sidebar.success(
+                        f"一括反映しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）"
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.sidebar.error(f"一括反映に失敗しました: {exc}")
 
     with st.sidebar.expander("セクター別の銘柄一覧", expanded=False):
         if sector_choices:

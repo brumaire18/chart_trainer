@@ -3,9 +3,11 @@ import unittest
 import pandas as pd
 
 from ui_streamlit import (
+    _apply_bulk_group_assignments,
     _calculate_minimum_data_length,
     _has_macd_cross,
     _latest_has_required_data,
+    _parse_bulk_group_lines,
 )
 
 
@@ -147,5 +149,41 @@ class CalculateMinimumDataLengthTest(unittest.TestCase):
         self.assertTrue(any("20日平均出来高" in msg for msg in reasons))
 
 
+
+class BulkManualGroupAssignmentTest(unittest.TestCase):
+    def test_parse_bulk_group_lines(self):
+        assignments, errors = _parse_bulk_group_lines(
+            "7203,自動車|大型株\n6758,ハイテク\nabc,不正\n"
+        )
+
+        self.assertEqual(
+            assignments,
+            [
+                ("7203", ["自動車", "大型株"]),
+                ("6758", ["ハイテク"]),
+            ],
+        )
+        self.assertEqual(len(errors), 1)
+
+    def test_apply_bulk_group_assignments(self):
+        groups = {"既存": ["7203"]}
+        assignments = [
+            ("7203", ["既存", "自動車"]),
+            ("6758", ["ハイテク"]),
+            ("9999", ["対象外"]),
+        ]
+
+        updated, applied_count, created_group_count, unknown_symbols = _apply_bulk_group_assignments(
+            groups,
+            assignments,
+            symbols=["7203", "6758"],
+        )
+
+        self.assertEqual(updated["既存"], ["7203"])
+        self.assertEqual(updated["自動車"], ["7203"])
+        self.assertEqual(updated["ハイテク"], ["6758"])
+        self.assertEqual(applied_count, 2)
+        self.assertEqual(created_group_count, 2)
+        self.assertEqual(unknown_symbols, ["9999"])
 if __name__ == "__main__":
     unittest.main()
