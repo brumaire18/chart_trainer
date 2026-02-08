@@ -475,6 +475,7 @@ def scan_cup_with_handle_screen(
 
 def run_canslim_backtest(
     symbols: Optional[Iterable[str]] = None,
+    symbol_price_data: Optional[Dict[str, pd.DataFrame]] = None,
     seed: int = 42,
     train_ratio: float = 0.5,
     lookahead: int = 20,
@@ -510,7 +511,10 @@ def run_canslim_backtest(
     total_symbols = len(target_symbols)
     for idx, symbol in enumerate(target_symbols, start=1):
         try:
-            df_price = load_price_csv(symbol)
+            if symbol_price_data is not None and symbol in symbol_price_data:
+                df_price = symbol_price_data[symbol]
+            else:
+                df_price = load_price_csv(symbol)
             symbol_signals = scan_canslim_patterns(
                 df_price,
                 lookahead=lookahead,
@@ -1313,6 +1317,19 @@ def grid_search_cup_shape(
     recovery_ratios = recovery_ratios or [0.82, 0.85, 0.88]
     handle_max_depths = handle_max_depths or [0.1, 0.12, 0.15]
 
+    raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    target_symbols: List[str] = []
+    symbol_price_data: Dict[str, pd.DataFrame] = {}
+    for symbol in raw_symbols:
+        try:
+            symbol_price_data[symbol] = load_price_csv(symbol)
+            target_symbols.append(symbol)
+        except Exception:
+            continue
+
+    if not target_symbols:
+        return pd.DataFrame(), pd.DataFrame()
+
     eval_records = []
     best_score = float("-inf")
     best_params: Optional[Dict[str, float]] = None
@@ -1334,7 +1351,8 @@ def grid_search_cup_shape(
                     for handle_max_depth in handle_max_depths:
                         combo_index += 1
                         results_df, summary_df = run_canslim_backtest(
-                            symbols=symbols,
+                            symbols=target_symbols,
+                            symbol_price_data=symbol_price_data,
                             seed=seed,
                             train_ratio=train_ratio,
                             lookahead=lookahead,
