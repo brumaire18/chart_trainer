@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -10,6 +12,8 @@ from ui_streamlit import (
     _has_macd_cross,
     _latest_has_required_data,
     _parse_bulk_group_lines,
+    _append_pair_grid_search_history,
+    _load_pair_grid_search_history,
 )
 
 
@@ -212,6 +216,59 @@ class SearchResultBulkGroupingTest(unittest.TestCase):
         self.assertEqual(applied_count, 3)
         self.assertEqual(updated["既存"], ["7203", "6758"])
         self.assertEqual(updated["成長株"], ["7203", "6758"])
+
+
+class PairGridSearchHistoryTest(unittest.TestCase):
+    def test_append_and_load_history(self):
+        with TemporaryDirectory() as tmp_dir:
+            history_path = Path(tmp_dir) / "history.csv"
+            optimization_df = pd.DataFrame(
+                [
+                    {
+                        "lookback": 60,
+                        "entry_z": 2.0,
+                        "exit_z": 0.5,
+                        "stop_z": 3.5,
+                        "max_holding_days": 20,
+                        "trade_count": 8,
+                        "win_rate": 0.5,
+                        "total_pnl": 123.4,
+                        "avg_pnl": 15.425,
+                    }
+                ]
+            )
+
+            saved_rows = _append_pair_grid_search_history(
+                optimization_df,
+                min_trades=5,
+                start_date="2023-01-01",
+                end_date="2023-12-31",
+                param_grid={"lookback": [40, 60]},
+                history_path=history_path,
+            )
+
+            self.assertEqual(saved_rows, 1)
+            loaded_df = _load_pair_grid_search_history(history_path=history_path)
+            self.assertEqual(len(loaded_df), 1)
+            self.assertEqual(int(loaded_df.loc[0, "min_trades"]), 5)
+            self.assertEqual(str(loaded_df.loc[0, "start_date"]), "2023-01-01")
+            self.assertIn('"lookback": [40, 60]', str(loaded_df.loc[0, "param_grid"]))
+
+    def test_append_skips_empty_results(self):
+        with TemporaryDirectory() as tmp_dir:
+            history_path = Path(tmp_dir) / "history.csv"
+            saved_rows = _append_pair_grid_search_history(
+                pd.DataFrame(),
+                min_trades=5,
+                start_date=None,
+                end_date=None,
+                param_grid={"lookback": [40]},
+                history_path=history_path,
+            )
+
+            self.assertEqual(saved_rows, 0)
+            self.assertFalse(history_path.exists())
+
 
 
 if __name__ == "__main__":
