@@ -1,6 +1,7 @@
 from collections import Counter
 from datetime import date, datetime, timedelta
 import json
+from pathlib import Path
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -63,6 +64,7 @@ from app.pair_trading import (
 LIGHT_PLAN_YEARS = 5
 PAIR_CACHE_PATH = META_DIR / "pair_candidates_cache.json"
 RUN_INPUTS_PATH = META_DIR / "run_input_settings.json"
+PAIR_GRID_SEARCH_HISTORY_PATH = META_DIR / "pair_trade_grid_search_history.csv"
 
 
 def _format_eta(seconds: Optional[float]) -> str:
@@ -308,6 +310,51 @@ def _save_run_inputs(section: str, values: Dict[str, object]) -> None:
         )
     except Exception as exc:
         st.warning(f"入力値の保存に失敗しました: {exc}")
+
+
+def _append_pair_grid_search_history(
+    optimization_df: pd.DataFrame,
+    *,
+    min_trades: int,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    param_grid: Dict[str, List[float]],
+    history_path: Optional["Path"] = None,
+) -> int:
+    if optimization_df is None or optimization_df.empty:
+        return 0
+
+    target_path = history_path or PAIR_GRID_SEARCH_HISTORY_PATH
+    run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    saved_at = datetime.now().isoformat(timespec="seconds")
+    history_df = optimization_df.copy()
+    history_df.insert(0, "saved_at", saved_at)
+    history_df.insert(1, "run_id", run_id)
+    history_df["min_trades"] = int(min_trades)
+    history_df["start_date"] = start_date or ""
+    history_df["end_date"] = end_date or ""
+    history_df["param_grid"] = json.dumps(param_grid, ensure_ascii=False)
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_path.exists():
+        existing_df = pd.read_csv(target_path)
+        history_df = pd.concat([existing_df, history_df], ignore_index=True)
+    history_df.to_csv(target_path, index=False)
+    return len(optimization_df)
+
+
+def _load_pair_grid_search_history(
+    history_path: Optional["Path"] = None,
+) -> pd.DataFrame:
+    target_path = history_path or PAIR_GRID_SEARCH_HISTORY_PATH
+    if not target_path.exists():
+        return pd.DataFrame()
+    history_df = pd.read_csv(target_path)
+    if history_df.empty:
+        return history_df
+    if "saved_at" in history_df.columns:
+        history_df = history_df.sort_values("saved_at", ascending=False)
+    return history_df.reset_index(drop=True)
 
 
 def _attach_pair_sector_info(
@@ -5959,11 +6006,25 @@ def main():
                         )
                         progress_done()
                         st.session_state["pair_trade_optimization"] = optimization_df
+                        saved_rows = _append_pair_grid_search_history(
+                            optimization_df,
+                            min_trades=int(min_trades),
+                            start_date=start_date,
+                            end_date=end_date,
+                            param_grid=param_grid,
+                        )
+                        if saved_rows:
+                            st.success(f"グリッドサーチ結果を{saved_rows}件保存しました。")
 
                 optimization_df = st.session_state.get("pair_trade_optimization")
                 if optimization_df is not None and not optimization_df.empty:
                     st.markdown("#### 探索結果（上位20件）")
                     st.dataframe(optimization_df.head(20), use_container_width=True)
+
+                history_df = _load_pair_grid_search_history()
+                if not history_df.empty:
+                    st.markdown("#### 保存済みグリッドサーチ結果（上位200件）")
+                    st.dataframe(history_df.head(200), use_container_width=True)
 
     with tab_breadth:
         st.subheader("マーケットブレッドス")
