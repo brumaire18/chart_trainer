@@ -333,6 +333,15 @@ def _format_group_master_label(
         return f"{group_name}（マスタ未設定）"
     return f"{group_name}（{sector_type}: {sector_value}）"
 
+
+def _format_group_destination_label(
+    group_name: str,
+    group_master: Dict[str, Dict[str, str]],
+) -> str:
+    if group_name in group_master:
+        return f"[既存マスタ] {_format_group_master_label(group_name, group_master)}"
+    return f"[カスタム] {group_name}"
+
 def _save_run_inputs(section: str, values: Dict[str, object]) -> None:
     payload = {
         "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -666,55 +675,70 @@ def _render_manual_group_ui(
     )
     st.session_state["manual_group_search_checked_codes"] = checked_codes
 
-    target_groups = st.multiselect(
-        "チェックした銘柄の一括追加先グループ",
-        options=sorted(custom_groups),
-        key="manual_group_bulk_target_groups",
-    )
-    new_target_group_text = st.text_input(
-        "新規追加先グループ（カンマ区切りで複数可）",
-        value="",
-        key="manual_group_bulk_new_groups",
+    destination_candidates = sorted(set(custom_groups) | set(group_master))
+    destination_group = st.selectbox(
+        "追加先マスタ",
+        options=["未選択"] + destination_candidates,
+        key="manual_group_destination",
+        format_func=lambda g: g
+        if g == "未選択"
+        else _format_group_destination_label(g, group_master),
     )
 
-    col_bulk_add, col_bulk_remove, col_bulk_clear = st.columns(3)
-    with col_bulk_add:
-        if st.button("チェック銘柄を一括グループ追加", key="manual_group_bulk_assign_checked_main"):
-            additional_groups = [g.strip() for g in new_target_group_text.split(",") if g.strip()]
-            target_group_names = list(dict.fromkeys(target_groups + additional_groups))
-            if not checked_codes:
-                st.warning("追加対象の銘柄をチェックしてください。")
-            elif not target_group_names:
-                st.warning("追加先グループを1つ以上選択または入力してください。")
-            else:
-                updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
-                    custom_groups,
-                    checked_codes,
-                    target_group_names,
+    if st.button("選択銘柄をマスタへ追加", key="manual_group_apply_checked_to_master"):
+        if not checked_codes:
+            st.warning("追加対象の銘柄をチェックしてください。")
+        elif destination_group == "未選択":
+            st.warning("追加先マスタを選択してください。")
+        else:
+            updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
+                custom_groups,
+                checked_codes,
+                [destination_group],
+            )
+            excluded_count = 0
+            if destination_group in group_master:
+                before_filter_count = len(updated_groups.get(destination_group, []))
+                filtered_codes = _filter_codes_by_group_master(
+                    updated_groups.get(destination_group, []),
+                    group_master,
+                    destination_group,
+                    listed_df,
                 )
-                _save_custom_groups_with_feedback(
-                    updated_groups,
-                    f"チェック銘柄を一括追加しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）。",
-                    "チェック銘柄の一括追加に失敗しました",
+                excluded_count = before_filter_count - len(filtered_codes)
+                updated_groups[destination_group] = filtered_codes
+            try:
+                save_custom_groups(updated_groups)
+                st.success(
+                    "選択銘柄をマスタへ追加しました"
+                    f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
+                    f"セクター条件による除外: {excluded_count}件）。"
                 )
-    with col_bulk_remove:
-        if st.button("検索結果を選択へ追加", key="manual_group_bulk_add_main"):
-            merged = list(dict.fromkeys(selected_codes + filtered_codes))
-            st.session_state["manual_group_codes"] = merged
-            st.rerun()
-    with col_bulk_clear:
-        if st.button("選択をクリア", key="manual_group_bulk_clear_main"):
-            st.session_state["manual_group_codes"] = []
-            st.session_state["manual_group_search_checked_codes"] = []
-            st.rerun()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"マスタへの追加に失敗しました: {exc}")
 
-    selected_codes = st.multiselect(
-        "銘柄を選択",
-        options=option_codes,
-        format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
-        key="manual_group_codes",
-    )
-    st.caption(f"選択中: {len(selected_codes)}件")
+    selected_codes = list(st.session_state.get("manual_group_codes", []))
+    with st.expander("詳細操作（非推奨）", expanded=False):
+        col_bulk_remove, col_bulk_clear = st.columns(2)
+        with col_bulk_remove:
+            if st.button("検索結果を選択へ追加", key="manual_group_bulk_add_main"):
+                merged = list(dict.fromkeys(selected_codes + filtered_codes))
+                st.session_state["manual_group_codes"] = merged
+                st.rerun()
+        with col_bulk_clear:
+            if st.button("選択をクリア", key="manual_group_bulk_clear_main"):
+                st.session_state["manual_group_codes"] = []
+                st.session_state["manual_group_search_checked_codes"] = []
+                st.rerun()
+
+        selected_codes = st.multiselect(
+            "銘柄を選択（詳細操作）",
+            options=option_codes,
+            format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+            key="manual_group_codes",
+        )
+        st.caption(f"選択中: {len(selected_codes)}件")
 
     with st.expander("一括カテゴリ分け（複数グループに同時追加）", expanded=False):
         st.caption(
