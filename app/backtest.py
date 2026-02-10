@@ -631,7 +631,19 @@ def run_canslim_backtest(
     カップ/ソーサーウィズハンドルのバックテストを実施する。
     """
 
-    target_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    target_symbols: List[str] = []
+    symbol_price_data: Dict[str, pd.DataFrame] = {}
+    for symbol in raw_symbols:
+        try:
+            df_price = load_price_csv(symbol)
+        except Exception:
+            continue
+        if df_price.empty:
+            continue
+        symbol_price_data[symbol] = df_price.sort_values("date").reset_index(drop=True)
+        target_symbols.append(symbol)
+
     if not target_symbols:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -1016,7 +1028,19 @@ def run_new_high_breakout_backtest(
     setup_condition は前日引けで評価されるユーザー定義の条件。
     """
 
-    target_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    target_symbols: List[str] = []
+    symbol_price_data: Dict[str, pd.DataFrame] = {}
+    for symbol in raw_symbols:
+        try:
+            df_price = load_price_csv(symbol)
+        except Exception:
+            continue
+        if df_price.empty:
+            continue
+        symbol_price_data[symbol] = df_price.sort_values("date").reset_index(drop=True)
+        target_symbols.append(symbol)
+
     if not target_symbols:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -1257,7 +1281,19 @@ def grid_search_selling_climax(
     vol_lookback2s = vol_lookback2s or [20]
     max_gap_pcts = max_gap_pcts or [None]
 
-    target_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    target_symbols: List[str] = []
+    symbol_price_data: Dict[str, pd.DataFrame] = {}
+    for symbol in raw_symbols:
+        try:
+            df_price = load_price_csv(symbol)
+        except Exception:
+            continue
+        if df_price.empty:
+            continue
+        symbol_price_data[symbol] = df_price.sort_values("date").reset_index(drop=True)
+        target_symbols.append(symbol)
+
     if not target_symbols:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -1320,13 +1356,7 @@ def grid_search_selling_climax(
         val_success = 0
 
         for symbol in target_symbols:
-            try:
-                df_price = load_price_csv(symbol)
-            except Exception:
-                continue
-            if df_price.empty:
-                continue
-            df_sorted = df_price.sort_values("date").reset_index(drop=True)
+            df_sorted = symbol_price_data[symbol]
             candidates = _detect_selling_climax_candidates(
                 df_sorted,
                 volume_lookback=volume_lookback,

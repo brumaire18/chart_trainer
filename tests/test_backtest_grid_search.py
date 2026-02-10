@@ -217,6 +217,58 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class GridSearchSellingClimaxPreloadTests(unittest.TestCase):
+    @patch("app.backtest.load_price_csv")
+    def test_grid_search_selling_climax_does_not_reload_price_csv_in_combinations(
+        self,
+        mock_load_price_csv,
+    ):
+        price_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2024-01-02", "2024-01-01"]),
+                "open": [100.0, 101.0],
+                "high": [101.0, 102.0],
+                "low": [99.0, 100.0],
+                "close": [100.5, 101.5],
+                "volume": [1000, 1100],
+            }
+        )
+
+        def load_side_effect(symbol):
+            if symbol == "3333":
+                raise ValueError("load failed")
+            return price_df
+
+        mock_load_price_csv.side_effect = load_side_effect
+
+        eval_df, best_summary = grid_search_selling_climax(
+            symbols=["1111", "2222", "3333"],
+            min_signals=0,
+            volume_lookbacks=[20, 30],
+            volume_multipliers=[1.1, 1.3],
+            drop_pcts=[0.03],
+            close_positions=[0.5],
+            confirm_ks=[2],
+            atr_lookbacks=[14],
+            drop_atr_mults=[1.5],
+            drop_condition_modes=["drop_pct_only"],
+            trend_ma_lens=[20],
+            trend_modes=["none"],
+            stop_atr_mults=[1.0],
+            time_stop_bars_list=[3],
+            trailing_atr_mults=[1.0],
+            min_avg_dollar_volumes=[None],
+            min_avg_volumes=[None],
+            vol_percentile_thresholds=[None],
+            vol_lookback2s=[20],
+            max_gap_pcts=[None],
+        )
+
+        self.assertEqual(mock_load_price_csv.call_count, 3)
+        self.assertEqual(len(eval_df), 4)
+        self.assertFalse(best_summary.empty)
+
+
 class GridSearchSellingClimaxExtendedParamsTests(unittest.TestCase):
     @patch("app.backtest.load_price_csv")
     def test_grid_search_selling_climax_accepts_extended_parameters(self, mock_load_price_csv):
