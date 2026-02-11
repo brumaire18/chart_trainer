@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from itertools import product
 import random
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -226,29 +226,152 @@ def _detect_selling_climax_candidates(
     max_gap_pct: Optional[float] = None,
     index_filter_mask: Optional[pd.Series] = None,
 ) -> pd.Series:
+    feature_cache = _build_selling_climax_feature_cache(
+        df,
+        needed_lookbacks={volume_lookback, liquidity_lookback},
+        needed_atr_lookbacks={atr_lookback} if atr_lookback is not None else set(),
+        needed_vol_lookbacks={vol_lookback2} if vol_lookback2 is not None else set(),
+        needed_trend_ma_lens={trend_ma_len} if trend_ma_len is not None else set(),
+    )
+    return _detect_selling_climax_candidates_with_cache(
+        df,
+        feature_cache=feature_cache,
+        volume_lookback=volume_lookback,
+        volume_multiplier=volume_multiplier,
+        drop_pct=drop_pct,
+        close_position=close_position,
+        atr_lookback=atr_lookback,
+        drop_atr_mult=drop_atr_mult,
+        drop_condition_mode=drop_condition_mode,
+        trend_ma_len=trend_ma_len,
+        trend_mode=trend_mode,
+        min_avg_dollar_volume=min_avg_dollar_volume,
+        min_avg_volume=min_avg_volume,
+        liquidity_lookback=liquidity_lookback,
+        vol_percentile_threshold=vol_percentile_threshold,
+        vol_lookback2=vol_lookback2,
+        max_gap_pct=max_gap_pct,
+        index_filter_mask=index_filter_mask,
+    )
+
+
+def _build_selling_climax_feature_cache(
+    df: pd.DataFrame,
+    needed_lookbacks: Set[int],
+    needed_atr_lookbacks: Set[int],
+    needed_vol_lookbacks: Set[int],
+    needed_trend_ma_lens: Set[int],
+) -> Dict[str, Any]:
+    if df.empty:
+        return {}
+
+    sorted_lookbacks = sorted({lb for lb in needed_lookbacks if lb is not None and lb > 0})
+    sorted_atr_lookbacks = sorted(
+        {lb for lb in needed_atr_lookbacks if lb is not None and lb > 0}
+    )
+    sorted_vol_lookbacks = sorted(
+        {lb for lb in needed_vol_lookbacks if lb is not None and lb > 1}
+    )
+    sorted_trend_lens = sorted(
+        {lb for lb in needed_trend_ma_lens if lb is not None and lb > 1}
+    )
+
+    prev_close = df["close"].shift(1)
+    candle_range = df["high"] - df["low"]
+    close_pos = (df["close"] - df["low"]) / candle_range.replace(0, np.nan)
+
+    true_range = pd.concat(
+        [
+            candle_range,
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    volume_avg = {
+        lookback: df["volume"].rolling(lookback, min_periods=lookback).mean()
+        for lookback in sorted_lookbacks
+    }
+    trend_ma = {
+        lookback: df["close"].rolling(lookback, min_periods=lookback).mean()
+        for lookback in sorted_trend_lens
+    }
+    trend_ma_slope_up = {
+        lookback: ma_series > ma_series.shift(1)
+        for lookback, ma_series in trend_ma.items()
+    }
+
+    avg_volume = {
+        lookback: df["volume"].rolling(lookback, min_periods=lookback).mean()
+        for lookback in sorted_lookbacks
+    }
+    avg_dollar_volume = {
+        lookback: (df["close"] * df["volume"])
+        .rolling(lookback, min_periods=lookback)
+        .mean()
+        for lookback in sorted_lookbacks
+    }
+
+    volume_quantile = {
+        lookback: df["volume"].shift(1).rolling(lookback, min_periods=lookback)
+        for lookback in sorted_vol_lookbacks
+    }
+    atr = {
+        lookback: true_range.rolling(lookback, min_periods=lookback).mean()
+        for lookback in sorted_atr_lookbacks
+    }
+
+    return {
+        "prev_close": prev_close,
+        "candle_range": candle_range,
+        "close_pos": close_pos,
+        "volume_avg": volume_avg,
+        "trend_ma": trend_ma,
+        "trend_ma_slope_up": trend_ma_slope_up,
+        "avg_volume": avg_volume,
+        "avg_dollar_volume": avg_dollar_volume,
+        "volume_quantile": volume_quantile,
+        "atr": atr,
+    }
+
+
+def _detect_selling_climax_candidates_with_cache(
+    df: pd.DataFrame,
+    feature_cache: Dict[str, Any],
+    volume_lookback: int,
+    volume_multiplier: float,
+    drop_pct: float,
+    close_position: float,
+    atr_lookback: Optional[int] = None,
+    drop_atr_mult: Optional[float] = None,
+    drop_condition_mode: str = "drop_pct_only",
+    trend_ma_len: Optional[int] = None,
+    trend_mode: str = "none",
+    min_avg_dollar_volume: Optional[float] = None,
+    min_avg_volume: Optional[float] = None,
+    liquidity_lookback: int = 20,
+    vol_percentile_threshold: Optional[float] = None,
+    vol_lookback2: Optional[int] = None,
+    max_gap_pct: Optional[float] = None,
+    index_filter_mask: Optional[pd.Series] = None,
+) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=bool)
 
-    volume_avg = df["volume"].rolling(volume_lookback, min_periods=volume_lookback).mean()
+    prev_close = feature_cache["prev_close"]
+    candle_range = feature_cache["candle_range"]
+    close_pos = feature_cache["close_pos"]
+
+    volume_avg = feature_cache["volume_avg"][volume_lookback]
     volume_ratio = df["volume"] / volume_avg
-    prev_close = df["close"].shift(1)
     drop_ratio = (df["close"] - prev_close) / prev_close
-    candle_range = df["high"] - df["low"]
-    close_pos = (df["close"] - df["low"]) / candle_range.replace(0, np.nan)
 
     drop_pct_condition = drop_ratio <= -abs(drop_pct)
 
     drop_atr_condition = pd.Series(False, index=df.index)
     if atr_lookback is not None and drop_atr_mult is not None and atr_lookback > 0:
-        true_range = pd.concat(
-            [
-                df["high"] - df["low"],
-                (df["high"] - prev_close).abs(),
-                (df["low"] - prev_close).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
-        atr = true_range.rolling(atr_lookback, min_periods=atr_lookback).mean()
+        atr = feature_cache["atr"][atr_lookback]
         drop_atr_condition = (-drop_ratio * prev_close) >= (atr * float(drop_atr_mult))
 
     if drop_condition_mode == "drop_atr_only":
@@ -260,8 +383,8 @@ def _detect_selling_climax_candidates(
 
     trend_condition = pd.Series(True, index=df.index)
     if trend_ma_len is not None and trend_ma_len > 1 and trend_mode != "none":
-        trend_ma = df["close"].rolling(trend_ma_len, min_periods=trend_ma_len).mean()
-        ma_slope_up = trend_ma > trend_ma.shift(1)
+        trend_ma = feature_cache["trend_ma"][trend_ma_len]
+        ma_slope_up = feature_cache["trend_ma_slope_up"][trend_ma_len]
         close_above_ma = df["close"] >= trend_ma
         if trend_mode == "reversion_only_in_uptrend":
             trend_condition = close_above_ma & ma_slope_up
@@ -272,20 +395,16 @@ def _detect_selling_climax_candidates(
 
     liquidity_condition = pd.Series(True, index=df.index)
     if min_avg_volume is not None:
-        avg_volume = df["volume"].rolling(liquidity_lookback, min_periods=liquidity_lookback).mean()
+        avg_volume = feature_cache["avg_volume"][liquidity_lookback]
         liquidity_condition &= avg_volume >= float(min_avg_volume)
     if min_avg_dollar_volume is not None:
-        avg_dollar_volume = (df["close"] * df["volume"]).rolling(
-            liquidity_lookback, min_periods=liquidity_lookback
-        ).mean()
+        avg_dollar_volume = feature_cache["avg_dollar_volume"][liquidity_lookback]
         liquidity_condition &= avg_dollar_volume >= float(min_avg_dollar_volume)
 
     volume_shape_condition = pd.Series(True, index=df.index)
     if vol_percentile_threshold is not None and vol_lookback2 is not None and vol_lookback2 > 1:
-        volume_quantile = (
-            df["volume"].shift(1).rolling(vol_lookback2, min_periods=vol_lookback2).quantile(
-                float(vol_percentile_threshold) / 100.0
-            )
+        volume_quantile = feature_cache["volume_quantile"][vol_lookback2].quantile(
+            float(vol_percentile_threshold) / 100.0
         )
         volume_shape_condition = df["volume"] >= volume_quantile
 
@@ -1337,6 +1456,25 @@ def grid_search_selling_climax(
     )
     total_combos = len(combinations)
 
+    needed_volume_lookbacks = {int(v) for v in volume_lookbacks if v is not None and v > 0}
+    needed_liquidity_lookbacks = {
+        int(liquidity_lookback)
+    } if liquidity_lookback is not None and liquidity_lookback > 0 else set()
+    needed_lookbacks = needed_volume_lookbacks | needed_liquidity_lookbacks
+    needed_atr_lookbacks = {int(v) for v in atr_lookbacks if v is not None and v > 0}
+    needed_vol_lookbacks = {int(v) for v in vol_lookback2s if v is not None and v > 1}
+    needed_trend_ma_lens = {int(v) for v in trend_ma_lens if v is not None and v > 1}
+
+    symbol_feature_cache: Dict[str, Dict[str, Any]] = {}
+    for symbol in target_symbols:
+        symbol_feature_cache[symbol] = _build_selling_climax_feature_cache(
+            symbol_price_data[symbol],
+            needed_lookbacks=needed_lookbacks,
+            needed_atr_lookbacks=needed_atr_lookbacks,
+            needed_vol_lookbacks=needed_vol_lookbacks,
+            needed_trend_ma_lens=needed_trend_ma_lens,
+        )
+
     for combo_index, (
         volume_lookback,
         volume_multiplier,
@@ -1364,8 +1502,9 @@ def grid_search_selling_climax(
 
         for symbol in target_symbols:
             df_sorted = symbol_price_data[symbol]
-            candidates = _detect_selling_climax_candidates(
+            candidates = _detect_selling_climax_candidates_with_cache(
                 df_sorted,
+                feature_cache=symbol_feature_cache[symbol],
                 volume_lookback=volume_lookback,
                 volume_multiplier=volume_multiplier,
                 drop_pct=drop_pct,
