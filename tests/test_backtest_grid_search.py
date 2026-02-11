@@ -269,6 +269,72 @@ class GridSearchSellingClimaxPreloadTests(unittest.TestCase):
         self.assertFalse(best_summary.empty)
 
 
+class GridSearchSellingClimaxSuccessCacheTests(unittest.TestCase):
+    @patch("app.backtest._label_selling_climax_success")
+    @patch("app.backtest.load_price_csv")
+    def test_grid_search_selling_climax_reuses_success_cache_by_symbol_and_key(
+        self,
+        mock_load_price_csv,
+        mock_label_success,
+    ):
+        rows = 60
+        dates = pd.date_range("2024-01-01", periods=rows, freq="D")
+        close = [100.0] * rows
+        open_ = [100.0] * rows
+        high = [101.0] * rows
+        low = [99.0] * rows
+        volume = [1000.0] * rows
+
+        for idx in [30, 40]:
+            close[idx] = 95.0
+            open_[idx] = 101.0
+            high[idx] = 102.0
+            low[idx] = 94.0
+            volume[idx] = 5000.0
+
+        price_df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            }
+        )
+        mock_load_price_csv.return_value = price_df
+
+        mock_label_success.side_effect = lambda df, **kwargs: pd.Series(True, index=df.index)
+
+        eval_df, best_summary = grid_search_selling_climax(
+            symbols=["1111"],
+            min_signals=0,
+            volume_lookbacks=[20],
+            volume_multipliers=[1.1, 1.2],
+            drop_pcts=[0.03],
+            close_positions=[0.5],
+            confirm_ks=[2],
+            atr_lookbacks=[14],
+            drop_atr_mults=[1.5],
+            drop_condition_modes=["drop_pct_only"],
+            trend_ma_lens=[20],
+            trend_modes=["none"],
+            stop_atr_mults=[1.0],
+            time_stop_bars_list=[3],
+            trailing_atr_mults=[1.0],
+            min_avg_dollar_volumes=[None],
+            min_avg_volumes=[None],
+            vol_percentile_thresholds=[None],
+            vol_lookback2s=[20],
+            max_gap_pcts=[None],
+        )
+
+        self.assertFalse(eval_df.empty)
+        self.assertFalse(best_summary.empty)
+        self.assertEqual(mock_label_success.call_count, 1)
+
+
+
 class GridSearchSellingClimaxExtendedParamsTests(unittest.TestCase):
     @patch("app.backtest.load_price_csv")
     def test_grid_search_selling_climax_accepts_extended_parameters(self, mock_load_price_csv):

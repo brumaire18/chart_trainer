@@ -1301,6 +1301,13 @@ def grid_search_selling_climax(
         target_symbols, seed=seed, train_ratio=train_ratio
     )
     train_set = set(train_symbols)
+    symbol_success_cache: Dict[
+        str,
+        Dict[
+            Tuple[int, Optional[int], Optional[float], Optional[float], int],
+            pd.Series,
+        ],
+    ] = {symbol: {} for symbol in target_symbols}
 
     eval_records = []
     best_score = float("-inf")
@@ -1377,14 +1384,24 @@ def grid_search_selling_climax(
             )
             if not candidates.any():
                 continue
-            success = _label_selling_climax_success(
-                df_sorted,
-                confirm_k=confirm_k,
-                time_stop_bars=time_stop_bars,
-                stop_atr_mult=stop_atr_mult,
-                trailing_atr_mult=trailing_atr_mult,
-                atr_lookback=atr_lookback,
+            success_key = (
+                confirm_k,
+                time_stop_bars,
+                stop_atr_mult,
+                trailing_atr_mult,
+                atr_lookback,
             )
+            success = symbol_success_cache[symbol].get(success_key)
+            if success is None:
+                success = _label_selling_climax_success(
+                    df_sorted,
+                    confirm_k=confirm_k,
+                    time_stop_bars=time_stop_bars,
+                    stop_atr_mult=stop_atr_mult,
+                    trailing_atr_mult=trailing_atr_mult,
+                    atr_lookback=atr_lookback,
+                )
+                symbol_success_cache[symbol][success_key] = success
             signal_count = int(candidates.sum())
             success_count = int((candidates & success).sum())
             if symbol in train_set:
