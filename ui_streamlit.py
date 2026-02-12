@@ -4367,24 +4367,22 @@ def main():
             )
         stat_filters = st.columns([1, 1, 1])
         with stat_filters[0]:
-            max_p_value = 0.1 if cointegration_available else None
-            st.number_input(
-                "コインテグレーションp値上限（固定: 0.10）",
-                min_value=0.1,
-                max_value=0.1,
+            max_p_value_input = st.number_input(
+                "コインテグレーションp値上限(0で無効)",
+                min_value=0.0,
+                max_value=1.0,
                 value=0.1,
                 step=0.01,
                 format="%.2f",
-                disabled=True,
+                disabled=not cointegration_available,
             )
         with stat_filters[1]:
             max_half_life = st.number_input(
-                "半減期の上限(日)",
-                min_value=1.0,
+                "半減期の上限(日, 0で無効)",
+                min_value=0.0,
                 max_value=250.0,
                 value=30.0,
                 step=1.0,
-                disabled=True,
             )
         with stat_filters[2]:
             min_abs_zscore = st.number_input(
@@ -4424,6 +4422,14 @@ def main():
         long_window = int(long_window_input) if long_window_input and long_window_input >= 5 else None
         if long_window is None:
             min_long_similarity = None
+        max_p_value = (
+            float(max_p_value_input)
+            if cointegration_available and max_p_value_input and max_p_value_input > 0
+            else None
+        )
+        max_half_life_filter = (
+            float(max_half_life) if max_half_life and max_half_life > 0 else None
+        )
         min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
         min_abs_zscore_filter = (
             float(min_abs_zscore) if min_abs_zscore and min_abs_zscore > 0 else None
@@ -4620,8 +4626,8 @@ def main():
                         min_similarity=None,
                         min_long_similarity=min_long_similarity,
                         min_return_corr=None,
-                        max_p_value=float(max_p_value) if max_p_value is not None else None,
-                        max_half_life=None,
+                        max_p_value=max_p_value,
+                        max_half_life=max_half_life_filter,
                         min_abs_zscore=min_abs_zscore_filter,
                         max_abs_zscore=max_abs_zscore_filter,
                         min_avg_volume=min_avg_volume_filter,
@@ -4644,8 +4650,8 @@ def main():
                         "min_similarity": None,
                         "min_long_similarity": min_long_similarity,
                         "min_return_corr": None,
-                        "max_p_value": float(max_p_value) if max_p_value is not None else None,
-                        "max_half_life": None,
+                        "max_p_value": max_p_value,
+                        "max_half_life": max_half_life_filter,
                         "min_abs_zscore": min_abs_zscore_filter,
                         "max_abs_zscore": max_abs_zscore_filter,
                         "min_avg_volume": min_avg_volume_filter,
@@ -4703,6 +4709,10 @@ def main():
                 progress_done()
             if max_p_value is not None and "p_value" in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
+            if max_half_life_filter is not None and "half_life" in filtered_df.columns:
+                filtered_df = filtered_df[
+                    filtered_df["half_life"] <= float(max_half_life_filter)
+                ]
             if min_abs_zscore_filter is not None and "zscore_latest" in filtered_df.columns:
                 filtered_df = filtered_df[
                     filtered_df["zscore_latest"].abs() >= min_abs_zscore_filter
