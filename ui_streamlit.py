@@ -1786,6 +1786,8 @@ def _calculate_minimum_data_length(
     apply_cup_handle_condition: bool,
     cup_handle_max_window: int,
     cup_handle_rs_lookback: int,
+    apply_ma_approach_condition: bool,
+    ma_approach_lookback: int,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
 
@@ -1842,7 +1844,38 @@ def _calculate_minimum_data_length(
             "取っ手付きカップ判定にはカップ+取っ手とRS/移動平均を含む十分な期間が必要"
         )
 
+    if apply_ma_approach_condition:
+        ma_approach_length = max(2, ma_approach_lookback + 1)
+        required_length = max(required_length, ma_approach_length)
+        reasons.append(f"移動平均接近判定には直近と{ma_approach_lookback}本前の比較が必要")
+
     return required_length, reasons
+
+
+def _is_approaching_ma(
+    df_ind: pd.DataFrame,
+    ma_col: str,
+    lookback: int,
+    threshold_pct: float,
+) -> Tuple[bool, Optional[float]]:
+    if ma_col not in df_ind.columns:
+        return False, None
+    if len(df_ind) <= lookback:
+        return False, None
+
+    latest = df_ind.iloc[-1]
+    past = df_ind.iloc[-1 - lookback]
+    if pd.isna(latest.get("close")) or pd.isna(latest.get(ma_col)):
+        return False, None
+    if pd.isna(past.get("close")) or pd.isna(past.get(ma_col)):
+        return False, None
+    if latest[ma_col] == 0 or past[ma_col] == 0:
+        return False, None
+
+    latest_distance = abs(latest["close"] - latest[ma_col]) / abs(latest[ma_col])
+    past_distance = abs(past["close"] - past[ma_col]) / abs(past[ma_col])
+    is_approaching = latest_distance <= threshold_pct and latest_distance < past_distance
+    return is_approaching, latest_distance * 100
 
 
 def _build_mini_chart(
@@ -3338,6 +3371,22 @@ def main():
         )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
+        apply_ma_approach_condition = st.checkbox("移動平均接近条件を適用", value=False)
+        ma_target = st.selectbox(
+            "接近対象の移動平均",
+            options=["sma20", "sma50", "sma200"],
+            format_func=lambda v: {"sma20": "SMA20", "sma50": "SMA50", "sma200": "SMA200"}[v],
+            index=1,
+        )
+        ma_approach_lookback = st.slider("MA接近の比較幅（日）", min_value=1, max_value=30, value=5)
+        ma_distance_threshold_pct = st.number_input(
+            "MA乖離率の上限(%)",
+            min_value=0.1,
+            max_value=20.0,
+            value=3.0,
+            step=0.1,
+            help="終値と移動平均の乖離率がこの値以下かつ、過去より乖離が縮小している銘柄を抽出します。",
+        )
         apply_volume_condition = st.checkbox("売買代金条件を適用", value=True)
         volume_multiplier = st.number_input(
             "売買代金/20日平均の下限 (倍)",
@@ -3521,6 +3570,10 @@ def main():
                     "show_detailed_log": show_detailed_log,
                     "require_sma20_trend": require_sma20_trend,
                     "sma_trend_lookback": int(sma_trend_lookback),
+                    "apply_ma_approach_condition": apply_ma_approach_condition,
+                    "ma_target": ma_target,
+                    "ma_approach_lookback": int(ma_approach_lookback),
+                    "ma_distance_threshold_pct": float(ma_distance_threshold_pct),
                     "apply_volume_condition": apply_volume_condition,
                     "volume_multiplier": float(volume_multiplier),
                     "apply_canslim_condition": apply_canslim_condition,
@@ -3633,6 +3686,8 @@ def main():
                             max(cup_handle_cup_weeks) * 5 + max(cup_handle_handle_weeks) * 5
                         ),
                         cup_handle_rs_lookback=cup_handle_rs_lookback,
+                        apply_ma_approach_condition=apply_ma_approach_condition,
+                        ma_approach_lookback=int(ma_approach_lookback),
                     )
 
                     if len(df_ind_full) < required_length:
@@ -3849,11 +3904,22 @@ def main():
                         weekly_vol_ok = True
                         weekly_turnover = None
 
+                    ma_distance_pct = None
+                    ma_approach_ok = True
+                    if apply_ma_approach_condition:
+                        ma_approach_ok, ma_distance_pct = _is_approaching_ma(
+                            df_ind,
+                            ma_col=ma_target,
+                            lookback=int(ma_approach_lookback),
+                            threshold_pct=float(ma_distance_threshold_pct) / 100,
+                        )
+
                     if all(
                         [
                             rsi_ok,
                             macd_ok,
                             sma_ok,
+                            ma_approach_ok,
                             vol_ok,
                             rs_ok,
                             weekly_vol_ok,
@@ -3888,6 +3954,8 @@ def main():
                                 "RSI14": round(latest["rsi14"], 2),
                                 "MACD": round(latest["macd"], 3),
                                 "Signal": round(latest["macd_signal"], 3),
+                                "MA乖離率%": round(ma_distance_pct, 2) if ma_distance_pct is not None else None,
+                                "MA接近判定": ma_approach_ok,
                                 "売買代金": int(latest_turnover) if pd.notna(latest_turnover) else None,
                                 "20日平均売買代金": int(avg_turnover20) if pd.notna(avg_turnover20) else None,
                                 "日次騰落率%": round(change_pct, 2) if change_pct is not None else None,
@@ -3921,6 +3989,8 @@ def main():
                         code_reasons.append("MACD条件不合格")
                     if require_sma20_trend and not sma_ok:
                         code_reasons.append("SMAトレンド不合格")
+                    if apply_ma_approach_condition and not ma_approach_ok:
+                        code_reasons.append("移動平均接近条件不合格")
                     if apply_volume_condition and not vol_ok:
                         code_reasons.append("売買代金条件不合格")
                     if apply_topix_rs_condition and not rs_ok:
