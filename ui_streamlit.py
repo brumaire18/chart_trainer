@@ -3321,6 +3321,8 @@ def main():
 
         st.markdown("---")
 
+        screening_last_params = st.session_state.get("screening_last_params", {})
+
         apply_rsi_condition = st.checkbox("RSI 条件を適用", value=True)
         rsi_range = st.slider("RSI(14) 範囲", min_value=0, max_value=100, value=(40, 65))
         apply_topix_rs_condition = st.checkbox(
@@ -3371,22 +3373,6 @@ def main():
         )
         require_sma20_trend = st.checkbox("終値 > SMA20 かつ SMA20が上向き", value=True)
         sma_trend_lookback = st.slider("SMA20上向きの判定幅（日）", 1, 10, value=3)
-        apply_ma_approach_condition = st.checkbox("移動平均接近条件を適用", value=False)
-        ma_target = st.selectbox(
-            "接近対象の移動平均",
-            options=["sma20", "sma50", "sma200"],
-            format_func=lambda v: {"sma20": "SMA20", "sma50": "SMA50", "sma200": "SMA200"}[v],
-            index=1,
-        )
-        ma_approach_lookback = st.slider("MA接近の比較幅（日）", min_value=1, max_value=30, value=5)
-        ma_distance_threshold_pct = st.number_input(
-            "MA乖離率の上限(%)",
-            min_value=0.1,
-            max_value=20.0,
-            value=3.0,
-            step=0.1,
-            help="終値と移動平均の乖離率がこの値以下かつ、過去より乖離が縮小している銘柄を抽出します。",
-        )
         apply_volume_condition = st.checkbox("売買代金条件を適用", value=True)
         volume_multiplier = st.number_input(
             "売買代金/20日平均の下限 (倍)",
@@ -3504,6 +3490,33 @@ def main():
             value=False,
             help="最新の週足売買代金(終値×出来高)がユニバースの上位25%に入る銘柄を抽出します。",
         )
+        ma_options = ["sma20", "sma50", "sma200"]
+        saved_ma_target = screening_last_params.get("ma_target", "sma50")
+        ma_target = saved_ma_target if saved_ma_target in ma_options else "sma50"
+        apply_ma_approach_condition = st.checkbox(
+            "移動平均線に接近中を抽出",
+            value=bool(screening_last_params.get("apply_ma_approach_condition", False)),
+            help="終値と移動平均の乖離率が上限以内かつ、過去より乖離が縮小している銘柄を抽出します。",
+        )
+        ma_target = st.selectbox(
+            "接近対象MA",
+            options=ma_options,
+            index=ma_options.index(ma_target),
+            format_func=lambda v: {"sma20": "SMA20", "sma50": "SMA50", "sma200": "SMA200"}[v],
+        )
+        ma_approach_lookback = st.slider(
+            "接近判定の過去本数",
+            min_value=2,
+            max_value=30,
+            value=int(screening_last_params.get("ma_approach_lookback", 5)),
+        )
+        ma_distance_threshold_pct = st.number_input(
+            "乖離率上限(%)",
+            min_value=0.1,
+            max_value=20.0,
+            value=float(screening_last_params.get("ma_distance_threshold_pct", 3.0)),
+            step=0.1,
+        )
         st.markdown("**シグナル抽出**")
         screen_new_high = st.checkbox("新高値シグナルを抽出", value=False)
         screen_selling_climax = st.checkbox("セリングクライマックスを抽出", value=False)
@@ -3555,6 +3568,12 @@ def main():
 
         screening_results = st.session_state.get("screening_results")
         if run_screening:
+            st.session_state["screening_last_params"] = {
+                "apply_ma_approach_condition": bool(apply_ma_approach_condition),
+                "ma_target": ma_target,
+                "ma_approach_lookback": int(ma_approach_lookback),
+                "ma_distance_threshold_pct": float(ma_distance_threshold_pct),
+            }
             _save_run_inputs(
                 "technical_screening",
                 {
