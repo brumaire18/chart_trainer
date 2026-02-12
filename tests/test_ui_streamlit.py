@@ -87,6 +87,7 @@ class LatestHasRequiredDataTest(unittest.TestCase):
                 "macd_signal": float("nan"),
                 "macd_hist": float("nan"),
                 "sma20": float("nan"),
+                "sma50": float("nan"),
             }
         )
 
@@ -96,6 +97,9 @@ class LatestHasRequiredDataTest(unittest.TestCase):
                 apply_rsi_condition=False,
                 macd_condition="none",
                 require_sma20_trend=False,
+                apply_topix_rs_condition=False,
+                apply_ma_approach_condition=False,
+                ma_target="sma50",
             )
         )
 
@@ -110,6 +114,7 @@ class LatestHasRequiredDataTest(unittest.TestCase):
                 "macd_signal": 0.05,
                 "macd_hist": 0.05,
                 "sma20": 990.0,
+                "sma50": 995.0,
             }
         )
 
@@ -119,9 +124,40 @@ class LatestHasRequiredDataTest(unittest.TestCase):
                 apply_rsi_condition=True,
                 macd_condition="golden",
                 require_sma20_trend=True,
+                apply_topix_rs_condition=False,
+                apply_ma_approach_condition=False,
+                ma_target="sma50",
             )
         )
 
+
+
+
+    def test_requires_ma_target_column_when_ma_approach_enabled(self):
+        latest = pd.Series(
+            {
+                "date": pd.Timestamp("2024-01-01"),
+                "close": 1000,
+                "volume": 12345,
+                "rsi14": 55.0,
+                "macd": 0.1,
+                "macd_signal": 0.05,
+                "macd_hist": 0.05,
+                "sma20": 990.0,
+            }
+        )
+
+        self.assertFalse(
+            _latest_has_required_data(
+                latest,
+                apply_rsi_condition=False,
+                macd_condition="none",
+                require_sma20_trend=False,
+                apply_topix_rs_condition=False,
+                apply_ma_approach_condition=True,
+                ma_target="sma50",
+            )
+        )
 
 class CalculateMinimumDataLengthTest(unittest.TestCase):
     def test_returns_base_requirement_and_reasons(self):
@@ -132,6 +168,24 @@ class CalculateMinimumDataLengthTest(unittest.TestCase):
             require_sma20_trend=False,
             sma_trend_lookback=3,
             apply_volume_condition=False,
+            apply_topix_rs_condition=False,
+            topix_rs_lookback=20,
+            apply_new_high_signal=False,
+            new_high_lookback=60,
+            apply_selling_climax_signal=False,
+            selling_volume_lookback=20,
+            signal_lookback_days=10,
+            apply_canslim_condition=False,
+            cup_window=35,
+            saucer_window=40,
+            handle_window=15,
+            apply_weekly_volume_quartile=False,
+            apply_cup_handle_condition=False,
+            cup_handle_max_window=325,
+            cup_handle_rs_lookback=60,
+            apply_ma_approach_condition=False,
+            ma_period=50,
+            ma_approach_lookback=5,
         )
 
         self.assertEqual(required_length, 50)
@@ -145,6 +199,24 @@ class CalculateMinimumDataLengthTest(unittest.TestCase):
             require_sma20_trend=True,
             sma_trend_lookback=4,
             apply_volume_condition=True,
+            apply_topix_rs_condition=False,
+            topix_rs_lookback=20,
+            apply_new_high_signal=False,
+            new_high_lookback=60,
+            apply_selling_climax_signal=False,
+            selling_volume_lookback=20,
+            signal_lookback_days=10,
+            apply_canslim_condition=False,
+            cup_window=35,
+            saucer_window=40,
+            handle_window=15,
+            apply_weekly_volume_quartile=False,
+            apply_cup_handle_condition=False,
+            cup_handle_max_window=325,
+            cup_handle_rs_lookback=60,
+            apply_ma_approach_condition=False,
+            ma_period=50,
+            ma_approach_lookback=5,
         )
 
         # MACD requires 26, SMA20 requires 24, base is 50 -> expect 50
@@ -152,9 +224,42 @@ class CalculateMinimumDataLengthTest(unittest.TestCase):
         self.assertTrue(any("RSI(14)" in msg for msg in reasons))
         self.assertTrue(any("MACDクロス" in msg for msg in reasons))
         self.assertTrue(any("SMA20" in msg for msg in reasons))
-        self.assertTrue(any("20日平均出来高" in msg for msg in reasons))
+        self.assertTrue(any("20日平均売買代金" in msg for msg in reasons))
 
 
+
+
+
+    def test_updates_requirement_with_ma_approach_condition(self):
+        required_length, reasons = _calculate_minimum_data_length(
+            apply_rsi_condition=False,
+            macd_condition="none",
+            macd_lookback=5,
+            require_sma20_trend=False,
+            sma_trend_lookback=3,
+            apply_volume_condition=False,
+            apply_topix_rs_condition=False,
+            topix_rs_lookback=20,
+            apply_new_high_signal=False,
+            new_high_lookback=60,
+            apply_selling_climax_signal=False,
+            selling_volume_lookback=20,
+            signal_lookback_days=10,
+            apply_canslim_condition=False,
+            cup_window=35,
+            saucer_window=40,
+            handle_window=15,
+            apply_weekly_volume_quartile=False,
+            apply_cup_handle_condition=False,
+            cup_handle_max_window=325,
+            cup_handle_rs_lookback=60,
+            apply_ma_approach_condition=True,
+            ma_period=200,
+            ma_approach_lookback=15,
+        )
+
+        self.assertEqual(required_length, 215)
+        self.assertTrue(any("MA接近判定には" in msg and "215本以上必要" in msg for msg in reasons))
 
 class SectorGroupAssignmentTest(unittest.TestCase):
     def test_add_and_remove_sector_codes(self):

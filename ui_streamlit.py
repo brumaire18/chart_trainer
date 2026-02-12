@@ -1730,6 +1730,8 @@ def _columns_to_check_latest(
     macd_condition: str,
     require_sma20_trend: bool,
     apply_topix_rs_condition: bool,
+    apply_ma_approach_condition: bool,
+    ma_target: str,
 ) -> List[str]:
     columns = ["date", "close", "volume"]
 
@@ -1745,6 +1747,9 @@ def _columns_to_check_latest(
     if apply_topix_rs_condition:
         columns.append("topix_rs")
 
+    if apply_ma_approach_condition:
+        columns.append(ma_target)
+
     return list(dict.fromkeys(columns))
 
 
@@ -1754,9 +1759,16 @@ def _latest_has_required_data(
     macd_condition: str,
     require_sma20_trend: bool,
     apply_topix_rs_condition: bool,
+    apply_ma_approach_condition: bool,
+    ma_target: str,
 ) -> bool:
     columns_to_check = _columns_to_check_latest(
-        apply_rsi_condition, macd_condition, require_sma20_trend, apply_topix_rs_condition
+        apply_rsi_condition,
+        macd_condition,
+        require_sma20_trend,
+        apply_topix_rs_condition,
+        apply_ma_approach_condition,
+        ma_target,
     )
     missing_columns = [col for col in columns_to_check if col not in latest.index]
     if missing_columns:
@@ -1787,6 +1799,7 @@ def _calculate_minimum_data_length(
     cup_handle_max_window: int,
     cup_handle_rs_lookback: int,
     apply_ma_approach_condition: bool,
+    ma_period: int,
     ma_approach_lookback: int,
 ) -> Tuple[int, List[str]]:
     """スクリーニングに必要な最低データ本数と理由を返す。"""
@@ -1845,9 +1858,11 @@ def _calculate_minimum_data_length(
         )
 
     if apply_ma_approach_condition:
-        ma_approach_length = max(2, ma_approach_lookback + 1)
+        ma_approach_length = ma_period + ma_approach_lookback
         required_length = max(required_length, ma_approach_length)
-        reasons.append(f"移動平均接近判定には直近と{ma_approach_lookback}本前の比較が必要")
+        reasons.append(
+            f"MA接近判定には{ma_period}+{ma_approach_lookback}で{ma_approach_length}本以上必要"
+        )
 
     return required_length, reasons
 
@@ -3706,6 +3721,7 @@ def main():
                         ),
                         cup_handle_rs_lookback=cup_handle_rs_lookback,
                         apply_ma_approach_condition=apply_ma_approach_condition,
+                        ma_period=int(str(ma_target).replace("sma", "", 1)),
                         ma_approach_lookback=int(ma_approach_lookback),
                     )
 
@@ -3741,6 +3757,8 @@ def main():
                         macd_condition=macd_condition,
                         require_sma20_trend=require_sma20_trend,
                         apply_topix_rs_condition=apply_topix_rs_condition,
+                        apply_ma_approach_condition=apply_ma_approach_condition,
+                        ma_target=ma_target,
                     ):
                         code_reasons.append("最新データに欠損あり")
                         failure_logs.append(
