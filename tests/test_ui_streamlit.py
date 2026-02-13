@@ -304,11 +304,14 @@ class SearchResultBulkGroupingTest(unittest.TestCase):
             name_map={"7203": "トヨタ", "6758": "ソニー"},
             sector_map={"7203": "輸送用機器", "6758": "電気機器"},
             checked_codes=["6758"],
+            classified_groups_map={"7203": ["大型株", "自動車"]},
         )
 
         self.assertEqual(df.loc[0, "選択"], False)
         self.assertEqual(df.loc[1, "選択"], True)
         self.assertEqual(df.loc[0, "名称"], "トヨタ")
+        self.assertEqual(df.loc[0, "分類済みグループ"], "大型株 / 自動車")
+        self.assertEqual(df.loc[1, "分類済みグループ"], "")
 
     def test_apply_checked_codes_to_groups_creates_and_appends(self):
         updated, applied_count, created_group_count = _apply_checked_codes_to_groups(

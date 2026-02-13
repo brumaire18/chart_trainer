@@ -210,20 +210,24 @@ def _build_search_result_df(
     name_map: Dict[str, str],
     sector_map: Dict[str, str],
     checked_codes: Optional[List[str]] = None,
+    classified_groups_map: Optional[Dict[str, List[str]]] = None,
 ) -> pd.DataFrame:
     checked_set = {str(code).zfill(4) for code in (checked_codes or [])}
+    classified_groups_map = classified_groups_map or {}
     rows = []
     for code in codes:
         normalized = str(code).zfill(4)
+        classified_groups = classified_groups_map.get(normalized, [])
         rows.append(
             {
                 "選択": normalized in checked_set,
                 "コード": normalized,
                 "名称": name_map.get(normalized, "名称未登録"),
                 "業種": sector_map.get(normalized, ""),
+                "分類済みグループ": " / ".join(classified_groups),
             }
         )
-    return pd.DataFrame(rows, columns=["選択", "コード", "名称", "業種"])
+    return pd.DataFrame(rows, columns=["選択", "コード", "名称", "業種", "分類済みグループ"])
 
 
 def _apply_checked_codes_to_groups(
@@ -689,20 +693,32 @@ def _render_manual_group_ui(
         str(code).zfill(4)
         for code in st.session_state.get("manual_group_search_checked_codes", [])
     ]
+    classified_groups_map: Dict[str, List[str]] = {}
+    for existing_group_name, existing_codes in custom_groups.items():
+        for existing_code in existing_codes:
+            normalized_code = str(existing_code).zfill(4)
+            classified_groups_map.setdefault(normalized_code, []).append(existing_group_name)
+    for normalized_code, existing_group_names in classified_groups_map.items():
+        classified_groups_map[normalized_code] = sorted(set(existing_group_names))
     search_result_df = _build_search_result_df(
         display_codes,
         name_map,
         sector_map,
         checked_codes=previous_checked_codes,
+        classified_groups_map=classified_groups_map,
     )
     edited_search_result_df = st.data_editor(
         search_result_df,
         hide_index=True,
         use_container_width=True,
         key="manual_group_search_result_editor",
-        disabled=["コード", "名称", "業種"],
+        disabled=["コード", "名称", "業種", "分類済みグループ"],
         column_config={
             "選択": st.column_config.CheckboxColumn("選択"),
+            "分類済みグループ": st.column_config.TextColumn(
+                "分類済みグループ",
+                help="既に登録されている手動グループを表示します。",
+            ),
         },
     )
     checked_codes_on_page = (
