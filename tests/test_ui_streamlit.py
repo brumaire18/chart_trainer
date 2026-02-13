@@ -16,6 +16,8 @@ from ui_streamlit import (
     _load_pair_grid_search_history,
     _parse_depth_range_grid_values,
     _parse_numeric_grid_values,
+    _filter_symbols_by_search,
+    _apply_breadth_exclusions,
 )
 
 
@@ -391,6 +393,30 @@ class PairGridSearchHistoryTest(unittest.TestCase):
             self.assertEqual(saved_rows, 0)
             self.assertFalse(history_path.exists())
 
+
+
+class BreadthExclusionHelpersTest(unittest.TestCase):
+    def test_filter_symbols_by_search_matches_code_and_name(self):
+        symbols = ["1301", "7203", "9984"]
+        name_map = {"1301": "極洋", "7203": "トヨタ自動車", "9984": "ソフトバンクグループ"}
+
+        self.assertEqual(
+            _filter_symbols_by_search(symbols, name_map, "720"),
+            ["7203"],
+        )
+        self.assertEqual(
+            _filter_symbols_by_search(symbols, name_map, "ソフト"),
+            ["9984"],
+        )
+
+    def test_apply_breadth_exclusions_removes_target_codes(self):
+        symbols = ["1301", "7203", "9984"]
+        excluded = ["7203", "9999"]
+
+        self.assertEqual(
+            _apply_breadth_exclusions(symbols, excluded),
+            ["1301", "9984"],
+        )
 
 
 if __name__ == "__main__":
