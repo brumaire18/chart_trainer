@@ -65,6 +65,7 @@ LIGHT_PLAN_YEARS = 5
 PAIR_CACHE_PATH = META_DIR / "pair_candidates_cache.json"
 RUN_INPUTS_PATH = META_DIR / "run_input_settings.json"
 PAIR_GRID_SEARCH_HISTORY_PATH = META_DIR / "pair_trade_grid_search_history.csv"
+BREADTH_EXCLUDED_GROUP_NAME = "マーケットブレッドス集計対象外"
 
 
 def _format_eta(seconds: Optional[float]) -> str:
@@ -316,6 +317,28 @@ def _apply_checked_codes_to_groups(
                 applied_count += 1
 
     return updated_groups, applied_count, created_group_count
+
+
+def _filter_symbols_by_search(
+    symbols: List[str],
+    name_map: Dict[str, str],
+    query: str,
+) -> List[str]:
+    keyword = str(query or "").strip().lower()
+    if not keyword:
+        return sorted({str(code).zfill(4) for code in symbols})
+    matched: List[str] = []
+    for code in symbols:
+        normalized = str(code).zfill(4)
+        name = str(name_map.get(normalized, ""))
+        if keyword in normalized.lower() or keyword in name.lower():
+            matched.append(normalized)
+    return sorted(set(matched))
+
+
+def _apply_breadth_exclusions(symbols: List[str], excluded_codes: List[str]) -> List[str]:
+    excluded = {str(code).zfill(4) for code in excluded_codes}
+    return [str(code).zfill(4) for code in symbols if str(code).zfill(4) not in excluded]
 
 
 def _save_groups_with_feedback(
@@ -5941,6 +5964,49 @@ def main():
         st.subheader("マーケットブレッドス")
         st.caption("騰落銘柄数やTRIN、マクレラン指標に加えてTOPIX推移を可視化します。")
 
+        with st.expander("集計対象外銘柄の設定（手動検索）", expanded=False):
+            st.caption("ここで指定した銘柄はマーケットブレッドスの集計対象から除外されます。")
+            excluded_group_codes = custom_groups.get(BREADTH_EXCLUDED_GROUP_NAME, [])
+            excluded_group_codes = [str(code).zfill(4) for code in excluded_group_codes]
+            excluded_group_codes = [code for code in excluded_group_codes if code in symbols]
+
+            breadth_exclude_search = st.text_input(
+                "銘柄検索（コード/名称）",
+                key="breadth_exclude_search",
+                help="コードまたは銘柄名の一部で検索できます。",
+            )
+            breadth_candidates = _filter_symbols_by_search(
+                symbols,
+                name_map,
+                breadth_exclude_search,
+            )
+            if not breadth_candidates:
+                st.info("検索条件に一致する銘柄がありません。")
+
+            selected_excluded_codes = st.multiselect(
+                "集計対象外にする銘柄",
+                options=breadth_candidates,
+                default=[code for code in excluded_group_codes if code in breadth_candidates],
+                format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
+                key="breadth_excluded_symbols_selector",
+            )
+            if st.button("集計対象外銘柄を保存", key="breadth_excluded_symbols_save"):
+                updated_groups = {group: list(codes) for group, codes in custom_groups.items()}
+                updated_groups[BREADTH_EXCLUDED_GROUP_NAME] = sorted(
+                    {str(code).zfill(4) for code in selected_excluded_codes}
+                )
+                try:
+                    save_custom_groups(updated_groups)
+                    st.success("集計対象外銘柄を保存しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"保存に失敗しました: {exc}")
+
+            st.caption(
+                f"現在の対象外: {len(excluded_group_codes)}件 / "
+                f"集計対象: {max(len(symbols) - len(excluded_group_codes), 0)}件"
+            )
+
         breadth_period = st.radio(
             "対象期間",
             options=["1y", "all"],
@@ -5952,9 +6018,9 @@ def main():
         recompute = st.button("再計算", key="recompute_breadth")
 
         @st.cache_data(show_spinner=False)
-        def _load_breadth_data(cache_key: str) -> pd.DataFrame:
+        def _load_breadth_data(cache_key: str, target_symbols: List[str]) -> pd.DataFrame:
             _ = cache_key
-            return compute_breadth_indicators(aggregate_market_breadth())
+            return compute_breadth_indicators(aggregate_market_breadth(symbols=target_symbols))
 
         if "breadth_cache_version" not in st.session_state:
             st.session_state["breadth_cache_version"] = 0
@@ -5963,11 +6029,24 @@ def main():
         if recompute:
             st.session_state["breadth_cache_version"] += 1
 
+        excluded_breadth_codes = [
+            str(code).zfill(4)
+            for code in custom_groups.get(BREADTH_EXCLUDED_GROUP_NAME, [])
+        ]
+        breadth_symbols = _apply_breadth_exclusions(symbols, excluded_breadth_codes)
+        excluded_count = len(symbols) - len(breadth_symbols)
+        if excluded_count > 0:
+            st.info(f"集計対象外銘柄を {excluded_count} 件除外して計算します。")
+
         cache_key = "|".join(
-            [str(st.session_state["breadth_cache_version"]), *price_files]
+            [
+                str(st.session_state["breadth_cache_version"]),
+                *price_files,
+                ",".join(sorted(excluded_breadth_codes)),
+            ]
         )
 
-        df_breadth = _load_breadth_data(cache_key)
+        df_breadth = _load_breadth_data(cache_key, breadth_symbols)
 
         if df_breadth.empty:
             st.warning("集計に必要なデータが不足しています。price_csvに銘柄CSVがあるか確認してください。")
