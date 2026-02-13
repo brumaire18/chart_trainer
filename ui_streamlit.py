@@ -5366,7 +5366,23 @@ def main():
         if grid_search_results is not None and not grid_search_results.empty:
             st.markdown("#### グリッドサーチ結果（上位）")
             st.dataframe(grid_search_results.head(200), use_container_width=True)
-            st.plotly_chart(fig, use_container_width=True)
+            fig_grid = go.Figure()
+            top_results = grid_search_results.head(30).copy().reset_index(drop=True)
+            top_results["rank"] = top_results.index + 1
+            fig_grid.add_trace(
+                go.Scatter(
+                    x=top_results["rank"],
+                    y=top_results["score"],
+                    mode="lines+markers",
+                    name="score",
+                )
+            )
+            fig_grid.update_layout(
+                title="上位30件のスコア推移",
+                xaxis_title="順位",
+                yaxis_title="score",
+            )
+            st.plotly_chart(fig_grid, use_container_width=True)
         elif backtest_results is not None:
             st.info("該当するシグナルがありませんでした。")
 
