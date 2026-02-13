@@ -635,9 +635,43 @@ def _render_manual_group_ui(
     else:
         filtered_codes = all_option_codes
 
-    selected_codes = list(
-        st.session_state.get("manual_group_codes", current_group_codes)
+    total_filtered_count = len(filtered_codes)
+    max_rows = st.select_slider(
+        "検索結果の表示上限",
+        options=[200, 300, 500],
+        value=500,
+        key="manual_group_max_rows",
+        help="検索結果が多い場合でも、表示対象を上限件数で絞って操作できます。",
     )
+    capped_codes = filtered_codes[:max_rows]
+    capped_count = len(capped_codes)
+
+    page_size = 100
+    total_pages = max(1, (capped_count + page_size - 1) // page_size)
+    page_number = int(
+        st.number_input(
+            "表示ページ",
+            min_value=1,
+            max_value=total_pages,
+            value=1,
+            step=1,
+            key="manual_group_page_number",
+        )
+    )
+    start = (page_number - 1) * page_size
+    end = min(start + page_size, capped_count)
+    display_codes = capped_codes[start:end]
+
+    if total_filtered_count > max_rows:
+        st.info(
+            f"検索結果 {total_filtered_count}件のうち、表示は先頭{max_rows}件に制限しています。"
+        )
+    st.caption(
+        f"総件数: {total_filtered_count}件 / 表示対象: {capped_count}件 / "
+        f"ページ表示: {start + 1 if capped_count else 0}〜{end}件"
+    )
+
+    selected_codes = list(st.session_state.get("manual_group_codes", current_group_codes))
     if sector_filter_label and sector_filter_label != "指定なし":
         selected_codes = [
             code
@@ -651,11 +685,15 @@ def _render_manual_group_ui(
     if "manual_group_codes" not in st.session_state:
         st.session_state["manual_group_codes"] = selected_codes
 
+    previous_checked_codes = [
+        str(code).zfill(4)
+        for code in st.session_state.get("manual_group_search_checked_codes", [])
+    ]
     search_result_df = _build_search_result_df(
-        filtered_codes,
+        display_codes,
         name_map,
         sector_map,
-        checked_codes=st.session_state.get("manual_group_search_checked_codes", []),
+        checked_codes=previous_checked_codes,
     )
     edited_search_result_df = st.data_editor(
         search_result_df,
@@ -667,12 +705,17 @@ def _render_manual_group_ui(
             "選択": st.column_config.CheckboxColumn("選択"),
         },
     )
-    checked_codes = (
+    checked_codes_on_page = (
         edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
         .astype(str)
         .str.zfill(4)
         .tolist()
     )
+    display_code_set = {str(code).zfill(4) for code in display_codes}
+    checked_codes = [
+        code for code in previous_checked_codes if code not in display_code_set
+    ]
+    checked_codes.extend(code for code in checked_codes_on_page if code not in checked_codes)
     st.session_state["manual_group_search_checked_codes"] = checked_codes
 
     destination_candidates = sorted(set(custom_groups) | set(group_master))
