@@ -125,6 +125,68 @@ def _parse_grid_values(text: str, cast_type: type) -> List:
     return values
 
 
+def _parse_numeric_grid_values(text: str, cast_type: type) -> List:
+    """
+    グリッドサーチ向けの数値候補を柔軟に解釈する。
+
+    形式:
+    - 単一値: 40
+    - カンマ区切り: 40,50,60
+    - 範囲指定(両端含む): 30:70:10 -> 30,40,50,60,70
+    """
+    values: List = []
+    for raw in text.replace("\n", ",").split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        if ":" in token:
+            parts = [part.strip() for part in token.split(":") if part.strip()]
+            if len(parts) not in (2, 3):
+                raise ValueError("範囲指定は start:end または start:end:step で入力してください。")
+            start = float(parts[0])
+            end = float(parts[1])
+            step = float(parts[2]) if len(parts) == 3 else 1.0
+            if step == 0:
+                raise ValueError("step に 0 は指定できません。")
+            if (end - start) * step < 0:
+                raise ValueError("範囲指定の方向と step の符号が一致していません。")
+
+            current = start
+            eps = abs(step) / 1_000_000
+            if step > 0:
+                while current <= end + eps:
+                    values.append(cast_type(current))
+                    current += step
+            else:
+                while current >= end - eps:
+                    values.append(cast_type(current))
+                    current += step
+            continue
+
+        values.append(cast_type(token))
+
+    return values
+
+
+def _parse_depth_range_grid_values(text: str) -> List[Tuple[float, float]]:
+    """深さレンジ候補を `0.12-0.35,0.15-0.40` 形式で解釈する。"""
+    ranges: List[Tuple[float, float]] = []
+    for raw in text.replace("\n", ",").split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        normalized = token.replace("~", "-").replace(":", "-")
+        parts = [part.strip() for part in normalized.split("-") if part.strip()]
+        if len(parts) != 2:
+            raise ValueError("深さレンジは 0.12-0.35 の形式で入力してください。")
+        lower = float(parts[0])
+        upper = float(parts[1])
+        if lower >= upper:
+            raise ValueError("深さレンジは下限 < 上限で指定してください。")
+        ranges.append((lower, upper))
+    return ranges
+
+
 def _parse_bulk_group_lines(text: str) -> Tuple[List[Tuple[str, List[str]]], List[str]]:
     assignments: List[Tuple[str, List[str]]] = []
     errors: List[str] = []
@@ -5314,12 +5376,6 @@ def main():
         st.subheader("カップ形状のグリッドサーチ")
         st.caption("validation成績を主指標にしつつ、trainとの差分にペナルティを掛けて過剰最適化を抑えます。")
 
-        depth_range_options = {
-            "0.12-0.35": (0.12, 0.35),
-            "0.15-0.40": (0.15, 0.4),
-            "0.18-0.45": (0.18, 0.45),
-        }
-
         grid_col1, grid_col2 = st.columns(2)
         with grid_col1:
             gs_lookahead = st.number_input(
@@ -5365,55 +5421,72 @@ def main():
                 key="gs_gap_penalty",
             )
         with grid_col2:
-            gs_cup_windows = st.multiselect(
+            gs_cup_windows = st.text_input(
                 "カップ判定期間（日）候補",
-                options=[30, 40, 50, 60, 70, 80],
-                default=[40, 50, 60, 70],
+                value="40,50,60,70",
+                help="カンマ区切り、または範囲指定 start:end:step（例: 30:80:10）が使えます。",
             )
-            gs_handle_windows = st.multiselect(
+            gs_handle_windows = st.text_input(
                 "ハンドル判定期間（日）候補",
-                options=[5, 7, 10, 12, 15],
-                default=[7, 10, 12],
+                value="7,10,12",
+                help="カンマ区切り、または範囲指定 start:end:step（例: 5:15:1）が使えます。",
             )
-            gs_depth_ranges = st.multiselect(
+            gs_depth_ranges = st.text_input(
                 "深さレンジ候補",
-                options=list(depth_range_options.keys()),
-                default=["0.12-0.35", "0.15-0.40", "0.18-0.45"],
+                value="0.12-0.35,0.15-0.40,0.18-0.45",
+                help="`下限-上限` をカンマ区切りで指定します（例: 0.12-0.35,0.2-0.5）。",
             )
-            gs_recovery_ratios = st.multiselect(
+            gs_recovery_ratios = st.text_input(
                 "回復率候補",
-                options=[0.8, 0.82, 0.85, 0.88, 0.9],
-                default=[0.82, 0.85, 0.88],
+                value="0.82,0.85,0.88",
+                help="カンマ区切り、または範囲指定 start:end:step（例: 0.8:0.9:0.02）が使えます。",
             )
-            gs_handle_max_depths = st.multiselect(
+            gs_handle_max_depths = st.text_input(
                 "ハンドル最大深さ候補",
-                options=[0.08, 0.1, 0.12, 0.15, 0.18],
-                default=[0.1, 0.12, 0.15],
+                value="0.1,0.12,0.15",
+                help="カンマ区切り、または範囲指定 start:end:step（例: 0.08:0.18:0.02）が使えます。",
             )
 
         run_grid_search = st.button("グリッドサーチを実行", type="primary")
         if run_grid_search:
-            if not gs_cup_windows or not gs_handle_windows or not gs_depth_ranges:
-                st.warning("カップ/ハンドル期間と深さレンジの候補を1つ以上選択してください。")
-            else:
-                depth_ranges = [depth_range_options[key] for key in gs_depth_ranges]
-                progress_update, progress_done = _build_progress_updater("カップ形状グリッドサーチ")
-                eval_df, best_summary = grid_search_cup_shape(
-                    lookahead=int(gs_lookahead),
-                    return_threshold=float(gs_return_threshold),
-                    volume_multiplier=float(gs_volume_multiplier),
-                    min_signals=int(gs_min_signals),
-                    gap_penalty=float(gs_gap_penalty),
-                    cup_windows=[int(v) for v in gs_cup_windows],
-                    handle_windows=[int(v) for v in gs_handle_windows],
-                    depth_ranges=depth_ranges,
-                    recovery_ratios=[float(v) for v in gs_recovery_ratios],
-                    handle_max_depths=[float(v) for v in gs_handle_max_depths],
-                    progress_callback=progress_update,
+            try:
+                cup_windows = _parse_numeric_grid_values(gs_cup_windows, int)
+                handle_windows = _parse_numeric_grid_values(gs_handle_windows, int)
+                depth_ranges = _parse_depth_range_grid_values(gs_depth_ranges)
+                recovery_ratios = _parse_numeric_grid_values(gs_recovery_ratios, float)
+                handle_max_depths = _parse_numeric_grid_values(gs_handle_max_depths, float)
+            except ValueError:
+                st.warning(
+                    "候補値の形式が正しくありません。"
+                    "カンマ区切り、範囲指定 start:end:step、深さレンジは 0.12-0.35 形式で入力してください。"
                 )
-                progress_done()
-                st.session_state["grid_search_results"] = eval_df
-                st.session_state["grid_search_summary"] = best_summary
+            else:
+                if (
+                    not cup_windows
+                    or not handle_windows
+                    or not depth_ranges
+                    or not recovery_ratios
+                    or not handle_max_depths
+                ):
+                    st.warning("各候補値に1つ以上の値を入力してください。")
+                else:
+                    progress_update, progress_done = _build_progress_updater("カップ形状グリッドサーチ")
+                    eval_df, best_summary = grid_search_cup_shape(
+                        lookahead=int(gs_lookahead),
+                        return_threshold=float(gs_return_threshold),
+                        volume_multiplier=float(gs_volume_multiplier),
+                        min_signals=int(gs_min_signals),
+                        gap_penalty=float(gs_gap_penalty),
+                        cup_windows=cup_windows,
+                        handle_windows=handle_windows,
+                        depth_ranges=depth_ranges,
+                        recovery_ratios=recovery_ratios,
+                        handle_max_depths=handle_max_depths,
+                        progress_callback=progress_update,
+                    )
+                    progress_done()
+                    st.session_state["grid_search_results"] = eval_df
+                    st.session_state["grid_search_summary"] = best_summary
 
         grid_search_results = st.session_state.get("grid_search_results")
         grid_search_summary = st.session_state.get("grid_search_summary")

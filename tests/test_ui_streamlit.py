@@ -14,6 +14,8 @@ from ui_streamlit import (
     _parse_bulk_group_lines,
     _append_pair_grid_search_history,
     _load_pair_grid_search_history,
+    _parse_depth_range_grid_values,
+    _parse_numeric_grid_values,
 )
 
 
@@ -131,8 +133,6 @@ class LatestHasRequiredDataTest(unittest.TestCase):
         )
 
 
-
-
     def test_requires_ma_target_column_when_ma_approach_enabled(self):
         latest = pd.Series(
             {
@@ -158,6 +158,20 @@ class LatestHasRequiredDataTest(unittest.TestCase):
                 ma_target="sma50",
             )
         )
+
+
+class ParseGridValuesTest(unittest.TestCase):
+    def test_parse_numeric_grid_values_with_comma_and_range(self):
+        values = _parse_numeric_grid_values("30:50:10,70", int)
+        self.assertEqual(values, [30, 40, 50, 70])
+
+    def test_parse_numeric_grid_values_rejects_invalid_step_direction(self):
+        with self.assertRaises(ValueError):
+            _parse_numeric_grid_values("30:50:-5", int)
+
+    def test_parse_depth_range_grid_values(self):
+        values = _parse_depth_range_grid_values("0.12-0.35,0.15~0.40,0.18:0.45")
+        self.assertEqual(values, [(0.12, 0.35), (0.15, 0.4), (0.18, 0.45)])
 
 class CalculateMinimumDataLengthTest(unittest.TestCase):
     def test_returns_base_requirement_and_reasons(self):
