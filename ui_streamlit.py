@@ -363,12 +363,14 @@ def _save_groups_with_feedback(
     group_master: Dict[str, Dict[str, str]],
     success_message: str,
     error_prefix: str,
+    rerun: bool = False,
 ) -> None:
     try:
         save_custom_groups(custom_groups)
         save_group_master(group_master)
         st.success(success_message)
-        st.rerun()
+        if rerun:
+            st.rerun()
     except Exception as exc:
         st.error(f"{error_prefix}: {exc}")
 
@@ -377,11 +379,13 @@ def _save_group_master_with_feedback(
     group_master: Dict[str, Dict[str, str]],
     success_message: str,
     error_prefix: str,
+    rerun: bool = False,
 ) -> None:
     try:
         save_group_master(group_master)
         st.success(success_message)
-        st.rerun()
+        if rerun:
+            st.rerun()
     except Exception as exc:
         st.error(f"{error_prefix}: {exc}")
 
@@ -390,11 +394,13 @@ def _save_custom_groups_with_feedback(
     custom_groups: Dict[str, List[str]],
     success_message: str,
     error_prefix: str,
+    rerun: bool = False,
 ) -> None:
     try:
         save_custom_groups(custom_groups)
         st.success(success_message)
-        st.rerun()
+        if rerun:
+            st.rerun()
     except Exception as exc:
         st.error(f"{error_prefix}: {exc}")
 
@@ -666,6 +672,7 @@ def _render_manual_group_ui(
                         group_master,
                         "グループマスタを保存しました。",
                         "グループマスタ保存に失敗しました",
+                        rerun=False,
                     )
         with col_master_delete:
             if st.button("マスタ削除", key="group_master_delete"):
@@ -677,6 +684,7 @@ def _render_manual_group_ui(
                         group_master,
                         "グループマスタを削除しました。",
                         "グループマスタ削除に失敗しました",
+                        rerun=False,
                     )
 
     search_text = st.text_input(
@@ -877,6 +885,7 @@ def _render_manual_group_ui(
                         f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
                         f"セクター条件による除外: {excluded_count}件）。"
                     )
+                    # グループ追加/削除時のみ明示的に再描画
                     st.rerun()
                 except Exception as exc:
                     st.error(f"マスタへの追加に失敗しました: {exc}")
@@ -909,12 +918,10 @@ def _render_manual_group_ui(
             if st.button("検索結果を選択へ追加", key="manual_group_bulk_add_main"):
                 merged = list(dict.fromkeys(selected_codes + filtered_codes))
                 st.session_state["manual_group_codes"] = merged
-                st.rerun()
         with col_bulk_clear:
             if st.button("選択をクリア", key="manual_group_bulk_clear_main"):
                 st.session_state["manual_group_codes"] = []
                 st.session_state["manual_group_search_checked_codes"] = []
-                st.rerun()
 
         selected_codes = st.multiselect(
             "銘柄を選択（詳細操作）",
@@ -957,6 +964,7 @@ def _render_manual_group_ui(
                     updated_groups,
                     f"一括反映しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）",
                     "一括反映に失敗しました",
+                    rerun=False,
                 )
 
     with st.expander("セクター別の銘柄一覧", expanded=False):
@@ -1034,6 +1042,7 @@ def _render_manual_group_ui(
                             updated_groups,
                             f"{target_sector_value} を {target_group_name.strip()} に{action_mode}しました（{changed_count}件）。",
                             "セクター反映に失敗しました",
+                            rerun=False,
                         )
         else:
             st.info("銘柄マスタにセクター情報がありません。")
@@ -1063,6 +1072,7 @@ def _render_manual_group_ui(
                     group_master,
                     "グループを保存しました。",
                     "保存に失敗しました",
+                    rerun=True,
                 )
     with col_delete:
         if st.button("削除", key="manual_group_delete"):
@@ -1076,6 +1086,7 @@ def _render_manual_group_ui(
                     group_master,
                     "グループを削除しました。",
                     "削除に失敗しました",
+                    rerun=True,
                 )
 
 
