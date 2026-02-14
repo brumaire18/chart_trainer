@@ -1450,6 +1450,34 @@ def _find_local_extrema(df: pd.DataFrame, order: int = 3) -> Tuple[List[int], Li
     return local_min, local_max
 
 
+def _build_swing_point_series(df: pd.DataFrame, order: int = 3) -> pd.DataFrame:
+    """スイングハイ/ロー描画用のポイント一覧を返す。"""
+
+    local_min, local_max = _find_local_extrema(df, order=order)
+    points = []
+    for idx in local_max:
+        points.append(
+            {
+                "index": idx,
+                "date": df["date"].iloc[idx],
+                "price": df["high"].iloc[idx],
+                "kind": "high",
+            }
+        )
+    for idx in local_min:
+        points.append(
+            {
+                "index": idx,
+                "date": df["date"].iloc[idx],
+                "price": df["low"].iloc[idx],
+                "kind": "low",
+            }
+        )
+    if not points:
+        return pd.DataFrame(columns=["index", "date", "price", "kind"])
+    return pd.DataFrame(points).sort_values("index").reset_index(drop=True)
+
+
 def _fit_trendline(
     df: pd.DataFrame, indices: List[int], price_col: str
 ) -> Optional[Tuple[float, float]]:
@@ -2528,6 +2556,7 @@ def main():
     st.sidebar.write("チャート分析ライン")
     show_trendlines = st.sidebar.checkbox("支持線/抵抗線", value=False)
     show_head_shoulders = st.sidebar.checkbox("ヘッド＆ショルダーズ", value=False)
+    show_swing_points = st.sidebar.checkbox("スイングハイ/ロー", value=False)
     extrema_order = st.sidebar.slider(
         "ライン検出の感度(局所判定幅)",
         min_value=2,
@@ -3094,6 +3123,46 @@ def main():
                                 "下落率%": None,
                                 "出来高倍率": None,
                             }
+                        )
+
+            if show_swing_points:
+                swing_points = _build_swing_point_series(df_problem, order=extrema_order)
+                if not swing_points.empty:
+                    swing_highs = swing_points[swing_points["kind"] == "high"]
+                    swing_lows = swing_points[swing_points["kind"] == "low"]
+                    if not swing_highs.empty:
+                        price_fig.add_trace(
+                            go.Scatter(
+                                x=swing_highs["date"],
+                                y=swing_highs["price"],
+                                mode="markers",
+                                name="スイングハイ",
+                                marker=dict(
+                                    color="#ff7f0e",
+                                    size=9,
+                                    symbol="diamond",
+                                    line=dict(color="#333333", width=1),
+                                ),
+                            ),
+                            row=1,
+                            col=1,
+                        )
+                    if not swing_lows.empty:
+                        price_fig.add_trace(
+                            go.Scatter(
+                                x=swing_lows["date"],
+                                y=swing_lows["price"],
+                                mode="markers",
+                                name="スイングロー",
+                                marker=dict(
+                                    color="#1f77b4",
+                                    size=9,
+                                    symbol="diamond",
+                                    line=dict(color="#333333", width=1),
+                                ),
+                            ),
+                            row=1,
+                            col=1,
                         )
 
             if show_head_shoulders:
