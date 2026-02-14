@@ -16,6 +16,7 @@ from ui_streamlit import (
     _parse_numeric_grid_values,
     _filter_symbols_by_search,
     _apply_breadth_exclusions,
+    _build_swing_point_series,
 )
 
 
@@ -380,6 +381,37 @@ class BreadthExclusionHelpersTest(unittest.TestCase):
             _apply_breadth_exclusions(symbols, excluded),
             ["1301", "9984"],
         )
+
+
+class BuildSwingPointSeriesTest(unittest.TestCase):
+    def test_returns_sorted_swing_points(self):
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=7, freq="D"),
+                "high": [10, 12, 11, 14, 13, 15, 14],
+                "low": [8, 9, 7, 10, 9, 11, 10],
+            }
+        )
+
+        result = _build_swing_point_series(df, order=1)
+
+        self.assertFalse(result.empty)
+        self.assertEqual(result["index"].tolist(), sorted(result["index"].tolist()))
+        self.assertIn("high", result["kind"].tolist())
+        self.assertIn("low", result["kind"].tolist())
+
+    def test_returns_empty_when_no_extrema(self):
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=3, freq="D"),
+                "high": [10, 10, 10],
+                "low": [9, 9, 9],
+            }
+        )
+
+        result = _build_swing_point_series(df, order=2)
+
+        self.assertTrue(result.empty)
 
 
 if __name__ == "__main__":
