@@ -68,6 +68,28 @@ PAIR_GRID_SEARCH_HISTORY_PATH = META_DIR / "pair_trade_grid_search_history.csv"
 BREADTH_EXCLUDED_GROUP_NAME = "マーケットブレッドス集計対象外"
 
 
+def _get_meta_json_mtime_cache_key(filename: str) -> str:
+    target_path = META_DIR / filename
+    if not target_path.exists():
+        return f"{filename}:missing"
+    try:
+        return f"{filename}:{target_path.stat().st_mtime_ns}"
+    except OSError:
+        return f"{filename}:missing"
+
+
+@st.cache_data(show_spinner=False)
+def _load_custom_groups_cached(cache_key: str) -> Dict[str, List[str]]:
+    _ = cache_key
+    return load_custom_groups()
+
+
+@st.cache_data(show_spinner=False)
+def _load_group_master_cached(cache_key: str) -> Dict[str, Dict[str, str]]:
+    _ = cache_key
+    return load_group_master()
+
+
 def _format_eta(seconds: Optional[float]) -> str:
     if seconds is None or seconds < 0:
         return "計算中"
@@ -345,6 +367,7 @@ def _save_groups_with_feedback(
     try:
         save_custom_groups(custom_groups)
         save_group_master(group_master)
+        st.cache_data.clear()
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -360,6 +383,7 @@ def _save_group_master_with_feedback(
 ) -> None:
     try:
         save_group_master(group_master)
+        st.cache_data.clear()
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -375,6 +399,7 @@ def _save_custom_groups_with_feedback(
 ) -> None:
     try:
         save_custom_groups(custom_groups)
+        st.cache_data.clear()
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -846,6 +871,7 @@ def _render_manual_group_ui(
                     updated_groups[destination_group] = filtered_codes
                 try:
                     save_custom_groups(updated_groups)
+                    st.cache_data.clear()
                     st.success(
                         "チェック銘柄を追加しました"
                         f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
@@ -869,6 +895,7 @@ def _render_manual_group_ui(
                 )
                 try:
                     save_custom_groups(updated_groups)
+                    st.cache_data.clear()
                     st.success(
                         "選択銘柄の分類を取り消しました"
                         f"（取り消し: {removed_count}件）。"
@@ -2344,15 +2371,18 @@ def main():
         if getattr(row, "name", None) is not None
     }
 
+    custom_groups_cache_key = _get_meta_json_mtime_cache_key("custom_groups.json")
+    group_master_cache_key = _get_meta_json_mtime_cache_key("group_master.json")
+
     try:
-        custom_groups = load_custom_groups()
+        custom_groups = _load_custom_groups_cached(custom_groups_cache_key)
         custom_groups_error = None
     except Exception as exc:
         custom_groups = {}
         custom_groups_error = f"custom_groups.json の読み込みに失敗しました: {exc}"
 
     try:
-        group_master = load_group_master()
+        group_master = _load_group_master_cached(group_master_cache_key)
         group_master_error = None
     except Exception as exc:
         group_master = {}
@@ -5882,6 +5912,7 @@ def main():
                 )
                 try:
                     save_custom_groups(updated_groups)
+                    st.cache_data.clear()
                     st.success("集計対象外銘柄を保存しました。")
                     st.rerun()
                 except Exception as exc:
