@@ -188,86 +188,6 @@ def _parse_depth_range_grid_values(text: str) -> List[Tuple[float, float]]:
     return ranges
 
 
-def _parse_bulk_group_lines(text: str) -> Tuple[List[Tuple[str, List[str]]], List[str]]:
-    assignments: List[Tuple[str, List[str]]] = []
-    errors: List[str] = []
-    for line_no, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        if "," not in line:
-            errors.append(f"{line_no}行目: `銘柄コード,グループ` 形式で入力してください。")
-            continue
-        code_raw, groups_raw = [part.strip() for part in line.split(",", 1)]
-        code = code_raw.zfill(4)
-        if not code_raw.isdigit() or len(code_raw) > 4:
-            errors.append(f"{line_no}行目: 銘柄コードが不正です。")
-            continue
-        group_names = [g.strip() for g in groups_raw.split("|") if g.strip()]
-        if not group_names:
-            errors.append(f"{line_no}行目: グループ名を1件以上指定してください。")
-            continue
-        assignments.append((code, group_names))
-    return assignments, errors
-
-
-def _apply_bulk_group_assignments(
-    custom_groups: Dict[str, List[str]],
-    assignments: List[Tuple[str, List[str]]],
-    symbols: List[str],
-) -> Tuple[Dict[str, List[str]], int, int, List[str]]:
-    updated = {group: [str(code).zfill(4) for code in codes] for group, codes in custom_groups.items()}
-    available = {str(symbol).zfill(4) for symbol in symbols}
-    applied_count = 0
-    created_group_count = 0
-    unknown_symbols: List[str] = []
-
-    for code, groups in assignments:
-        if code not in available:
-            unknown_symbols.append(code)
-            continue
-        for group in groups:
-            if group not in updated:
-                updated[group] = []
-                created_group_count += 1
-            if code not in updated[group]:
-                updated[group].append(code)
-                applied_count += 1
-    return updated, applied_count, created_group_count, sorted(set(unknown_symbols))
-
-
-def _apply_sector_group_assignment(
-    custom_groups: Dict[str, List[str]],
-    listed_df: pd.DataFrame,
-    symbols: List[str],
-    sector_column: str,
-    sector_value: str,
-    target_group: str,
-    action: str,
-) -> Tuple[Dict[str, List[str]], int]:
-    symbol_set = {str(symbol).zfill(4) for symbol in symbols}
-    sector_codes = [
-        str(code).zfill(4)
-        for code in listed_df.loc[
-            listed_df[sector_column].astype(str) == str(sector_value), "code"
-        ]
-    ]
-    target_codes = [code for code in sector_codes if code in symbol_set]
-    updated_groups = {group: list(codes) for group, codes in custom_groups.items()}
-    group_codes = list(updated_groups.get(target_group, []))
-
-    if action == "remove":
-        remaining = [code for code in group_codes if code not in target_codes]
-        changed_count = len(group_codes) - len(remaining)
-        updated_groups[target_group] = remaining
-        return updated_groups, changed_count
-
-    merged = list(dict.fromkeys(group_codes + target_codes))
-    changed_count = len(merged) - len(group_codes)
-    updated_groups[target_group] = merged
-    return updated_groups, changed_count
-
-
 def _build_search_result_df(
     codes: List[str],
     name_map: Dict[str, str],
@@ -693,6 +613,7 @@ def _render_manual_group_ui(
         key="manual_group_search",
         help="コードまたは名称の一部で検索できます。",
     )
+    st.caption("手順: 検索 → チェック → 追加/取り消し")
 
     sector_columns = {"17業種": "sector17", "33業種": "sector33"}
     sector_choices = [
@@ -785,20 +706,6 @@ def _render_manual_group_ui(
         f"ページ表示: {start + 1 if capped_count else 0}〜{end}件"
     )
 
-    selected_codes = list(st.session_state.get("manual_group_codes", current_group_codes))
-    if sector_filter_label and sector_filter_label != "指定なし":
-        selected_codes = [
-            code
-            for code in selected_codes
-            if sector_filter_value in (None, "指定なし")
-            or sector_map.get(code) == sector_filter_value
-        ]
-    selected_codes = list(dict.fromkeys(selected_codes))
-    option_codes = sorted(set(filtered_codes) | set(selected_codes))
-
-    if "manual_group_codes" not in st.session_state:
-        st.session_state["manual_group_codes"] = selected_codes
-
     previous_checked_codes = [
         str(code).zfill(4)
         for code in st.session_state.get("manual_group_search_checked_codes", [])
@@ -846,7 +753,7 @@ def _render_manual_group_ui(
 
     destination_candidates = sorted(set(custom_groups) | set(group_master))
     destination_group = st.selectbox(
-        "追加先マスタ",
+        "追加先グループ",
         options=["未選択"] + destination_candidates,
         key="manual_group_destination",
         format_func=lambda g: g
@@ -856,11 +763,11 @@ def _render_manual_group_ui(
 
     col_apply_add, col_apply_remove = st.columns(2)
     with col_apply_add:
-        if st.button("選択銘柄をマスタへ追加", key="manual_group_apply_checked_to_master"):
+        if st.button("チェック銘柄を追加", key="manual_group_apply_checked_to_master"):
             if not checked_codes:
                 st.warning("追加対象の銘柄をチェックしてください。")
             elif destination_group == "未選択":
-                st.warning("追加先マスタを選択してください。")
+                st.warning("追加先グループを選択してください。")
             else:
                 updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
                     custom_groups,
@@ -881,7 +788,7 @@ def _render_manual_group_ui(
                 try:
                     save_custom_groups(updated_groups)
                     st.success(
-                        "選択銘柄をマスタへ追加しました"
+                        "チェック銘柄を追加しました"
                         f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
                         f"セクター条件による除外: {excluded_count}件）。"
                     )
@@ -890,11 +797,11 @@ def _render_manual_group_ui(
                 except Exception as exc:
                     st.error(f"マスタへの追加に失敗しました: {exc}")
     with col_apply_remove:
-        if st.button("選択銘柄をマスタから取り消し", key="manual_group_remove_checked_from_master"):
+        if st.button("チェック銘柄を取り消し", key="manual_group_remove_checked_from_master"):
             if not checked_codes:
                 st.warning("取り消し対象の銘柄をチェックしてください。")
             elif destination_group == "未選択":
-                st.warning("取り消し先マスタを選択してください。")
+                st.warning("取り消し先グループを選択してください。")
             else:
                 updated_groups, removed_count = _remove_checked_codes_from_group(
                     custom_groups,
@@ -911,141 +818,8 @@ def _render_manual_group_ui(
                 except Exception as exc:
                     st.error(f"分類取り消しに失敗しました: {exc}")
 
-    selected_codes = list(st.session_state.get("manual_group_codes", []))
-    with st.expander("詳細操作（非推奨）", expanded=False):
-        col_bulk_remove, col_bulk_clear = st.columns(2)
-        with col_bulk_remove:
-            if st.button("検索結果を選択へ追加", key="manual_group_bulk_add_main"):
-                merged = list(dict.fromkeys(selected_codes + filtered_codes))
-                st.session_state["manual_group_codes"] = merged
-        with col_bulk_clear:
-            if st.button("選択をクリア", key="manual_group_bulk_clear_main"):
-                st.session_state["manual_group_codes"] = []
-                st.session_state["manual_group_search_checked_codes"] = []
-
-        selected_codes = st.multiselect(
-            "銘柄を選択（詳細操作）",
-            options=option_codes,
-            format_func=lambda c: f"{c} ({name_map.get(c, '名称未登録')})",
-            key="manual_group_codes",
-        )
-        st.caption(f"選択中: {len(selected_codes)}件")
-
-    with st.expander("一括カテゴリ分け（複数グループに同時追加）", expanded=False):
-        st.caption(
-            "1行に `銘柄コード,グループA|グループB` 形式で入力してください。例: `7203,自動車|大型株`"
-        )
-        bulk_text = st.text_area(
-            "一括入力",
-            key="manual_group_bulk_assign_text",
-            height=140,
-        )
-        if st.button("一括反映", key="manual_group_bulk_assign_apply"):
-            assignments, errors = _parse_bulk_group_lines(bulk_text)
-            if errors:
-                st.error("入力エラー:\n" + "\n".join(errors))
-            elif not assignments:
-                st.warning("有効な入力行がありません。")
-            else:
-                (
-                    updated_groups,
-                    applied_count,
-                    created_group_count,
-                    unknown_symbols,
-                ) = _apply_bulk_group_assignments(custom_groups, assignments, symbols)
-                if unknown_symbols:
-                    preview = ", ".join(unknown_symbols[:10])
-                    suffix = "..." if len(unknown_symbols) > 10 else ""
-                    st.warning(
-                        "CSV未取得のため追加できなかった銘柄: "
-                        f"{preview}{suffix}"
-                    )
-                _save_custom_groups_with_feedback(
-                    updated_groups,
-                    f"一括反映しました（追加: {applied_count}件 / 新規グループ: {created_group_count}件）",
-                    "一括反映に失敗しました",
-                    rerun=False,
-                )
-
-    with st.expander("セクター別の銘柄一覧", expanded=False):
-        if sector_choices:
-            sector_display_label = st.selectbox(
-                "表示するセクター分類",
-                options=sector_choices,
-                key="manual_group_sector_display",
-            )
-            sector_display_column = sector_columns[sector_display_label]
-            sector_display_df = listed_df[["code", "name", sector_display_column]].copy()
-            sector_display_df["code"] = sector_display_df["code"].astype(str).str.zfill(4)
-            sector_display_df.rename(
-                columns={
-                    "code": "コード",
-                    "name": "名称",
-                    sector_display_column: "業種",
-                },
-                inplace=True,
-            )
-            sector_display_df = sector_display_df[sector_display_df["業種"].notna()]
-            sector_display_df = sector_display_df[sector_display_df["業種"].astype(str) != "nan"]
-            sector_values = sorted(sector_display_df["業種"].astype(str).unique())
-            if sector_filter_value and sector_filter_value != "指定なし":
-                sector_display_df = sector_display_df[
-                    sector_display_df["業種"] == sector_filter_value
-                ]
-
-            st.dataframe(
-                sector_display_df.sort_values(["業種", "コード"]),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.markdown("#### セクター単位でグループ反映")
-            if not sector_values:
-                st.info("表示可能な業種データがありません。")
-            else:
-                group_target_mode = st.selectbox(
-                    "反映先グループ",
-                    options=["新規作成"] + sorted(custom_groups),
-                    key="manual_group_sector_target_mode",
-                )
-                default_target_group = "" if group_target_mode == "新規作成" else group_target_mode
-                target_group_name = st.text_input(
-                    "反映先グループ名",
-                    value=default_target_group,
-                    key="manual_group_sector_target_name",
-                )
-                target_sector_value = st.selectbox(
-                    "反映対象の業種",
-                    options=sector_values,
-                    key="manual_group_sector_target_value",
-                )
-                action_mode = st.radio(
-                    "反映操作",
-                    options=["追加", "除外"],
-                    horizontal=True,
-                    key="manual_group_sector_action",
-                )
-                if st.button("セクターを反映", key="manual_group_sector_apply"):
-                    if not target_group_name.strip():
-                        st.error("反映先グループ名を入力してください。")
-                    else:
-                        updated_groups, changed_count = _apply_sector_group_assignment(
-                            custom_groups,
-                            listed_df,
-                            symbols,
-                            sector_display_column,
-                            target_sector_value,
-                            target_group_name.strip(),
-                            "remove" if action_mode == "除外" else "add",
-                        )
-                        _save_custom_groups_with_feedback(
-                            updated_groups,
-                            f"{target_sector_value} を {target_group_name.strip()} に{action_mode}しました（{changed_count}件）。",
-                            "セクター反映に失敗しました",
-                            rerun=False,
-                        )
-        else:
-            st.info("銘柄マスタにセクター情報がありません。")
+    selected_codes = list(dict.fromkeys(checked_codes))
+    st.caption(f"チェック済み: {len(selected_codes)}件")
 
     col_save, col_delete = st.columns(2)
     with col_save:

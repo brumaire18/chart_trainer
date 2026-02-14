@@ -6,12 +6,10 @@ import pandas as pd
 
 from ui_streamlit import (
     _apply_checked_codes_to_groups,
-    _apply_sector_group_assignment,
     _build_search_result_df,
     _calculate_minimum_data_length,
     _has_macd_cross,
     _latest_has_required_data,
-    _parse_bulk_group_lines,
     _append_pair_grid_search_history,
     _load_pair_grid_search_history,
     _parse_depth_range_grid_values,
@@ -276,41 +274,6 @@ class CalculateMinimumDataLengthTest(unittest.TestCase):
 
         self.assertEqual(required_length, 215)
         self.assertTrue(any("MA接近判定には" in msg and "215本以上必要" in msg for msg in reasons))
-
-class SectorGroupAssignmentTest(unittest.TestCase):
-    def test_add_and_remove_sector_codes(self):
-        listed_df = pd.DataFrame(
-            [
-                {"code": "7203", "sector17": "輸送用機器"},
-                {"code": "7267", "sector17": "輸送用機器"},
-                {"code": "6758", "sector17": "電気機器"},
-            ]
-        )
-        groups = {"既存": ["6758"]}
-
-        updated_add, changed_add = _apply_sector_group_assignment(
-            groups,
-            listed_df,
-            symbols=["7203", "7267", "6758"],
-            sector_column="sector17",
-            sector_value="輸送用機器",
-            target_group="自動車",
-            action="add",
-        )
-        self.assertEqual(changed_add, 2)
-        self.assertEqual(updated_add["自動車"], ["7203", "7267"])
-
-        updated_remove, changed_remove = _apply_sector_group_assignment(
-            {"自動車": ["7203", "7267", "6758"]},
-            listed_df,
-            symbols=["7203", "7267", "6758"],
-            sector_column="sector17",
-            sector_value="輸送用機器",
-            target_group="自動車",
-            action="remove",
-        )
-        self.assertEqual(changed_remove, 2)
-        self.assertEqual(updated_remove["自動車"], ["6758"])
 
 
 class SearchResultBulkGroupingTest(unittest.TestCase):
