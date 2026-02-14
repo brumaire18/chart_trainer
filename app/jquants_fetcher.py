@@ -13,7 +13,7 @@ import re
 import time
 import random
 from dataclasses import dataclass
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -64,6 +64,9 @@ LISTED_MASTER_MARKET_CODE_MAP = {
     "0102": "STANDARD",
     "0103": "GROWTH",
 }
+
+JST = timezone(timedelta(hours=9), name="JST")
+CLOSE_TIME_DEFAULT = dt_time(hour=16, minute=0)
 
 
 @dataclass
@@ -1483,6 +1486,64 @@ def update_universe(
         append_quotes_for_date(append_date)
 
 
+def should_run_after_close(
+    now: Optional[datetime] = None,
+    close_time: dt_time = CLOSE_TIME_DEFAULT,
+) -> bool:
+    """立ち合い日 16:00 以降かどうかを判定する。"""
+
+    reference_now = now or datetime.now(JST)
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=JST)
+    else:
+        reference_now = reference_now.astimezone(JST)
+
+    if reference_now.weekday() >= 5:
+        return False
+
+    return reference_now.time() >= close_time
+
+
+def sync_universe_after_close(
+    *,
+    now: Optional[datetime] = None,
+    include_custom: bool = False,
+    custom_path: Optional[Path] = None,
+    use_listed_master: bool = False,
+    market_filter: str = "prime_standard",
+    close_time: dt_time = CLOSE_TIME_DEFAULT,
+) -> bool:
+    """立ち合い日16:00以降のみ、当日日次データをユニバースへ反映する。"""
+
+    reference_now = now or datetime.now(JST)
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=JST)
+    else:
+        reference_now = reference_now.astimezone(JST)
+
+    if not should_run_after_close(reference_now, close_time=close_time):
+        logger.info(
+            "立ち合い日16:00前または休場日のため、日次反映をスキップします: %s",
+            reference_now.isoformat(),
+        )
+        return False
+
+    target_codes = build_universe(
+        include_custom=include_custom,
+        custom_path=custom_path,
+        use_listed_master=use_listed_master,
+        market_filter=market_filter,
+    )
+    target_date = reference_now.date().isoformat()
+    append_quotes_for_date(target_date, codes=target_codes)
+    logger.info(
+        "立ち合い日クローズ後の自動反映が完了しました: %s (codes=%s)",
+        target_date,
+        len(target_codes),
+    )
+    return True
+
+
 def load_custom_symbols(path: Optional[Path] = None) -> List[str]:
     path = path or META_DIR / "custom_symbols.txt"
     if not path.exists():
@@ -1541,6 +1602,11 @@ if __name__ == "__main__":
         type=int,
         help="既存データが指定行数より少ない銘柄は再取得する",
     )
+    parser.add_argument(
+        "--auto-after-close",
+        action="store_true",
+        help="立ち合い日 16:00 以降のみ当日の株価をユニバースに自動反映する",
+    )
 
     args = parser.parse_args()
 
@@ -1554,14 +1620,22 @@ if __name__ == "__main__":
             market_filter=args.market,
         )
 
-    update_universe(
-        codes=codes,
-        full_refresh=args.full_refresh,
-        use_listed_master=args.use_listed_master,
-        append_date=args.append_date,
-        market_filter=args.market,
-        min_rows_refresh=args.min_rows_refresh,
-    )
+    if args.auto_after_close:
+        sync_universe_after_close(
+            include_custom=args.include_custom,
+            custom_path=args.custom_path,
+            use_listed_master=args.use_listed_master,
+            market_filter=args.market,
+        )
+    else:
+        update_universe(
+            codes=codes,
+            full_refresh=args.full_refresh,
+            use_listed_master=args.use_listed_master,
+            append_date=args.append_date,
+            market_filter=args.market,
+            min_rows_refresh=args.min_rows_refresh,
+        )
 
     if args.include_topix:
         try:

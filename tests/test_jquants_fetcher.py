@@ -1,18 +1,22 @@
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import patch
 
 import pandas as pd
 from pathlib import Path
 
 from app.jquants_fetcher import (
+    JST,
+    CLOSE_TIME_DEFAULT,
     JQuantsError,
     _get_id_token,
     _normalize_daily_quotes,
     _normalize_topix,
     fetch_listed_master,
     get_growth_universe,
+    should_run_after_close,
+    sync_universe_after_close,
     update_symbol,
 )
 
@@ -206,3 +210,44 @@ class GetGrowthUniverseTests(unittest.TestCase):
         result = get_growth_universe()
 
         self.assertEqual(result, ["0002"])
+
+
+class AfterCloseSyncTests(unittest.TestCase):
+    def test_should_run_after_close_true_on_weekday_after_16(self):
+        now = datetime(2024, 1, 9, 16, 1, tzinfo=JST)  # Tuesday
+        self.assertTrue(should_run_after_close(now=now, close_time=CLOSE_TIME_DEFAULT))
+
+    def test_should_run_after_close_false_before_16(self):
+        now = datetime(2024, 1, 9, 15, 59, tzinfo=JST)  # Tuesday
+        self.assertFalse(should_run_after_close(now=now, close_time=CLOSE_TIME_DEFAULT))
+
+    def test_should_run_after_close_false_on_weekend(self):
+        now = datetime(2024, 1, 13, 16, 30, tzinfo=JST)  # Saturday
+        self.assertFalse(should_run_after_close(now=now, close_time=CLOSE_TIME_DEFAULT))
+
+    @patch("app.jquants_fetcher.append_quotes_for_date")
+    @patch("app.jquants_fetcher.build_universe")
+    def test_sync_universe_after_close_runs_append(self, mock_build_universe, mock_append):
+        mock_build_universe.return_value = ["7203", "8306"]
+
+        executed = sync_universe_after_close(
+            now=datetime(2024, 1, 9, 16, 5, tzinfo=JST),
+            include_custom=True,
+            use_listed_master=False,
+            market_filter="prime_standard",
+        )
+
+        self.assertTrue(executed)
+        mock_build_universe.assert_called_once()
+        mock_append.assert_called_once_with("2024-01-09", codes=["7203", "8306"])
+
+    @patch("app.jquants_fetcher.append_quotes_for_date")
+    @patch("app.jquants_fetcher.build_universe")
+    def test_sync_universe_after_close_skips_before_close(self, mock_build_universe, mock_append):
+        executed = sync_universe_after_close(
+            now=datetime(2024, 1, 9, 15, 30, tzinfo=JST),
+        )
+
+        self.assertFalse(executed)
+        mock_build_universe.assert_not_called()
+        mock_append.assert_not_called()
