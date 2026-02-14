@@ -213,6 +213,63 @@ def _build_search_result_df(
     return pd.DataFrame(rows, columns=["選択", "コード", "名称", "業種", "分類済みグループ"])
 
 
+def _serialize_custom_groups_for_cache(custom_groups: Dict[str, List[str]]) -> str:
+    normalized_groups = {
+        str(group_name): [str(code).zfill(4) for code in codes]
+        for group_name, codes in custom_groups.items()
+    }
+    return json.dumps(normalized_groups, ensure_ascii=False, sort_keys=True)
+
+
+@st.cache_data(show_spinner=False)
+def _build_classified_groups_map_cached(
+    custom_groups_serialized: str,
+) -> Dict[str, List[str]]:
+    parsed = json.loads(custom_groups_serialized) if custom_groups_serialized else {}
+    classified_groups_map: Dict[str, List[str]] = {}
+    for existing_group_name, existing_codes in parsed.items():
+        for existing_code in existing_codes:
+            normalized_code = str(existing_code).zfill(4)
+            classified_groups_map.setdefault(normalized_code, []).append(
+                str(existing_group_name)
+            )
+    for normalized_code, existing_group_names in classified_groups_map.items():
+        classified_groups_map[normalized_code] = sorted(set(existing_group_names))
+    return classified_groups_map
+
+
+def _serialize_listed_df_for_cache(listed_df: pd.DataFrame) -> str:
+    if "code" not in listed_df.columns:
+        return "[]"
+    available_columns = ["code", "sector17", "sector33"]
+    selected_columns = [col for col in available_columns if col in listed_df.columns]
+    if not selected_columns:
+        return "[]"
+    records = listed_df[selected_columns].to_dict(orient="records")
+    return json.dumps(records, ensure_ascii=False, sort_keys=True)
+
+
+@st.cache_data(show_spinner=False)
+def _build_sector_map_cached(
+    listed_master_cache_key: str,
+    sector_column: str,
+    listed_df_serialized: str,
+) -> Dict[str, str]:
+    _ = listed_master_cache_key
+    if not listed_df_serialized:
+        return {}
+    records = json.loads(listed_df_serialized)
+    sector_map: Dict[str, str] = {}
+    for record in records:
+        if "code" not in record or sector_column not in record:
+            continue
+        code = str(record.get("code", "")).zfill(4)
+        sector = str(record.get(sector_column, ""))
+        if sector and sector != "nan":
+            sector_map[code] = sector
+    return sector_map
+
+
 def _apply_checked_codes_to_groups(
     custom_groups: Dict[str, List[str]],
     checked_codes: List[str],
@@ -503,6 +560,7 @@ def _render_manual_group_ui(
     group_master: Dict[str, Dict[str, str]],
     symbols: List[str],
     listed_df: pd.DataFrame,
+    listed_master_cache_key: str,
     name_map: Dict[str, str],
     load_error: Optional[str] = None,
     master_load_error: Optional[str] = None,
@@ -622,6 +680,7 @@ def _render_manual_group_ui(
     sector_filter_label = None
     sector_filter_value = None
     sector_map: Dict[str, str] = {}
+    listed_df_serialized = _serialize_listed_df_for_cache(listed_df)
     if sector_choices:
         sector_filter_label = st.selectbox(
             "セクター分類",
@@ -631,11 +690,10 @@ def _render_manual_group_ui(
         )
         if sector_filter_label != "指定なし":
             sector_column = sector_columns[sector_filter_label]
-            sector_map = dict(
-                zip(
-                    listed_df["code"].astype(str).str.zfill(4),
-                    listed_df[sector_column].astype(str),
-                )
+            sector_map = _build_sector_map_cached(
+                listed_master_cache_key,
+                sector_column,
+                listed_df_serialized,
             )
             sector_values = sorted(
                 {
@@ -710,45 +768,46 @@ def _render_manual_group_ui(
         str(code).zfill(4)
         for code in st.session_state.get("manual_group_search_checked_codes", [])
     ]
-    classified_groups_map: Dict[str, List[str]] = {}
-    for existing_group_name, existing_codes in custom_groups.items():
-        for existing_code in existing_codes:
-            normalized_code = str(existing_code).zfill(4)
-            classified_groups_map.setdefault(normalized_code, []).append(existing_group_name)
-    for normalized_code, existing_group_names in classified_groups_map.items():
-        classified_groups_map[normalized_code] = sorted(set(existing_group_names))
-    search_result_df = _build_search_result_df(
-        display_codes,
-        name_map,
-        sector_map,
-        checked_codes=previous_checked_codes,
-        classified_groups_map=classified_groups_map,
-    )
-    edited_search_result_df = st.data_editor(
-        search_result_df,
-        hide_index=True,
-        use_container_width=True,
-        key="manual_group_search_result_editor",
-        disabled=["コード", "名称", "業種", "分類済みグループ"],
-        column_config={
-            "選択": st.column_config.CheckboxColumn("選択"),
-            "分類済みグループ": st.column_config.TextColumn(
-                "分類済みグループ",
-                help="既に登録されている手動グループを表示します。",
-            ),
-        },
-    )
-    checked_codes_on_page = (
-        edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
-        .astype(str)
-        .str.zfill(4)
-        .tolist()
-    )
-    display_code_set = {str(code).zfill(4) for code in display_codes}
-    checked_codes = [
-        code for code in previous_checked_codes if code not in display_code_set
-    ]
-    checked_codes.extend(code for code in checked_codes_on_page if code not in checked_codes)
+    checked_codes = previous_checked_codes
+    if display_codes:
+        custom_groups_serialized = _serialize_custom_groups_for_cache(custom_groups)
+        classified_groups_map = _build_classified_groups_map_cached(custom_groups_serialized)
+        search_result_df = _build_search_result_df(
+            display_codes,
+            name_map,
+            sector_map,
+            checked_codes=previous_checked_codes,
+            classified_groups_map=classified_groups_map,
+        )
+        edited_search_result_df = st.data_editor(
+            search_result_df,
+            hide_index=True,
+            use_container_width=True,
+            key="manual_group_search_result_editor",
+            disabled=["コード", "名称", "業種", "分類済みグループ"],
+            column_config={
+                "選択": st.column_config.CheckboxColumn("選択"),
+                "分類済みグループ": st.column_config.TextColumn(
+                    "分類済みグループ",
+                    help="既に登録されている手動グループを表示します。",
+                ),
+            },
+        )
+        checked_codes_on_page = (
+            edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
+            .astype(str)
+            .str.zfill(4)
+            .tolist()
+        )
+        display_code_set = {str(code).zfill(4) for code in display_codes}
+        checked_codes = [
+            code for code in previous_checked_codes if code not in display_code_set
+        ]
+        checked_codes.extend(
+            code for code in checked_codes_on_page if code not in checked_codes
+        )
+    else:
+        st.info("表示対象の銘柄がありません。検索条件を変更してください。")
     st.session_state["manual_group_search_checked_codes"] = checked_codes
 
     destination_candidates = sorted(set(custom_groups) | set(group_master))
@@ -2271,6 +2330,7 @@ def main():
             st.sidebar.error(f"ダウンロードに失敗しました: {exc}")
 
     symbols = _load_available_symbols(price_csv_cache_key)
+    listed_master_cache_key = "missing"
     try:
         listed_master_cache_key = _get_listed_master_cache_key()
         listed_df = _load_listed_master_cached(listed_master_cache_key)
@@ -6008,6 +6068,7 @@ def main():
             group_master=group_master,
             symbols=symbols,
             listed_df=listed_df,
+            listed_master_cache_key=listed_master_cache_key,
             name_map=name_map,
             load_error=custom_groups_error,
             master_load_error=group_master_error,
