@@ -308,7 +308,7 @@ def _set_manual_group_focus_code(
     if normalized not in available_codes:
         return
     target_index = available_codes.index(normalized)
-    st.session_state["manual_group_page_number"] = (target_index // page_size) + 1
+    st.session_state["manual_group_pending_page_number"] = (target_index // page_size) + 1
 
 
 def _apply_checked_codes_to_groups(
@@ -785,6 +785,12 @@ def _render_manual_group_ui(
 
     page_size = 100
     total_pages = max(1, (capped_count + page_size - 1) // page_size)
+    pending_page_number = st.session_state.pop("manual_group_pending_page_number", None)
+    if pending_page_number is not None:
+        st.session_state["manual_group_page_number"] = min(
+            max(1, int(pending_page_number)),
+            total_pages,
+        )
     page_number = int(
         st.number_input(
             "表示ページ",
