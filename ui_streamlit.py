@@ -292,6 +292,25 @@ def _build_sector_map_cached(
     return sector_map
 
 
+def _clear_manual_group_checked_state() -> None:
+    st.session_state["manual_group_search_checked_codes"] = []
+    st.session_state.pop("manual_group_search_result_editor", None)
+
+
+def _set_manual_group_focus_code(
+    focus_code: Optional[str],
+    available_codes: List[str],
+    page_size: int,
+) -> None:
+    if not focus_code:
+        return
+    normalized = str(focus_code).zfill(4)
+    if normalized not in available_codes:
+        return
+    target_index = available_codes.index(normalized)
+    st.session_state["manual_group_page_number"] = (target_index // page_size) + 1
+
+
 def _apply_checked_codes_to_groups(
     custom_groups: Dict[str, List[str]],
     checked_codes: List[str],
@@ -804,33 +823,46 @@ def _render_manual_group_ui(
             checked_codes=previous_checked_codes,
             classified_groups_map=classified_groups_map,
         )
-        edited_search_result_df = st.data_editor(
-            search_result_df,
-            hide_index=True,
-            use_container_width=True,
-            key="manual_group_search_result_editor",
-            disabled=["コード", "名称", "業種", "分類済みグループ"],
-            column_config={
-                "選択": st.column_config.CheckboxColumn("選択"),
-                "分類済みグループ": st.column_config.TextColumn(
-                    "分類済みグループ",
-                    help="既に登録されている手動グループを表示します。",
-                ),
-            },
-        )
-        checked_codes_on_page = (
-            edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
-            .astype(str)
-            .str.zfill(4)
-            .tolist()
-        )
-        display_code_set = {str(code).zfill(4) for code in display_codes}
-        checked_codes = [
-            code for code in previous_checked_codes if code not in display_code_set
-        ]
-        checked_codes.extend(
-            code for code in checked_codes_on_page if code not in checked_codes
-        )
+        with st.form("manual_group_search_form", clear_on_submit=False):
+            edited_search_result_df = st.data_editor(
+                search_result_df,
+                hide_index=True,
+                use_container_width=True,
+                key="manual_group_search_result_editor",
+                disabled=["コード", "名称", "業種", "分類済みグループ"],
+                column_config={
+                    "選択": st.column_config.CheckboxColumn("選択"),
+                    "分類済みグループ": st.column_config.TextColumn(
+                        "分類済みグループ",
+                        help="既に登録されている手動グループを表示します。",
+                    ),
+                },
+            )
+            apply_check = st.form_submit_button("チェックを反映")
+
+        if apply_check:
+            checked_codes_on_page = (
+                edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
+                .astype(str)
+                .str.zfill(4)
+                .tolist()
+            )
+            display_code_set = {str(code).zfill(4) for code in display_codes}
+            checked_codes = [
+                code for code in previous_checked_codes if code not in display_code_set
+            ]
+            checked_codes.extend(
+                code for code in checked_codes_on_page if code not in checked_codes
+            )
+            st.session_state["manual_group_search_checked_codes"] = checked_codes
+            if checked_codes_on_page:
+                st.session_state["manual_group_last_checked_code"] = checked_codes_on_page[-1]
+                _set_manual_group_focus_code(
+                    checked_codes_on_page[-1],
+                    capped_codes,
+                    page_size,
+                )
+            st.rerun()
     else:
         st.info("表示対象の銘柄がありません。検索条件を変更してください。")
     st.session_state["manual_group_search_checked_codes"] = checked_codes
@@ -872,6 +904,12 @@ def _render_manual_group_ui(
                 try:
                     save_custom_groups(updated_groups)
                     st.cache_data.clear()
+                    _clear_manual_group_checked_state()
+                    _set_manual_group_focus_code(
+                        st.session_state.get("manual_group_last_checked_code"),
+                        capped_codes,
+                        page_size,
+                    )
                     st.success(
                         "チェック銘柄を追加しました"
                         f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
@@ -896,6 +934,12 @@ def _render_manual_group_ui(
                 try:
                     save_custom_groups(updated_groups)
                     st.cache_data.clear()
+                    _clear_manual_group_checked_state()
+                    _set_manual_group_focus_code(
+                        st.session_state.get("manual_group_last_checked_code"),
+                        capped_codes,
+                        page_size,
+                    )
                     st.success(
                         "選択銘柄の分類を取り消しました"
                         f"（取り消し: {removed_count}件）。"
@@ -915,6 +959,10 @@ def _render_manual_group_ui(
             elif group_mode != "新規作成" and group_name != group_mode and group_name in custom_groups:
                 st.error("同名のグループが既に存在します。")
             else:
+                focus_code = st.session_state.get("manual_group_last_checked_code")
+                if focus_code is None and selected_codes:
+                    focus_code = selected_codes[-1]
+                _set_manual_group_focus_code(focus_code, capped_codes, page_size)
                 if group_mode != "新規作成" and group_name != group_mode:
                     custom_groups.pop(group_mode, None)
                     if group_mode in group_master:
