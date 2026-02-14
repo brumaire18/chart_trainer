@@ -319,6 +319,23 @@ def _apply_checked_codes_to_groups(
     return updated_groups, applied_count, created_group_count
 
 
+def _remove_checked_codes_from_group(
+    custom_groups: Dict[str, List[str]],
+    checked_codes: List[str],
+    target_group: str,
+) -> Tuple[Dict[str, List[str]], int]:
+    updated_groups = {group: list(codes) for group, codes in custom_groups.items()}
+    if target_group not in updated_groups:
+        return updated_groups, 0
+
+    target_code_set = {str(code).zfill(4) for code in checked_codes}
+    before_codes = [str(code).zfill(4) for code in updated_groups.get(target_group, [])]
+    remaining_codes = [code for code in before_codes if code not in target_code_set]
+    removed_count = len(before_codes) - len(remaining_codes)
+    updated_groups[target_group] = remaining_codes
+    return updated_groups, removed_count
+
+
 def _filter_symbols_by_search(
     symbols: List[str],
     name_map: Dict[str, str],
@@ -829,38 +846,61 @@ def _render_manual_group_ui(
         else _format_group_destination_label(g, group_master),
     )
 
-    if st.button("選択銘柄をマスタへ追加", key="manual_group_apply_checked_to_master"):
-        if not checked_codes:
-            st.warning("追加対象の銘柄をチェックしてください。")
-        elif destination_group == "未選択":
-            st.warning("追加先マスタを選択してください。")
-        else:
-            updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
-                custom_groups,
-                checked_codes,
-                [destination_group],
-            )
-            excluded_count = 0
-            if destination_group in group_master:
-                before_filter_count = len(updated_groups.get(destination_group, []))
-                filtered_codes = _filter_codes_by_group_master(
-                    updated_groups.get(destination_group, []),
-                    group_master,
+    col_apply_add, col_apply_remove = st.columns(2)
+    with col_apply_add:
+        if st.button("選択銘柄をマスタへ追加", key="manual_group_apply_checked_to_master"):
+            if not checked_codes:
+                st.warning("追加対象の銘柄をチェックしてください。")
+            elif destination_group == "未選択":
+                st.warning("追加先マスタを選択してください。")
+            else:
+                updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
+                    custom_groups,
+                    checked_codes,
+                    [destination_group],
+                )
+                excluded_count = 0
+                if destination_group in group_master:
+                    before_filter_count = len(updated_groups.get(destination_group, []))
+                    filtered_codes = _filter_codes_by_group_master(
+                        updated_groups.get(destination_group, []),
+                        group_master,
+                        destination_group,
+                        listed_df,
+                    )
+                    excluded_count = before_filter_count - len(filtered_codes)
+                    updated_groups[destination_group] = filtered_codes
+                try:
+                    save_custom_groups(updated_groups)
+                    st.success(
+                        "選択銘柄をマスタへ追加しました"
+                        f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
+                        f"セクター条件による除外: {excluded_count}件）。"
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"マスタへの追加に失敗しました: {exc}")
+    with col_apply_remove:
+        if st.button("選択銘柄をマスタから取り消し", key="manual_group_remove_checked_from_master"):
+            if not checked_codes:
+                st.warning("取り消し対象の銘柄をチェックしてください。")
+            elif destination_group == "未選択":
+                st.warning("取り消し先マスタを選択してください。")
+            else:
+                updated_groups, removed_count = _remove_checked_codes_from_group(
+                    custom_groups,
+                    checked_codes,
                     destination_group,
-                    listed_df,
                 )
-                excluded_count = before_filter_count - len(filtered_codes)
-                updated_groups[destination_group] = filtered_codes
-            try:
-                save_custom_groups(updated_groups)
-                st.success(
-                    "選択銘柄をマスタへ追加しました"
-                    f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
-                    f"セクター条件による除外: {excluded_count}件）。"
-                )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"マスタへの追加に失敗しました: {exc}")
+                try:
+                    save_custom_groups(updated_groups)
+                    st.success(
+                        "選択銘柄の分類を取り消しました"
+                        f"（取り消し: {removed_count}件）。"
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"分類取り消しに失敗しました: {exc}")
 
     selected_codes = list(st.session_state.get("manual_group_codes", []))
     with st.expander("詳細操作（非推奨）", expanded=False):
