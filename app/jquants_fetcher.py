@@ -354,6 +354,88 @@ def _normalize_market_value(value: Any) -> Optional[str]:
 
     return text
 
+LISTED_MASTER_EXCLUDED_NAME_KEYWORDS = (
+    "優先株",
+    "優先出資",
+    "PREFERRED",
+)
+LISTED_MASTER_EXCLUDED_MARKET_KEYWORDS = (
+    "PRO",
+)
+LISTED_MASTER_EXCLUDED_STATUS_KEYWORDS = (
+    "廃止",
+    "DELIST",
+)
+
+
+def _is_truthy_listing_flag(value: Any) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    text = str(value).strip().upper()
+    if not text:
+        return False
+    return text in {"1", "TRUE", "T", "YES", "Y", "LISTED", "上場", "LISTING"}
+
+
+def _is_excluded_security_row(row: pd.Series) -> bool:
+    name = str(row.get("name", "") or "").strip()
+    market_name = str(row.get("market_name", "") or "").strip()
+    market = str(row.get("market", "") or "").strip()
+
+    normalized_name = name.upper()
+    normalized_market = f"{market_name} {market}".upper()
+
+    if any(keyword in normalized_name for keyword in LISTED_MASTER_EXCLUDED_NAME_KEYWORDS):
+        return True
+    if any(keyword in normalized_market for keyword in LISTED_MASTER_EXCLUDED_MARKET_KEYWORDS):
+        return True
+
+    listing_col_candidates = [
+        "Listing",
+        "listing",
+        "isListed",
+        "IsListed",
+        "CurrentListingStatus",
+        "currentListingStatus",
+        "DelistingDate",
+        "delistingDate",
+    ]
+    for col in listing_col_candidates:
+        if col not in row.index:
+            continue
+        value = row.get(col)
+        if col.lower().endswith("date"):
+            text = str(value).strip() if value is not None else ""
+            if text and text.lower() != "nan":
+                return True
+            continue
+        text = str(value).strip().upper() if value is not None else ""
+        if not text or text == "NAN":
+            continue
+        if any(keyword in text for keyword in LISTED_MASTER_EXCLUDED_STATUS_KEYWORDS):
+            return True
+        if col.lower() in {"listing", "islisted"} and not _is_truthy_listing_flag(value):
+            return True
+
+    return False
+
+
+def filter_listed_master_for_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """分析対象外（PRO/上場廃止/優先株など）を除外した銘柄マスタを返す。"""
+
+    if df.empty:
+        return df.copy()
+
+    required_cols = {"code", "name"}
+    if not required_cols.issubset(df.columns):
+        return df.copy()
+
+    excluded_mask = df.apply(_is_excluded_security_row, axis=1)
+    filtered_df = df.loc[~excluded_mask].copy()
+    filtered_df["code"] = filtered_df["code"].astype(str).str.zfill(4)
+    return filtered_df
+
+
 
 def _fetch_listed_master_paginated(
     client: JQuantsClient, params: Optional[Dict[str, Any]] = None
@@ -823,9 +905,9 @@ def load_listed_master() -> pd.DataFrame:
 
 
 def get_all_listed_codes() -> List[str]:
-    """listed_master.csv に記載の全銘柄コードを返す。"""
+    """listed_master.csv から分析対象銘柄コードを返す。"""
 
-    df = load_listed_master()
+    df = filter_listed_master_for_analysis(load_listed_master())
     return sorted(df["code"].astype(str).str.zfill(4).tolist())
 
 
@@ -839,7 +921,7 @@ def get_symbols_by_sector(
     if normalized_sector_key not in {"sector17", "sector33"}:
         raise ValueError(f"不明な sector_key です: {sector_key}")
 
-    df = load_listed_master()
+    df = filter_listed_master_for_analysis(load_listed_master())
     sector_candidates = (
         ["sector17", "Sector17Code"]
         if normalized_sector_key == "sector17"
@@ -888,7 +970,7 @@ def get_symbols_by_sector(
 
 
 def _get_market_universe(markets: List[str]) -> List[str]:
-    df = load_listed_master()
+    df = filter_listed_master_for_analysis(load_listed_master())
     market_source_col = _find_column(
         df,
         [
