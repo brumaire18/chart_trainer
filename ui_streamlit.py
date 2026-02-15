@@ -90,6 +90,16 @@ def _load_group_master_cached(cache_key: str) -> Dict[str, Dict[str, str]]:
     return load_group_master()
 
 
+def _invalidate_manual_group_caches(
+    custom_groups: bool = False,
+    group_master: bool = False,
+) -> None:
+    if custom_groups:
+        _load_custom_groups_cached.clear()
+    if group_master:
+        _load_group_master_cached.clear()
+
+
 def _format_eta(seconds: Optional[float]) -> str:
     if seconds is None or seconds < 0:
         return "計算中"
@@ -337,6 +347,32 @@ def _apply_checked_codes_to_groups(
     return updated_groups, applied_count, created_group_count
 
 
+def _merge_checked_codes_with_display_selection(
+    previous_checked_codes: List[str],
+    display_codes: List[str],
+    edited_search_result_df: Optional[pd.DataFrame],
+) -> List[str]:
+    if edited_search_result_df is None or edited_search_result_df.empty:
+        return [str(code).zfill(4) for code in previous_checked_codes]
+
+    checked_codes_on_page = (
+        edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
+        .astype(str)
+        .str.zfill(4)
+        .tolist()
+    )
+    display_code_set = {str(code).zfill(4) for code in display_codes}
+    merged_checked_codes = [
+        str(code).zfill(4)
+        for code in previous_checked_codes
+        if str(code).zfill(4) not in display_code_set
+    ]
+    merged_checked_codes.extend(
+        code for code in checked_codes_on_page if code not in merged_checked_codes
+    )
+    return merged_checked_codes
+
+
 def _remove_checked_codes_from_group(
     custom_groups: Dict[str, List[str]],
     checked_codes: List[str],
@@ -386,7 +422,7 @@ def _save_groups_with_feedback(
     try:
         save_custom_groups(custom_groups)
         save_group_master(group_master)
-        st.cache_data.clear()
+        _invalidate_manual_group_caches(custom_groups=True, group_master=True)
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -402,7 +438,7 @@ def _save_group_master_with_feedback(
 ) -> None:
     try:
         save_group_master(group_master)
-        st.cache_data.clear()
+        _invalidate_manual_group_caches(group_master=True)
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -418,7 +454,7 @@ def _save_custom_groups_with_feedback(
 ) -> None:
     try:
         save_custom_groups(custom_groups)
-        st.cache_data.clear()
+        _invalidate_manual_group_caches(custom_groups=True)
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -853,12 +889,10 @@ def _render_manual_group_ui(
                 .str.zfill(4)
                 .tolist()
             )
-            display_code_set = {str(code).zfill(4) for code in display_codes}
-            checked_codes = [
-                code for code in previous_checked_codes if code not in display_code_set
-            ]
-            checked_codes.extend(
-                code for code in checked_codes_on_page if code not in checked_codes
+            checked_codes = _merge_checked_codes_with_display_selection(
+                previous_checked_codes,
+                display_codes,
+                edited_search_result_df,
             )
             st.session_state["manual_group_search_checked_codes"] = checked_codes
             if checked_codes_on_page:
@@ -868,7 +902,6 @@ def _render_manual_group_ui(
                     capped_codes,
                     page_size,
                 )
-            st.rerun()
     else:
         st.info("表示対象の銘柄がありません。検索条件を変更してください。")
     st.session_state["manual_group_search_checked_codes"] = checked_codes
@@ -909,7 +942,7 @@ def _render_manual_group_ui(
                     updated_groups[destination_group] = filtered_codes
                 try:
                     save_custom_groups(updated_groups)
-                    st.cache_data.clear()
+                    _invalidate_manual_group_caches(custom_groups=True)
                     _clear_manual_group_checked_state()
                     _set_manual_group_focus_code(
                         st.session_state.get("manual_group_last_checked_code"),
@@ -939,7 +972,7 @@ def _render_manual_group_ui(
                 )
                 try:
                     save_custom_groups(updated_groups)
-                    st.cache_data.clear()
+                    _invalidate_manual_group_caches(custom_groups=True)
                     _clear_manual_group_checked_state()
                     _set_manual_group_focus_code(
                         st.session_state.get("manual_group_last_checked_code"),
@@ -6035,7 +6068,7 @@ def main():
                 )
                 try:
                     save_custom_groups(updated_groups)
-                    st.cache_data.clear()
+                    _invalidate_manual_group_caches(custom_groups=True)
                     st.success("集計対象外銘柄を保存しました。")
                     st.rerun()
                 except Exception as exc:

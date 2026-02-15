@@ -7,6 +7,7 @@ import pandas as pd
 from ui_streamlit import (
     _apply_checked_codes_to_groups,
     _build_search_result_df,
+    _merge_checked_codes_with_display_selection,
     _calculate_minimum_data_length,
     _has_macd_cross,
     _latest_has_required_data,
@@ -304,6 +305,31 @@ class SearchResultBulkGroupingTest(unittest.TestCase):
         self.assertEqual(applied_count, 3)
         self.assertEqual(updated["既存"], ["7203", "6758"])
         self.assertEqual(updated["成長株"], ["7203", "6758"])
+
+    def test_merge_checked_codes_replaces_only_current_page(self):
+        edited_df = pd.DataFrame(
+            [
+                {"選択": False, "コード": "1301"},
+                {"選択": True, "コード": "6758"},
+            ]
+        )
+
+        merged = _merge_checked_codes_with_display_selection(
+            previous_checked_codes=["1301", "7203"],
+            display_codes=["1301", "6758"],
+            edited_search_result_df=edited_df,
+        )
+
+        self.assertEqual(merged, ["7203", "6758"])
+
+    def test_merge_checked_codes_keeps_previous_when_editor_empty(self):
+        merged = _merge_checked_codes_with_display_selection(
+            previous_checked_codes=["1301", "7203"],
+            display_codes=["1301", "6758"],
+            edited_search_result_df=pd.DataFrame(),
+        )
+
+        self.assertEqual(merged, ["1301", "7203"])
 
 
 class PairGridSearchHistoryTest(unittest.TestCase):
