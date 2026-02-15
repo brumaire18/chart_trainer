@@ -1129,6 +1129,34 @@ def _get_manual_group_symbols(
     )
 
 
+def _build_sector_group_symbol_map(
+    custom_groups: Dict[str, List[str]],
+    group_master: Dict[str, Dict[str, str]],
+    symbols: List[str],
+    sector_col: str,
+) -> Dict[str, List[str]]:
+    if sector_col not in {"sector17", "sector33"}:
+        return {}
+    available_set = {str(symbol).zfill(4) for symbol in symbols}
+    grouped: Dict[str, set] = {}
+    for group_name, config in group_master.items():
+        mapped_col = _sector_column_from_master_type(config.get("sector_type", ""))
+        if mapped_col != sector_col:
+            continue
+        sector_value = str(config.get("sector_value", "")).strip()
+        if not sector_value:
+            continue
+        codes = {
+            str(code).zfill(4)
+            for code in custom_groups.get(group_name, [])
+            if str(code).zfill(4) in available_set
+        }
+        if not codes:
+            continue
+        grouped.setdefault(sector_value, set()).update(codes)
+    return {sector_value: sorted(codes) for sector_value, codes in grouped.items()}
+
+
 def _limit_pairs_per_sector(
     pairs_df: pd.DataFrame, sector_col: str, max_pairs_per_sector: int
 ) -> pd.DataFrame:
@@ -4939,12 +4967,28 @@ def main():
                 if manual_group_cache != "指定なし" and len(target_symbols) < 2:
                     st.warning("手動グループ内の銘柄が2件以上必要です。")
                     target_symbols = []
+                sector_group_symbol_map: Optional[Dict[str, List[str]]] = None
+                if cache_scope == "sector17":
+                    sector_group_symbol_map = _build_sector_group_symbol_map(
+                        custom_groups,
+                        group_master,
+                        target_symbols,
+                        "sector17",
+                    )
+                elif cache_scope == "sector33":
+                    sector_group_symbol_map = _build_sector_group_symbol_map(
+                        custom_groups,
+                        group_master,
+                        target_symbols,
+                        "sector33",
+                    )
                 pair_candidates = generate_pairs_by_sector_candidates(
                     listed_df=listed_df,
                     symbols=target_symbols,
                     sector17=sector17_filter,
                     sector33=sector33_filter,
                     max_pairs_per_sector=None,
+                    sector_group_symbol_map=sector_group_symbol_map,
                 )
                 if not pair_candidates:
                     st.warning(

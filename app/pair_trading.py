@@ -652,6 +652,7 @@ def generate_pairs_by_sector_candidates(
     sector17: Optional[str] = None,
     sector33: Optional[str] = None,
     max_pairs_per_sector: Optional[int] = 50,
+    sector_group_symbol_map: Optional[Dict[str, List[str]]] = None,
 ) -> List[Tuple[str, str]]:
     available = set(symbols)
     df = listed_df.copy()
@@ -673,8 +674,18 @@ def generate_pairs_by_sector_candidates(
     else:
         return []
     pairs: List[Tuple[str, str]] = []
+    normalized_group_map: Dict[str, set] = {}
+    if sector_group_symbol_map:
+        normalized_group_map = {
+            str(sector_value): {str(code).zfill(4) for code in codes}
+            for sector_value, codes in sector_group_symbol_map.items()
+        }
     for _, group in df.dropna(subset=[sector_col]).groupby(sector_col):
+        sector_value = str(group[sector_col].iloc[0])
         codes = sorted(group["code"].dropna().unique().tolist())
+        if sector_value in normalized_group_map:
+            allowed_codes = normalized_group_map[sector_value]
+            codes = [code for code in codes if code in allowed_codes]
         combos = combinations(codes, 2)
         if max_pairs_per_sector is None:
             pairs.extend(list(combos))
