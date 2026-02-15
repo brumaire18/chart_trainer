@@ -337,6 +337,32 @@ def _apply_checked_codes_to_groups(
     return updated_groups, applied_count, created_group_count
 
 
+def _merge_checked_codes_with_display_selection(
+    previous_checked_codes: List[str],
+    display_codes: List[str],
+    edited_search_result_df: Optional[pd.DataFrame],
+) -> List[str]:
+    if edited_search_result_df is None or edited_search_result_df.empty:
+        return [str(code).zfill(4) for code in previous_checked_codes]
+
+    checked_codes_on_page = (
+        edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
+        .astype(str)
+        .str.zfill(4)
+        .tolist()
+    )
+    display_code_set = {str(code).zfill(4) for code in display_codes}
+    merged_checked_codes = [
+        str(code).zfill(4)
+        for code in previous_checked_codes
+        if str(code).zfill(4) not in display_code_set
+    ]
+    merged_checked_codes.extend(
+        code for code in checked_codes_on_page if code not in merged_checked_codes
+    )
+    return merged_checked_codes
+
+
 def _remove_checked_codes_from_group(
     custom_groups: Dict[str, List[str]],
     checked_codes: List[str],
@@ -853,12 +879,10 @@ def _render_manual_group_ui(
                 .str.zfill(4)
                 .tolist()
             )
-            display_code_set = {str(code).zfill(4) for code in display_codes}
-            checked_codes = [
-                code for code in previous_checked_codes if code not in display_code_set
-            ]
-            checked_codes.extend(
-                code for code in checked_codes_on_page if code not in checked_codes
+            checked_codes = _merge_checked_codes_with_display_selection(
+                previous_checked_codes,
+                display_codes,
+                edited_search_result_df,
             )
             st.session_state["manual_group_search_checked_codes"] = checked_codes
             if checked_codes_on_page:
@@ -868,7 +892,6 @@ def _render_manual_group_ui(
                     capped_codes,
                     page_size,
                 )
-            st.rerun()
     else:
         st.info("表示対象の銘柄がありません。検索条件を変更してください。")
     st.session_state["manual_group_search_checked_codes"] = checked_codes
