@@ -50,6 +50,7 @@ from app.jquants_fetcher import (
     build_universe,
     get_credential_status,
     load_listed_master,
+    filter_listed_master_for_analysis,
     update_topix,
     update_universe_with_anchor_day,
     update_universe,
@@ -850,6 +851,10 @@ def _render_manual_group_ui(
         f"ページ表示: {start + 1 if capped_count else 0}〜{end}件"
     )
 
+    apply_check = False
+    apply_checked_add = False
+    apply_checked_remove = False
+
     previous_checked_codes = [
         str(code).zfill(4)
         for code in st.session_state.get("manual_group_search_checked_codes", [])
@@ -880,9 +885,15 @@ def _render_manual_group_ui(
                     ),
                 },
             )
-            apply_check = st.form_submit_button("チェックを反映")
+            col_apply_check, col_apply_add, col_apply_remove = st.columns(3)
+            with col_apply_check:
+                apply_check = st.form_submit_button("チェックを反映")
+            with col_apply_add:
+                apply_checked_add = st.form_submit_button("チェック銘柄を追加")
+            with col_apply_remove:
+                apply_checked_remove = st.form_submit_button("チェック銘柄を取り消し")
 
-        if apply_check:
+        if apply_check or apply_checked_add or apply_checked_remove:
             checked_codes_on_page = (
                 edited_search_result_df.loc[edited_search_result_df["選択"], "コード"]
                 .astype(str)
@@ -916,76 +927,73 @@ def _render_manual_group_ui(
         else _format_group_destination_label(g, group_master),
     )
 
-    col_apply_add, col_apply_remove = st.columns(2)
-    with col_apply_add:
-        if st.button("チェック銘柄を追加", key="manual_group_apply_checked_to_master"):
-            if not checked_codes:
-                st.warning("追加対象の銘柄をチェックしてください。")
-            elif destination_group == "未選択":
-                st.warning("追加先グループを選択してください。")
-            else:
-                updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
-                    custom_groups,
-                    checked_codes,
-                    [destination_group],
-                )
-                excluded_count = 0
-                if destination_group in group_master:
-                    before_filter_count = len(updated_groups.get(destination_group, []))
-                    filtered_codes = _filter_codes_by_group_master(
-                        updated_groups.get(destination_group, []),
-                        group_master,
-                        destination_group,
-                        listed_df,
-                    )
-                    excluded_count = before_filter_count - len(filtered_codes)
-                    updated_groups[destination_group] = filtered_codes
-                try:
-                    save_custom_groups(updated_groups)
-                    _invalidate_manual_group_caches(custom_groups=True)
-                    _clear_manual_group_checked_state()
-                    _set_manual_group_focus_code(
-                        st.session_state.get("manual_group_last_checked_code"),
-                        capped_codes,
-                        page_size,
-                    )
-                    st.success(
-                        "チェック銘柄を追加しました"
-                        f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
-                        f"セクター条件による除外: {excluded_count}件）。"
-                    )
-                    # グループ追加/削除時のみ明示的に再描画
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"マスタへの追加に失敗しました: {exc}")
-    with col_apply_remove:
-        if st.button("チェック銘柄を取り消し", key="manual_group_remove_checked_from_master"):
-            if not checked_codes:
-                st.warning("取り消し対象の銘柄をチェックしてください。")
-            elif destination_group == "未選択":
-                st.warning("取り消し先グループを選択してください。")
-            else:
-                updated_groups, removed_count = _remove_checked_codes_from_group(
-                    custom_groups,
-                    checked_codes,
+    if apply_checked_add:
+        if not checked_codes:
+            st.warning("追加対象の銘柄をチェックしてください。")
+        elif destination_group == "未選択":
+            st.warning("追加先グループを選択してください。")
+        else:
+            updated_groups, applied_count, created_group_count = _apply_checked_codes_to_groups(
+                custom_groups,
+                checked_codes,
+                [destination_group],
+            )
+            excluded_count = 0
+            if destination_group in group_master:
+                before_filter_count = len(updated_groups.get(destination_group, []))
+                filtered_codes = _filter_codes_by_group_master(
+                    updated_groups.get(destination_group, []),
+                    group_master,
                     destination_group,
+                    listed_df,
                 )
-                try:
-                    save_custom_groups(updated_groups)
-                    _invalidate_manual_group_caches(custom_groups=True)
-                    _clear_manual_group_checked_state()
-                    _set_manual_group_focus_code(
-                        st.session_state.get("manual_group_last_checked_code"),
-                        capped_codes,
-                        page_size,
-                    )
-                    st.success(
-                        "選択銘柄の分類を取り消しました"
-                        f"（取り消し: {removed_count}件）。"
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"分類取り消しに失敗しました: {exc}")
+                excluded_count = before_filter_count - len(filtered_codes)
+                updated_groups[destination_group] = filtered_codes
+            try:
+                save_custom_groups(updated_groups)
+                _invalidate_manual_group_caches(custom_groups=True)
+                _clear_manual_group_checked_state()
+                _set_manual_group_focus_code(
+                    st.session_state.get("manual_group_last_checked_code"),
+                    capped_codes,
+                    page_size,
+                )
+                st.success(
+                    "チェック銘柄を追加しました"
+                    f"（追加: {applied_count}件 / 新規グループ: {created_group_count}件 / "
+                    f"セクター条件による除外: {excluded_count}件）。"
+                )
+                # グループ追加/削除時のみ明示的に再描画
+                st.rerun()
+            except Exception as exc:
+                st.error(f"マスタへの追加に失敗しました: {exc}")
+    if apply_checked_remove:
+        if not checked_codes:
+            st.warning("取り消し対象の銘柄をチェックしてください。")
+        elif destination_group == "未選択":
+            st.warning("取り消し先グループを選択してください。")
+        else:
+            updated_groups, removed_count = _remove_checked_codes_from_group(
+                custom_groups,
+                checked_codes,
+                destination_group,
+            )
+            try:
+                save_custom_groups(updated_groups)
+                _invalidate_manual_group_caches(custom_groups=True)
+                _clear_manual_group_checked_state()
+                _set_manual_group_focus_code(
+                    st.session_state.get("manual_group_last_checked_code"),
+                    capped_codes,
+                    page_size,
+                )
+                st.success(
+                    "選択銘柄の分類を取り消しました"
+                    f"（取り消し: {removed_count}件）。"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"分類取り消しに失敗しました: {exc}")
 
     selected_codes = list(dict.fromkeys(checked_codes))
     st.caption(f"チェック済み: {len(selected_codes)}件")
@@ -2479,6 +2487,11 @@ def main():
     except Exception as exc:  # master が無い場合でも動作継続
         st.sidebar.warning(f"銘柄マスタの読み込みに失敗しました: {exc}")
         listed_df = pd.DataFrame(columns=["code", "name", "market"])
+
+    listed_df = filter_listed_master_for_analysis(listed_df)
+    if not listed_df.empty and "code" in listed_df.columns:
+        listed_symbol_set = set(listed_df["code"].astype(str).str.zfill(4))
+        symbols = [str(code).zfill(4) for code in symbols if str(code).zfill(4) in listed_symbol_set]
 
     name_map = {
         str(row.code).zfill(4): str(row.name)
