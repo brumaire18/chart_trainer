@@ -90,6 +90,16 @@ def _load_group_master_cached(cache_key: str) -> Dict[str, Dict[str, str]]:
     return load_group_master()
 
 
+def _invalidate_manual_group_caches(
+    custom_groups: bool = False,
+    group_master: bool = False,
+) -> None:
+    if custom_groups:
+        _load_custom_groups_cached.clear()
+    if group_master:
+        _load_group_master_cached.clear()
+
+
 def _format_eta(seconds: Optional[float]) -> str:
     if seconds is None or seconds < 0:
         return "計算中"
@@ -412,7 +422,7 @@ def _save_groups_with_feedback(
     try:
         save_custom_groups(custom_groups)
         save_group_master(group_master)
-        st.cache_data.clear()
+        _invalidate_manual_group_caches(custom_groups=True, group_master=True)
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -428,7 +438,7 @@ def _save_group_master_with_feedback(
 ) -> None:
     try:
         save_group_master(group_master)
-        st.cache_data.clear()
+        _invalidate_manual_group_caches(group_master=True)
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -444,7 +454,7 @@ def _save_custom_groups_with_feedback(
 ) -> None:
     try:
         save_custom_groups(custom_groups)
-        st.cache_data.clear()
+        _invalidate_manual_group_caches(custom_groups=True)
         st.success(success_message)
         if rerun:
             st.rerun()
@@ -932,7 +942,7 @@ def _render_manual_group_ui(
                     updated_groups[destination_group] = filtered_codes
                 try:
                     save_custom_groups(updated_groups)
-                    st.cache_data.clear()
+                    _invalidate_manual_group_caches(custom_groups=True)
                     _clear_manual_group_checked_state()
                     _set_manual_group_focus_code(
                         st.session_state.get("manual_group_last_checked_code"),
@@ -962,7 +972,7 @@ def _render_manual_group_ui(
                 )
                 try:
                     save_custom_groups(updated_groups)
-                    st.cache_data.clear()
+                    _invalidate_manual_group_caches(custom_groups=True)
                     _clear_manual_group_checked_state()
                     _set_manual_group_focus_code(
                         st.session_state.get("manual_group_last_checked_code"),
@@ -6058,7 +6068,7 @@ def main():
                 )
                 try:
                     save_custom_groups(updated_groups)
-                    st.cache_data.clear()
+                    _invalidate_manual_group_caches(custom_groups=True)
                     st.success("集計対象外銘柄を保存しました。")
                     st.rerun()
                 except Exception as exc:
