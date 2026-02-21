@@ -17,6 +17,7 @@ from app.jquants_fetcher import (
     get_growth_universe,
     should_run_after_close,
     sync_universe_after_close,
+    fetch_edinet_disclosures,
     update_symbol,
 )
 
@@ -251,3 +252,42 @@ class AfterCloseSyncTests(unittest.TestCase):
         self.assertFalse(executed)
         mock_build_universe.assert_not_called()
         mock_append.assert_not_called()
+
+
+class FetchEdinetDisclosuresTests(unittest.TestCase):
+    @patch("app.jquants_fetcher.EDINET_DISCLOSURES_PATH")
+    @patch("app.jquants_fetcher.date_range_descending")
+    @patch("app.jquants_fetcher.EdinetClient")
+    def test_fetch_edinet_disclosures_merges_and_filters(
+        self,
+        mock_client_cls,
+        mock_dates,
+        mock_path,
+    ):
+        mock_dates.return_value = ["2024-01-05", "2024-01-04"]
+        client = mock_client_cls.return_value
+        client.fetch_documents.side_effect = [
+            pd.DataFrame([{
+                "docID": "A",
+                "secCode": "72030",
+                "submitDateTime": "2024-01-05T10:00:00",
+                "docDescription": "決算短信",
+            }]),
+            pd.DataFrame([{
+                "docID": "B",
+                "secCode": "83060",
+                "submitDateTime": "2024-01-04T10:00:00",
+                "docDescription": "適時開示",
+            }]),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "edinet_disclosures.csv"
+            mock_path.exists.return_value = False
+            mock_path.__str__ = lambda self=mock_path: str(tmp_path)
+            with patch("app.jquants_fetcher.EDINET_DISCLOSURES_PATH", tmp_path):
+                with patch("app.jquants_fetcher.META_DIR", Path(tmpdir)):
+                    df = fetch_edinet_disclosures(days=2, codes=["7203"])
+
+        self.assertEqual(df["code"].tolist(), ["7203"])
+        self.assertEqual(df["doc_id"].tolist(), ["A"])
