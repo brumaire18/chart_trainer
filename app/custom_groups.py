@@ -47,11 +47,34 @@ def load_group_master(path: Path = GROUP_MASTER_PATH) -> Dict[str, Dict[str, str
             continue
         if not isinstance(config, dict):
             config = {}
-        sector_type = str(config.get("sector_type", "")).strip()
-        sector_value = str(config.get("sector_value", "")).strip()
+        raw_rules = config.get("sector_rules", [])
+        sector_rules: List[Dict[str, str]] = []
+        if isinstance(raw_rules, list):
+            for rule in raw_rules:
+                if not isinstance(rule, dict):
+                    continue
+                sector_type = str(rule.get("sector_type", "")).strip()
+                sector_value = str(rule.get("sector_value", "")).strip()
+                if sector_type and sector_value:
+                    sector_rules.append(
+                        {"sector_type": sector_type, "sector_value": sector_value}
+                    )
+
+        legacy_sector_type = str(config.get("sector_type", "")).strip()
+        legacy_sector_value = str(config.get("sector_value", "")).strip()
+        if legacy_sector_type and legacy_sector_value:
+            legacy_rule = {
+                "sector_type": legacy_sector_type,
+                "sector_value": legacy_sector_value,
+            }
+            if legacy_rule not in sector_rules:
+                sector_rules.append(legacy_rule)
+
+        primary_rule = sector_rules[0] if sector_rules else {"sector_type": "", "sector_value": ""}
         normalized[group_name] = {
-            "sector_type": sector_type,
-            "sector_value": sector_value,
+            "sector_type": primary_rule["sector_type"],
+            "sector_value": primary_rule["sector_value"],
+            "sector_rules": sector_rules,
         }
     return normalized
 
@@ -65,6 +88,16 @@ def save_group_master(
         str(group): {
             "sector_type": str(config.get("sector_type", "")).strip(),
             "sector_value": str(config.get("sector_value", "")).strip(),
+            "sector_rules": [
+                {
+                    "sector_type": str(rule.get("sector_type", "")).strip(),
+                    "sector_value": str(rule.get("sector_value", "")).strip(),
+                }
+                for rule in config.get("sector_rules", [])
+                if isinstance(rule, dict)
+                and str(rule.get("sector_type", "")).strip()
+                and str(rule.get("sector_value", "")).strip()
+            ],
         }
         for group, config in group_master.items()
     }
