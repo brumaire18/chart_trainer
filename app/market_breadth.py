@@ -7,6 +7,48 @@ from .config import PRICE_CSV_DIR
 from .data_loader import get_available_symbols, load_price_csv
 
 
+def _load_price_for_breadth(csv_path: Path, code: str, price_dir: Path) -> pd.DataFrame:
+    if price_dir == PRICE_CSV_DIR:
+        return load_price_csv(code)
+
+    df_raw = pd.read_csv(csv_path)
+    if df_raw.empty:
+        return pd.DataFrame(columns=["date", "close", "volume"])
+
+    if all(col in df_raw.columns for col in ["date", "close", "volume"]):
+        return df_raw[["date", "close", "volume"]].copy()
+
+    if "Date" in df_raw.columns:
+        close_col = (
+            "AdjustmentClose"
+            if "AdjustmentClose" in df_raw.columns
+            else "adjustmentClose"
+            if "adjustmentClose" in df_raw.columns
+            else "Close"
+            if "Close" in df_raw.columns
+            else None
+        )
+        volume_col = (
+            "AdjustmentVolume"
+            if "AdjustmentVolume" in df_raw.columns
+            else "adjustmentVolume"
+            if "adjustmentVolume" in df_raw.columns
+            else "Volume"
+            if "Volume" in df_raw.columns
+            else None
+        )
+        if close_col is not None and volume_col is not None:
+            return pd.DataFrame(
+                {
+                    "date": df_raw["Date"],
+                    "close": df_raw[close_col],
+                    "volume": df_raw[volume_col],
+                }
+            )
+
+    raise ValueError(f"サポートしていないCSV形式です: {csv_path}")
+
+
 def _summarize_symbol_breadth(df: pd.DataFrame) -> pd.DataFrame:
     """1銘柄分の終値推移から日次の上昇/下落集計を生成する。"""
 
@@ -32,12 +74,13 @@ def _summarize_symbol_breadth(df: pd.DataFrame) -> pd.DataFrame:
 def aggregate_market_breadth(
     symbols: Optional[Iterable[str]] = None,
     price_dir: Path = PRICE_CSV_DIR,
-    fill_missing_business_days: bool = True,
+    fill_missing_business_days: bool = False,
 ) -> pd.DataFrame:
     """
     data/price_csv 以下の銘柄を走査し、日次の上昇/下落銘柄数・出来高を集計する。
 
-    欠損日がある場合は営業日(B)で補完し、値を0で埋める。
+    既定では休場日を除外し、実データが存在する取引日のみを返す。
+    必要に応じて fill_missing_business_days=True で営業日(B)補完を有効化できる。
     """
 
     target_symbols = list(symbols) if symbols is not None else get_available_symbols()
@@ -60,7 +103,7 @@ def aggregate_market_breadth(
         if not csv_path.exists():
             continue
         try:
-            df_price = load_price_csv(code)
+            df_price = _load_price_for_breadth(csv_path, code, price_dir)
         except Exception:
             continue
 
