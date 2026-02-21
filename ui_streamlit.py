@@ -881,17 +881,18 @@ def _render_manual_group_ui(
     page_size = 100
     total_pages = max(1, (capped_count + page_size - 1) // page_size)
     pending_page_number = st.session_state.pop("manual_group_pending_page_number", None)
+    current_page_number = int(st.session_state.get("manual_group_page_number", 1))
     if pending_page_number is not None:
-        st.session_state["manual_group_page_number"] = min(
-            max(1, int(pending_page_number)),
-            total_pages,
-        )
+        current_page_number = int(pending_page_number)
+    st.session_state["manual_group_page_number"] = min(
+        max(1, current_page_number),
+        total_pages,
+    )
     page_number = int(
         st.number_input(
             "表示ページ",
             min_value=1,
             max_value=total_pages,
-            value=1,
             step=1,
             key="manual_group_page_number",
         )
