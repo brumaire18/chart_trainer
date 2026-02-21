@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
+from app.pair_trading import generate_pairs_by_sector_candidates
 from ui_streamlit import (
     _apply_checked_codes_to_groups,
     _build_search_result_df,
@@ -18,6 +19,7 @@ from ui_streamlit import (
     _filter_symbols_by_search,
     _apply_breadth_exclusions,
     _build_swing_point_series,
+    _build_sector_group_symbol_map,
 )
 
 
@@ -438,6 +440,50 @@ class BuildSwingPointSeriesTest(unittest.TestCase):
         result = _build_swing_point_series(df, order=2)
 
         self.assertTrue(result.empty)
+
+
+class PairCacheSectorGroupFilterTest(unittest.TestCase):
+    def test_build_sector_group_symbol_map_uses_group_master_sector33(self):
+        custom_groups = {
+            "半導体A": ["1111", "2222"],
+            "半導体B": ["3333", "9999"],
+            "別業種": ["4444"],
+        }
+        group_master = {
+            "半導体A": {"sector_type": "33業種", "sector_value": "電気機器"},
+            "半導体B": {"sector_type": "33業種", "sector_value": "電気機器"},
+            "別業種": {"sector_type": "33業種", "sector_value": "サービス業"},
+        }
+
+        result = _build_sector_group_symbol_map(
+            custom_groups,
+            group_master,
+            symbols=["1111", "2222", "3333", "4444"],
+            sector_col="sector33",
+        )
+
+        self.assertEqual(result["電気機器"], ["1111", "2222", "3333"])
+        self.assertEqual(result["サービス業"], ["4444"])
+
+    def test_generate_pairs_by_sector_candidates_respects_sector_group_symbol_map(self):
+        listed_df = pd.DataFrame(
+            {
+                "code": ["1111", "2222", "3333", "4444"],
+                "sector33": ["電気機器", "電気機器", "電気機器", "サービス業"],
+                "market": ["PRIME", "PRIME", "PRIME", "PRIME"],
+            }
+        )
+
+        pairs = generate_pairs_by_sector_candidates(
+            listed_df=listed_df,
+            symbols=["1111", "2222", "3333", "4444"],
+            sector33="電気機器",
+            max_pairs_per_sector=None,
+            sector_group_symbol_map={"電気機器": ["1111", "3333"]},
+        )
+
+        self.assertEqual(pairs, [("1111", "3333")])
+
 
 
 if __name__ == "__main__":

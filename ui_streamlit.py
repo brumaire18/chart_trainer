@@ -1129,6 +1129,34 @@ def _get_manual_group_symbols(
     )
 
 
+def _build_sector_group_symbol_map(
+    custom_groups: Dict[str, List[str]],
+    group_master: Dict[str, Dict[str, str]],
+    symbols: List[str],
+    sector_col: str,
+) -> Dict[str, List[str]]:
+    if sector_col not in {"sector17", "sector33"}:
+        return {}
+    available_set = {str(symbol).zfill(4) for symbol in symbols}
+    grouped: Dict[str, set] = {}
+    for group_name, config in group_master.items():
+        mapped_col = _sector_column_from_master_type(config.get("sector_type", ""))
+        if mapped_col != sector_col:
+            continue
+        sector_value = str(config.get("sector_value", "")).strip()
+        if not sector_value:
+            continue
+        codes = {
+            str(code).zfill(4)
+            for code in custom_groups.get(group_name, [])
+            if str(code).zfill(4) in available_set
+        }
+        if not codes:
+            continue
+        grouped.setdefault(sector_value, set()).update(codes)
+    return {sector_value: sorted(codes) for sector_value, codes in grouped.items()}
+
+
 def _limit_pairs_per_sector(
     pairs_df: pd.DataFrame, sector_col: str, max_pairs_per_sector: int
 ) -> pd.DataFrame:
@@ -4736,11 +4764,11 @@ def main():
             )
         volume_filters = st.columns([1])
         with volume_filters[0]:
-            min_avg_volume = st.number_input(
-                "平均出来高の下限(0で無効)",
+            min_avg_turnover = st.number_input(
+                "平均売買代金の下限(円, 0で無効)",
                 min_value=0.0,
-                value=50000.0,
-                step=1000.0,
+                value=100000000.0,
+                step=10000000.0,
             )
         score_filters = st.columns([1])
         with score_filters[0]:
@@ -4765,7 +4793,9 @@ def main():
         max_half_life_filter = (
             float(max_half_life) if max_half_life and max_half_life > 0 else None
         )
-        min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
+        min_avg_turnover_filter = (
+            float(min_avg_turnover) if min_avg_turnover and min_avg_turnover > 0 else None
+        )
         min_abs_zscore_filter = (
             float(min_abs_zscore) if min_abs_zscore and min_abs_zscore > 0 else None
         )
@@ -4804,9 +4834,9 @@ def main():
             st.markdown("- スプレッド標準偏差: スプレッドのばらつき。")
             st.markdown("- 最新スプレッド: 直近日のスプレッド値。")
             st.markdown("- 最新Zスコア: 直近スプレッドの標準化値。")
-            st.markdown("- 平均出来高: 直近比較本数の平均出来高。一定以上を必須にする。")
+            st.markdown("- 平均売買代金: 直近比較本数の平均売買代金(終値×出来高)。一定以上を必須にする。")
             st.markdown(
-                "- 平均出来高(小さい方): 2銘柄の平均出来高のうち小さい方。フィルタ条件に使用。"
+                "- 平均売買代金(小さい方): 2銘柄の平均売買代金のうち小さい方。フィルタ条件に使用。"
             )
             st.markdown(
                 "- 総合スコア: 直近類似度、最新Zスコア、半減期から簡易スコアを算出し上位のみ評価。"
@@ -4939,12 +4969,28 @@ def main():
                 if manual_group_cache != "指定なし" and len(target_symbols) < 2:
                     st.warning("手動グループ内の銘柄が2件以上必要です。")
                     target_symbols = []
+                sector_group_symbol_map: Optional[Dict[str, List[str]]] = None
+                if cache_scope == "sector17":
+                    sector_group_symbol_map = _build_sector_group_symbol_map(
+                        custom_groups,
+                        group_master,
+                        target_symbols,
+                        "sector17",
+                    )
+                elif cache_scope == "sector33":
+                    sector_group_symbol_map = _build_sector_group_symbol_map(
+                        custom_groups,
+                        group_master,
+                        target_symbols,
+                        "sector33",
+                    )
                 pair_candidates = generate_pairs_by_sector_candidates(
                     listed_df=listed_df,
                     symbols=target_symbols,
                     sector17=sector17_filter,
                     sector33=sector33_filter,
                     max_pairs_per_sector=None,
+                    sector_group_symbol_map=sector_group_symbol_map,
                 )
                 if not pair_candidates:
                     st.warning(
@@ -4965,7 +5011,7 @@ def main():
                         max_half_life=max_half_life_filter,
                         min_abs_zscore=min_abs_zscore_filter,
                         max_abs_zscore=max_abs_zscore_filter,
-                        min_avg_volume=min_avg_volume_filter,
+                        min_avg_turnover=min_avg_turnover_filter,
                         preselect_top_n=None,
                         listed_df=listed_df,
                         history_window=pair_search_history,
@@ -4989,7 +5035,7 @@ def main():
                         "max_half_life": max_half_life_filter,
                         "min_abs_zscore": min_abs_zscore_filter,
                         "max_abs_zscore": max_abs_zscore_filter,
-                        "min_avg_volume": min_avg_volume_filter,
+                        "min_avg_turnover": min_avg_turnover_filter,
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
                         "max_pairs_per_symbol": max_pairs_per_symbol_limit,
@@ -5089,7 +5135,7 @@ def main():
                     "スプレッド標準偏差": display_df["spread_std"],
                     "最新スプレッド": display_df["spread_latest"],
                     "最新Zスコア": display_df["zscore_latest"],
-                    "平均出来高(小さい方)": display_df.get("avg_volume_min"),
+                    "平均売買代金(小さい方)": display_df.get("avg_turnover_min"),
                 }
             )
             table_df = table_df.round(
@@ -5105,7 +5151,7 @@ def main():
                     "スプレッド標準偏差": 4,
                     "最新スプレッド": 4,
                     "最新Zスコア": 2,
-                    "平均出来高(小さい方)": 0,
+                    "平均売買代金(小さい方)": 0,
                 }
             )
             st.dataframe(table_df, use_container_width=True)
