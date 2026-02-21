@@ -750,7 +750,7 @@ def evaluate_pair_candidates(
     max_half_life: Optional[float] = None,
     min_abs_zscore: Optional[float] = None,
     max_abs_zscore: Optional[float] = None,
-    min_avg_volume: Optional[float] = None,
+    min_avg_turnover: Optional[float] = None,
     preselect_top_n: Optional[int] = None,
     listed_df: Optional[pd.DataFrame] = None,
     history_window: Optional[int] = None,
@@ -783,7 +783,7 @@ def evaluate_pair_candidates(
                     symbol_a,
                     symbol_b,
                     recent_window=recent_window,
-                    min_avg_volume=min_avg_volume,
+                    min_avg_turnover=min_avg_turnover,
                     history_window=history_window,
                 )
                 if score is not None:
@@ -818,7 +818,7 @@ def evaluate_pair_candidates(
                 min_similarity=min_similarity,
                 min_long_similarity=min_long_similarity,
                 min_return_corr=min_return_corr,
-                min_avg_volume=min_avg_volume,
+                min_avg_turnover=min_avg_turnover,
                 history_window=history_window,
             )
             if metrics is None:
@@ -868,9 +868,9 @@ def evaluate_pair_candidates(
         "spread_std",
         "spread_latest",
         "zscore_latest",
-        "avg_volume_a",
-        "avg_volume_b",
-        "avg_volume_min",
+        "avg_turnover_a",
+        "avg_turnover_b",
+        "avg_turnover_min",
     ]
     for column in numeric_columns:
         if column in results_df.columns:
@@ -902,14 +902,19 @@ def _is_index_etf_symbol(symbol: str, etf_index_map: Dict[str, Optional[str]]) -
     return tag is not None
 
 
-def _compute_recent_avg_volume(volume_series: pd.Series, recent_window: int) -> float:
-    recent_series = volume_series.tail(recent_window)
-    avg_volume = float(recent_series.mean())
-    if not np.isnan(avg_volume):
-        return avg_volume
-    fallback_series = volume_series.dropna()
+def _compute_recent_avg_turnover(
+    close_series: pd.Series,
+    volume_series: pd.Series,
+    recent_window: int,
+) -> float:
+    turnover_series = close_series * volume_series
+    recent_series = turnover_series.tail(recent_window)
+    avg_turnover = float(recent_series.mean())
+    if not np.isnan(avg_turnover):
+        return avg_turnover
+    fallback_series = turnover_series.dropna()
     if fallback_series.empty:
-        return avg_volume
+        return avg_turnover
     return float(fallback_series.mean())
 
 
@@ -917,7 +922,7 @@ def _compute_quick_pair_score(
     symbol_a: str,
     symbol_b: str,
     recent_window: int,
-    min_avg_volume: Optional[float],
+    min_avg_turnover: Optional[float],
     history_window: Optional[int],
 ) -> Optional[float]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
@@ -925,14 +930,18 @@ def _compute_quick_pair_score(
     min_samples = compute_min_pair_samples(recent_window)
     if len(df_pair) < min_samples:
         return None
-    avg_volume_a = _compute_recent_avg_volume(df_pair["volume_a"], recent_window)
-    avg_volume_b = _compute_recent_avg_volume(df_pair["volume_b"], recent_window)
-    if min_avg_volume is not None:
+    avg_turnover_a = _compute_recent_avg_turnover(
+        df_pair["close_a"], df_pair["volume_a"], recent_window
+    )
+    avg_turnover_b = _compute_recent_avg_turnover(
+        df_pair["close_b"], df_pair["volume_b"], recent_window
+    )
+    if min_avg_turnover is not None:
         if (
-            np.isnan(avg_volume_a)
-            or np.isnan(avg_volume_b)
-            or avg_volume_a < min_avg_volume
-            or avg_volume_b < min_avg_volume
+            np.isnan(avg_turnover_a)
+            or np.isnan(avg_turnover_b)
+            or avg_turnover_a < min_avg_turnover
+            or avg_turnover_b < min_avg_turnover
         ):
             return None
     similarity = compute_recent_shape_similarity(
@@ -971,7 +980,7 @@ def compute_pair_metrics(
     long_window: Optional[int] = None,
     min_long_similarity: Optional[float] = None,
     min_return_corr: Optional[float] = None,
-    min_avg_volume: Optional[float] = None,
+    min_avg_turnover: Optional[float] = None,
     history_window: Optional[int] = None,
 ) -> Optional[dict]:
     df_pair = _prepare_pair_frame(symbol_a, symbol_b)
@@ -979,11 +988,15 @@ def compute_pair_metrics(
     min_samples = compute_min_pair_samples(recent_window, long_window)
     if len(df_pair) < min_samples:
         return None
-    avg_volume_a = _compute_recent_avg_volume(df_pair["volume_a"], recent_window)
-    avg_volume_b = _compute_recent_avg_volume(df_pair["volume_b"], recent_window)
-    avg_volume_min = float(np.nanmin([avg_volume_a, avg_volume_b]))
-    if min_avg_volume is not None:
-        if np.isnan(avg_volume_min) or avg_volume_min < min_avg_volume:
+    avg_turnover_a = _compute_recent_avg_turnover(
+        df_pair["close_a"], df_pair["volume_a"], recent_window
+    )
+    avg_turnover_b = _compute_recent_avg_turnover(
+        df_pair["close_b"], df_pair["volume_b"], recent_window
+    )
+    avg_turnover_min = float(np.nanmin([avg_turnover_a, avg_turnover_b]))
+    if min_avg_turnover is not None:
+        if np.isnan(avg_turnover_min) or avg_turnover_min < min_avg_turnover:
             return None
     recent_similarity = compute_recent_shape_similarity(
         df_pair["close_a"],
@@ -1041,9 +1054,9 @@ def compute_pair_metrics(
         "spread_std": spread_std,
         "spread_latest": float(spread.iloc[-1]),
         "zscore_latest": float(zscore.iloc[-1]),
-        "avg_volume_a": avg_volume_a,
-        "avg_volume_b": avg_volume_b,
-        "avg_volume_min": avg_volume_min,
+        "avg_turnover_a": avg_turnover_a,
+        "avg_turnover_b": avg_turnover_b,
+        "avg_turnover_min": avg_turnover_min,
     }
 
 

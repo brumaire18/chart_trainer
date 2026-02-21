@@ -4764,11 +4764,11 @@ def main():
             )
         volume_filters = st.columns([1])
         with volume_filters[0]:
-            min_avg_volume = st.number_input(
-                "平均出来高の下限(0で無効)",
+            min_avg_turnover = st.number_input(
+                "平均売買代金の下限(円, 0で無効)",
                 min_value=0.0,
-                value=50000.0,
-                step=1000.0,
+                value=100000000.0,
+                step=10000000.0,
             )
         score_filters = st.columns([1])
         with score_filters[0]:
@@ -4793,7 +4793,9 @@ def main():
         max_half_life_filter = (
             float(max_half_life) if max_half_life and max_half_life > 0 else None
         )
-        min_avg_volume_filter = float(min_avg_volume) if min_avg_volume and min_avg_volume > 0 else None
+        min_avg_turnover_filter = (
+            float(min_avg_turnover) if min_avg_turnover and min_avg_turnover > 0 else None
+        )
         min_abs_zscore_filter = (
             float(min_abs_zscore) if min_abs_zscore and min_abs_zscore > 0 else None
         )
@@ -4832,9 +4834,9 @@ def main():
             st.markdown("- スプレッド標準偏差: スプレッドのばらつき。")
             st.markdown("- 最新スプレッド: 直近日のスプレッド値。")
             st.markdown("- 最新Zスコア: 直近スプレッドの標準化値。")
-            st.markdown("- 平均出来高: 直近比較本数の平均出来高。一定以上を必須にする。")
+            st.markdown("- 平均売買代金: 直近比較本数の平均売買代金(終値×出来高)。一定以上を必須にする。")
             st.markdown(
-                "- 平均出来高(小さい方): 2銘柄の平均出来高のうち小さい方。フィルタ条件に使用。"
+                "- 平均売買代金(小さい方): 2銘柄の平均売買代金のうち小さい方。フィルタ条件に使用。"
             )
             st.markdown(
                 "- 総合スコア: 直近類似度、最新Zスコア、半減期から簡易スコアを算出し上位のみ評価。"
@@ -5009,7 +5011,7 @@ def main():
                         max_half_life=max_half_life_filter,
                         min_abs_zscore=min_abs_zscore_filter,
                         max_abs_zscore=max_abs_zscore_filter,
-                        min_avg_volume=min_avg_volume_filter,
+                        min_avg_turnover=min_avg_turnover_filter,
                         preselect_top_n=None,
                         listed_df=listed_df,
                         history_window=pair_search_history,
@@ -5033,7 +5035,7 @@ def main():
                         "max_half_life": max_half_life_filter,
                         "min_abs_zscore": min_abs_zscore_filter,
                         "max_abs_zscore": max_abs_zscore_filter,
-                        "min_avg_volume": min_avg_volume_filter,
+                        "min_avg_turnover": min_avg_turnover_filter,
                         "preselect_top_n": None,
                         "max_pairs_per_sector": None,
                         "max_pairs_per_symbol": max_pairs_per_symbol_limit,
@@ -5133,7 +5135,7 @@ def main():
                     "スプレッド標準偏差": display_df["spread_std"],
                     "最新スプレッド": display_df["spread_latest"],
                     "最新Zスコア": display_df["zscore_latest"],
-                    "平均出来高(小さい方)": display_df.get("avg_volume_min"),
+                    "平均売買代金(小さい方)": display_df.get("avg_turnover_min"),
                 }
             )
             table_df = table_df.round(
@@ -5149,7 +5151,7 @@ def main():
                     "スプレッド標準偏差": 4,
                     "最新スプレッド": 4,
                     "最新Zスコア": 2,
-                    "平均出来高(小さい方)": 0,
+                    "平均売買代金(小さい方)": 0,
                 }
             )
             st.dataframe(table_df, use_container_width=True)
