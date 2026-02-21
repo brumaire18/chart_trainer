@@ -20,6 +20,7 @@ from ui_streamlit import (
     _apply_breadth_exclusions,
     _build_swing_point_series,
     _build_sector_group_symbol_map,
+    _group_matches_sector_filter,
 )
 
 
@@ -465,6 +466,32 @@ class PairCacheSectorGroupFilterTest(unittest.TestCase):
         self.assertEqual(result["電気機器"], ["1111", "2222", "3333"])
         self.assertEqual(result["サービス業"], ["4444"])
 
+
+    def test_build_sector_group_symbol_map_supports_multiple_sector_rules(self):
+        custom_groups = {
+            "横断グループ": ["1111", "2222", "3333"],
+        }
+        group_master = {
+            "横断グループ": {
+                "sector_type": "33業種",
+                "sector_value": "電気機器",
+                "sector_rules": [
+                    {"sector_type": "33業種", "sector_value": "電気機器"},
+                    {"sector_type": "33業種", "sector_value": "機械"},
+                ],
+            },
+        }
+
+        result = _build_sector_group_symbol_map(
+            custom_groups,
+            group_master,
+            symbols=["1111", "2222", "3333"],
+            sector_col="sector33",
+        )
+
+        self.assertEqual(result["電気機器"], ["1111", "2222", "3333"])
+        self.assertEqual(result["機械"], ["1111", "2222", "3333"])
+
     def test_generate_pairs_by_sector_candidates_respects_sector_group_symbol_map(self):
         listed_df = pd.DataFrame(
             {
@@ -483,6 +510,26 @@ class PairCacheSectorGroupFilterTest(unittest.TestCase):
         )
 
         self.assertEqual(pairs, [("1111", "3333")])
+
+
+
+class ManualGroupSectorVisibilityTest(unittest.TestCase):
+    def test_group_matches_sector_filter_with_multiple_rules(self):
+        group_master = {
+            "横断": {
+                "sector_rules": [
+                    {"sector_type": "33業種", "sector_value": "電気機器"},
+                    {"sector_type": "33業種", "sector_value": "機械"},
+                ]
+            }
+        }
+
+        self.assertTrue(
+            _group_matches_sector_filter("横断", group_master, "33業種", "機械")
+        )
+        self.assertFalse(
+            _group_matches_sector_filter("横断", group_master, "17業種", "輸送用機器")
+        )
 
 
 

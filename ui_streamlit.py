@@ -469,6 +469,26 @@ def _sector_column_from_master_type(sector_type: str) -> Optional[str]:
     return sector_map.get(str(sector_type).strip())
 
 
+def _get_group_sector_rules(config: Dict[str, object]) -> List[Dict[str, str]]:
+    rules: List[Dict[str, str]] = []
+    raw_rules = config.get("sector_rules", [])
+    if isinstance(raw_rules, list):
+        for raw_rule in raw_rules:
+            if not isinstance(raw_rule, dict):
+                continue
+            sector_type = str(raw_rule.get("sector_type", "")).strip()
+            sector_value = str(raw_rule.get("sector_value", "")).strip()
+            if sector_type and sector_value:
+                rules.append({"sector_type": sector_type, "sector_value": sector_value})
+    legacy_sector_type = str(config.get("sector_type", "")).strip()
+    legacy_sector_value = str(config.get("sector_value", "")).strip()
+    if legacy_sector_type and legacy_sector_value:
+        legacy_rule = {"sector_type": legacy_sector_type, "sector_value": legacy_sector_value}
+        if legacy_rule not in rules:
+            rules.append(legacy_rule)
+    return rules
+
+
 def _filter_codes_by_group_master(
     codes: List[str],
     group_master: Dict[str, Dict[str, str]],
@@ -476,20 +496,49 @@ def _filter_codes_by_group_master(
     listed_df: pd.DataFrame,
 ) -> List[str]:
     config = group_master.get(group_name, {})
-    sector_column = _sector_column_from_master_type(config.get("sector_type", ""))
-    sector_value = str(config.get("sector_value", "")).strip()
-    if not sector_column or not sector_value:
+    sector_rules = _get_group_sector_rules(config)
+    if not sector_rules:
         return list(codes)
-    if sector_column not in listed_df.columns or "code" not in listed_df.columns:
+    if "code" not in listed_df.columns:
         return list(codes)
 
-    listed = listed_df[["code", sector_column]].copy()
+    listed = listed_df.copy()
     listed["code"] = listed["code"].astype(str).str.zfill(4)
-    listed[sector_column] = listed[sector_column].astype(str)
-    allowed = set(
-        listed.loc[listed[sector_column] == sector_value, "code"].tolist()
-    )
+    allowed: set = set()
+    for rule in sector_rules:
+        sector_column = _sector_column_from_master_type(rule["sector_type"])
+        if not sector_column or sector_column not in listed.columns:
+            continue
+        listed[sector_column] = listed[sector_column].astype(str)
+        allowed.update(
+            listed.loc[listed[sector_column] == rule["sector_value"], "code"].tolist()
+        )
+    if not allowed:
+        return list(codes)
     return [code for code in codes if str(code).zfill(4) in allowed]
+
+
+def _group_matches_sector_filter(
+    group_name: str,
+    group_master: Dict[str, Dict[str, str]],
+    sector_filter_label: Optional[str],
+    sector_filter_value: Optional[str],
+) -> bool:
+    if not sector_filter_label or sector_filter_label == "指定なし":
+        return True
+    if group_name not in group_master:
+        return True
+    rules = _get_group_sector_rules(group_master.get(group_name, {}))
+    if not rules:
+        return True
+    for rule in rules:
+        if rule.get("sector_type") != sector_filter_label:
+            continue
+        if not sector_filter_value or sector_filter_value == "指定なし":
+            return True
+        if str(rule.get("sector_value", "")).strip() == str(sector_filter_value).strip():
+            return True
+    return False
 
 
 def _format_group_master_label(
@@ -497,11 +546,11 @@ def _format_group_master_label(
     group_master: Dict[str, Dict[str, str]],
 ) -> str:
     config = group_master.get(group_name, {})
-    sector_type = str(config.get("sector_type", "")).strip()
-    sector_value = str(config.get("sector_value", "")).strip()
-    if not sector_type or not sector_value:
+    rules = _get_group_sector_rules(config)
+    if not rules:
         return f"{group_name}（マスタ未設定）"
-    return f"{group_name}（{sector_type}: {sector_value}）"
+    labels = [f"{rule['sector_type']}: {rule['sector_value']}" for rule in rules]
+    return f"{group_name}（{' / '.join(labels)}）"
 
 
 def _format_group_destination_label(
@@ -706,10 +755,12 @@ def _render_manual_group_ui(
                     if value and str(value) != "nan"
                 }
             )
-        master_sector_value = st.selectbox(
-            "対象業種",
-            options=master_sector_values if master_sector_values else ["該当なし"],
-            key="group_master_sector_value",
+        master_sector_values_selected = st.multiselect(
+            "対象業種（複数選択可）",
+            options=master_sector_values,
+            default=[],
+            key="group_master_sector_values",
+            help="同一グループに複数業種を紐付けできます。",
         )
 
         col_master_save, col_master_delete = st.columns(2)
@@ -717,12 +768,19 @@ def _render_manual_group_ui(
             if st.button("マスタ保存", key="group_master_save"):
                 if not master_group_name.strip():
                     st.error("マスタ登録グループ名を入力してください。")
-                elif not master_sector_values or master_sector_value == "該当なし":
+                elif not master_sector_values:
                     st.error("対象業種が存在しません。")
+                elif not master_sector_values_selected:
+                    st.error("対象業種を1つ以上選択してください。")
                 else:
+                    normalized_rules = [
+                        {"sector_type": master_sector_type, "sector_value": value}
+                        for value in master_sector_values_selected
+                    ]
                     group_master[master_group_name.strip()] = {
                         "sector_type": master_sector_type,
-                        "sector_value": master_sector_value,
+                        "sector_value": master_sector_values_selected[0],
+                        "sector_rules": normalized_rules,
                     }
                     if master_group_name.strip() not in custom_groups:
                         custom_groups[master_group_name.strip()] = []
@@ -863,6 +921,17 @@ def _render_manual_group_ui(
     if display_codes:
         custom_groups_serialized = _serialize_custom_groups_for_cache(custom_groups)
         classified_groups_map = _build_classified_groups_map_cached(custom_groups_serialized)
+        for normalized_code, existing_groups in classified_groups_map.items():
+            classified_groups_map[normalized_code] = [
+                group_name
+                for group_name in existing_groups
+                if _group_matches_sector_filter(
+                    group_name,
+                    group_master,
+                    sector_filter_label,
+                    sector_filter_value,
+                )
+            ]
         search_result_df = _build_search_result_df(
             display_codes,
             name_map,
@@ -917,7 +986,16 @@ def _render_manual_group_ui(
         st.info("表示対象の銘柄がありません。検索条件を変更してください。")
     st.session_state["manual_group_search_checked_codes"] = checked_codes
 
-    destination_candidates = sorted(set(custom_groups) | set(group_master))
+    destination_candidates = sorted(
+        group_name
+        for group_name in (set(custom_groups) | set(group_master))
+        if _group_matches_sector_filter(
+            group_name,
+            group_master,
+            sector_filter_label,
+            sector_filter_value,
+        )
+    )
     destination_group = st.selectbox(
         "追加先グループ",
         options=["未選択"] + destination_candidates,
@@ -1140,11 +1218,8 @@ def _build_sector_group_symbol_map(
     available_set = {str(symbol).zfill(4) for symbol in symbols}
     grouped: Dict[str, set] = {}
     for group_name, config in group_master.items():
-        mapped_col = _sector_column_from_master_type(config.get("sector_type", ""))
-        if mapped_col != sector_col:
-            continue
-        sector_value = str(config.get("sector_value", "")).strip()
-        if not sector_value:
+        rules = _get_group_sector_rules(config)
+        if not rules:
             continue
         codes = {
             str(code).zfill(4)
@@ -1153,7 +1228,14 @@ def _build_sector_group_symbol_map(
         }
         if not codes:
             continue
-        grouped.setdefault(sector_value, set()).update(codes)
+        for rule in rules:
+            mapped_col = _sector_column_from_master_type(rule.get("sector_type", ""))
+            if mapped_col != sector_col:
+                continue
+            sector_value = str(rule.get("sector_value", "")).strip()
+            if not sector_value:
+                continue
+            grouped.setdefault(sector_value, set()).update(codes)
     return {sector_value: sorted(codes) for sector_value, codes in grouped.items()}
 
 
