@@ -51,6 +51,7 @@ from app.jquants_fetcher import (
     get_credential_status,
     load_listed_master,
     filter_listed_master_for_analysis,
+    load_edinet_disclosures,
     update_topix,
     update_universe_with_anchor_day,
     update_universe,
@@ -67,6 +68,42 @@ PAIR_CACHE_PATH = META_DIR / "pair_candidates_cache.json"
 RUN_INPUTS_PATH = META_DIR / "run_input_settings.json"
 PAIR_GRID_SEARCH_HISTORY_PATH = META_DIR / "pair_trade_grid_search_history.csv"
 BREADTH_EXCLUDED_GROUP_NAME = "マーケットブレッドス集計対象外"
+EDINET_DISCLOSURES_FILE = META_DIR / "edinet_disclosures.csv"
+
+
+def _get_edinet_disclosures_cache_key() -> str:
+    try:
+        return str(EDINET_DISCLOSURES_FILE.stat().st_mtime_ns)
+    except FileNotFoundError:
+        return "missing"
+
+
+@st.cache_data(show_spinner=False)
+def _load_edinet_disclosures_cached(cache_key: str) -> pd.DataFrame:
+    _ = cache_key
+    return load_edinet_disclosures()
+
+
+def _filter_symbol_disclosures(disclosures_df: pd.DataFrame, symbol: str, limit: int = 10) -> pd.DataFrame:
+    if disclosures_df is None or disclosures_df.empty:
+        return pd.DataFrame(columns=["submit_datetime", "doc_type_name", "description", "doc_id"])
+
+    code = str(symbol).zfill(4)
+    df = disclosures_df.copy()
+    if "code" not in df.columns:
+        return pd.DataFrame(columns=["submit_datetime", "doc_type_name", "description", "doc_id"])
+
+    filtered = df[df["code"].astype(str).str.zfill(4) == code].copy()
+    if filtered.empty:
+        return pd.DataFrame(columns=["submit_datetime", "doc_type_name", "description", "doc_id"])
+
+    if "submit_datetime" in filtered.columns:
+        filtered["submit_datetime"] = pd.to_datetime(filtered["submit_datetime"], errors="coerce")
+        filtered = filtered.sort_values("submit_datetime", ascending=False)
+        filtered["submit_datetime"] = filtered["submit_datetime"].dt.strftime("%Y-%m-%d %H:%M")
+
+    columns = [col for col in ["submit_datetime", "doc_type_name", "description", "doc_id"] if col in filtered.columns]
+    return filtered[columns].head(max(1, int(limit))).reset_index(drop=True)
 
 
 def _get_meta_json_mtime_cache_key(filename: str) -> str:
@@ -2961,6 +2998,15 @@ def main():
         title_name = name_map.get(selected_symbol, "")
         title = f"チャート（{selected_symbol} {title_name}）" if title_name else f"チャート（{selected_symbol}）"
         st.subheader(title)
+
+        edinet_cache_key = _get_edinet_disclosures_cache_key()
+        edinet_df = _load_edinet_disclosures_cached(edinet_cache_key)
+        symbol_disclosures = _filter_symbol_disclosures(edinet_df, selected_symbol, limit=8)
+        with st.expander("適時開示（EDINET）", expanded=False):
+            if symbol_disclosures.empty:
+                st.caption("この銘柄の開示データはありません。`python -m app.jquants_fetcher --include-edinet` で更新してください。")
+            else:
+                st.dataframe(symbol_disclosures, use_container_width=True, hide_index=True)
 
         volume_applicable = chart_type != "pnf"
         if chart_type != "pnf":

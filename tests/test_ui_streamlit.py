@@ -21,6 +21,7 @@ from ui_streamlit import (
     _build_swing_point_series,
     _build_sector_group_symbol_map,
     _group_matches_sector_filter,
+    _filter_symbol_disclosures,
 )
 
 
@@ -535,3 +536,23 @@ class ManualGroupSectorVisibilityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FilterSymbolDisclosuresTests(unittest.TestCase):
+    def test_filters_by_code_and_sorts_desc(self):
+        df = pd.DataFrame(
+            [
+                {"code": "7203", "submit_datetime": "2024-01-02T09:00:00", "description": "A", "doc_id": "1"},
+                {"code": "7203", "submit_datetime": "2024-01-03T09:00:00", "description": "B", "doc_id": "2"},
+                {"code": "8306", "submit_datetime": "2024-01-04T09:00:00", "description": "C", "doc_id": "3"},
+            ]
+        )
+
+        out = _filter_symbol_disclosures(df, "7203", limit=5)
+
+        self.assertEqual(out["doc_id"].tolist(), ["2", "1"])
+
+    def test_returns_empty_when_no_match(self):
+        df = pd.DataFrame([{"code": "8306", "submit_datetime": "2024-01-04T09:00:00", "doc_id": "3"}])
+        out = _filter_symbol_disclosures(df, "7203")
+        self.assertTrue(out.empty)

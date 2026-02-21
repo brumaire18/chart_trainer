@@ -25,6 +25,7 @@
 - `JQUANTS_CLIENT_ID`: 開発者ポータルのクライアントID（トークン取得時の控えとして `.env` に保持しても構いません）。
 - `JQUANTS_CLIENT_SECRET`: 開発者ポータルのクライアントシークレット（同上）。
 - `JQUANTS_TOKEN_SCOPE`: トークン発行時に指定したスコープ（例: `read`）。
+- `EDINET_API_KEY`: EDINET APIキー（任意。未設定でも公開一覧の取得は可能ですが、設定を推奨）。
 
 `app/config.py` で `data/db` と `data/price_csv` ディレクトリが自動で作成されます。
 
@@ -52,6 +53,18 @@ python -m app.jquants_fetcher
 - TOPIX 指数も同時に保存したい場合は `--include-topix` を付けてください。`data/price_csv/topix.csv` とメタ情報 `data/meta/topix.json` が作成・更新されます（取得期間はライトプランで取得可能な直近約5年分）。
 
 実行すると `data/price_csv/{code}.csv` と `data/meta/{code}.json` が順次更新されます。API制限に配慮して銘柄ごとに簡易なウェイトが挿入されます。
+
+
+### EDINETの開示情報を取得する
+
+EDINETの提出書類一覧を `data/meta/edinet_disclosures.csv` に保存できます。
+
+```bash
+python -m app.jquants_fetcher --include-edinet --edinet-days 30
+```
+
+- `--edinet-days` で遡る日数を指定できます。
+- 取得後、Streamlitの銘柄チャート画面で「適時開示（EDINET）」として表示されます。
 TOPIX を含めて更新すると `data/price_csv/topix.csv` に日足ベースの OHLC が保存されます（コードは `TOPIX` 固定）。
 
 ### listed_master.csv の仕様変更について

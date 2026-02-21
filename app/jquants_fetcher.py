@@ -26,6 +26,7 @@ from .config import (
     META_DIR,
     PRICE_CSV_DIR,
 )
+from .edinet_client import EdinetClient, date_range_descending, normalize_edinet_documents
 from .jquants_client import DAILY_QUOTES_ENDPOINT, JQuantsClient, _normalize_token
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ AUTH_ERROR_MAX_RETRIES = 3
 TOPIX_CODE = "TOPIX"
 TOPIX_CSV_PATH = PRICE_CSV_DIR / "topix.csv"
 TOPIX_META_PATH = META_DIR / "topix.json"
+EDINET_DISCLOSURES_PATH = META_DIR / "edinet_disclosures.csv"
 LISTED_MASTER_ENDPOINT = "/v2/equities/master"
 
 LISTED_MASTER_MARKET_CODE_MAP = {
@@ -1633,6 +1635,65 @@ def load_custom_symbols(path: Optional[Path] = None) -> List[str]:
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
+def fetch_edinet_disclosures(days: int = 30, codes: Optional[List[str]] = None) -> pd.DataFrame:
+    """EDINET から直近 days 日分の開示書類一覧を取得して保存する。"""
+
+    client = EdinetClient()
+    frames: List[pd.DataFrame] = []
+    for target_date in date_range_descending(days):
+        try:
+            raw_df = client.fetch_documents(target_date)
+        except Exception:
+            logger.exception("EDINET の取得に失敗しました: %s", target_date)
+            continue
+
+        normalized = normalize_edinet_documents(raw_df)
+        if normalized.empty:
+            continue
+        frames.append(normalized)
+
+    if not frames:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "code",
+                "doc_id",
+                "edinet_code",
+                "filer_name",
+                "doc_type_code",
+                "doc_type_name",
+                "form_code",
+                "description",
+                "submit_datetime",
+            ]
+        )
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.drop_duplicates(subset=["doc_id"], keep="last")
+
+    if codes:
+        target_codes = {str(code).zfill(4) for code in codes}
+        merged = merged[merged["code"].isin(target_codes)]
+
+    META_DIR.mkdir(parents=True, exist_ok=True)
+
+    if EDINET_DISCLOSURES_PATH.exists():
+        existing = pd.read_csv(EDINET_DISCLOSURES_PATH, dtype={"code": str, "doc_id": str})
+        merged = pd.concat([existing, merged], ignore_index=True)
+        merged = merged.drop_duplicates(subset=["doc_id"], keep="last")
+
+    merged = merged.sort_values(["submit_datetime", "code"], ascending=[False, True]).reset_index(drop=True)
+    merged.to_csv(EDINET_DISCLOSURES_PATH, index=False)
+    logger.info("EDINET開示データを保存しました: %s (rows=%s)", EDINET_DISCLOSURES_PATH, len(merged))
+    return merged
+
+
+def load_edinet_disclosures() -> pd.DataFrame:
+    if not EDINET_DISCLOSURES_PATH.exists():
+        return pd.DataFrame()
+    return pd.read_csv(EDINET_DISCLOSURES_PATH, dtype={"code": str, "doc_id": str})
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -1689,6 +1750,17 @@ if __name__ == "__main__":
         action="store_true",
         help="立ち合い日 16:00 以降のみ当日の株価をユニバースに自動反映する",
     )
+    parser.add_argument(
+        "--include-edinet",
+        action="store_true",
+        help="EDINET の開示書類一覧も取得して data/meta/edinet_disclosures.csv に保存する",
+    )
+    parser.add_argument(
+        "--edinet-days",
+        type=int,
+        default=30,
+        help="EDINET を遡って取得する日数 (デフォルト: 30)",
+    )
 
     args = parser.parse_args()
 
@@ -1724,3 +1796,9 @@ if __name__ == "__main__":
             update_topix(full_refresh=args.full_refresh)
         except Exception:
             logger.exception("TOPIX の更新に失敗しました")
+
+    if args.include_edinet:
+        try:
+            fetch_edinet_disclosures(days=max(1, int(args.edinet_days)), codes=codes)
+        except Exception:
+            logger.exception("EDINET 開示データの更新に失敗しました")
