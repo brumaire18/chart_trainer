@@ -502,7 +502,7 @@ def _save_custom_groups_with_feedback(
 
 
 def _sector_column_from_master_type(sector_type: str) -> Optional[str]:
-    sector_map = {"17業種": "sector17", "33業種": "sector33"}
+    sector_map = {"33業種": "sector33"}
     return sector_map.get(str(sector_type).strip())
 
 
@@ -779,7 +779,7 @@ def _render_manual_group_ui(
         )
         master_sector_type = st.selectbox(
             "セクター分類",
-            options=["17業種", "33業種"],
+            options=["33業種"],
             key="group_master_sector_type",
         )
         master_sector_column = _sector_column_from_master_type(master_sector_type)
@@ -849,7 +849,7 @@ def _render_manual_group_ui(
     )
     st.caption("手順: 検索 → チェック → 追加/取り消し")
 
-    sector_columns = {"17業種": "sector17", "33業種": "sector33"}
+    sector_columns = {"33業種": "sector33"}
     sector_choices = [
         label for label, col in sector_columns.items() if col in listed_df.columns
     ]
@@ -4764,35 +4764,25 @@ def main():
                     st.session_state.get("pair_manual_spread_metrics"),
                 )
 
-        sector17_values = (
-            sorted(listed_df["sector17"].dropna().astype(str).unique().tolist())
-            if "sector17" in listed_df.columns
-            else []
-        )
         sector33_values = (
             sorted(listed_df["sector33"].dropna().astype(str).unique().tolist())
             if "sector33" in listed_df.columns
             else []
         )
 
-        pair_filters = st.columns([1, 1, 1, 1])
+        pair_filters = st.columns([1, 1, 1])
         with pair_filters[0]:
-            sector17_choice = st.selectbox(
-                "sector17 フィルタ",
-                options=["指定なし", *sector17_values],
-            )
-        with pair_filters[1]:
             sector33_choice = st.selectbox(
                 "sector33 フィルタ",
                 options=["指定なし", *sector33_values],
             )
-        with pair_filters[2]:
+        with pair_filters[1]:
             search_scope = st.selectbox(
                 "探索範囲",
                 options=["キャッシュ全体", "選択銘柄起点(同一セクター)"],
                 help="ペアキャッシュ内で対象範囲を絞り込みます。",
             )
-        with pair_filters[3]:
+        with pair_filters[2]:
             manual_group_filter = st.selectbox(
                 "手動グループ",
                 options=["指定なし", *group_names],
@@ -5065,20 +5055,11 @@ def main():
                 st.info("選択した手動グループにキャッシュ対象の銘柄がありません。")
             cache_scope = st.selectbox(
                 "キャッシュ作成対象",
-                options=["全セクター", "sector17", "sector33"],
+                options=["全セクター", "sector33"],
                 help="改善イテレーションのために1セクターのみを選んでキャッシュを作成できます。",
             )
-            cache_sector17 = None
             cache_sector33 = None
-            if cache_scope == "sector17":
-                if sector17_values:
-                    cache_sector17 = st.selectbox(
-                        "対象 sector17",
-                        options=sector17_values,
-                    )
-                else:
-                    st.warning("sector17 の候補がありません。")
-            elif cache_scope == "sector33":
+            if cache_scope == "sector33":
                 if sector33_values:
                     cache_sector33 = st.selectbox(
                         "対象 sector33",
@@ -5088,7 +5069,7 @@ def main():
                     st.warning("sector33 の候補がありません。")
             update_cache = st.button("ペアキャッシュを更新", type="secondary")
             if update_cache:
-                sector17_filter = cache_sector17
+                sector17_filter = None
                 sector33_filter = cache_sector33
                 target_symbols = (
                     manual_group_cache_symbols
@@ -5099,14 +5080,7 @@ def main():
                     st.warning("手動グループ内の銘柄が2件以上必要です。")
                     target_symbols = []
                 sector_group_symbol_map: Optional[Dict[str, List[str]]] = None
-                if cache_scope == "sector17":
-                    sector_group_symbol_map = _build_sector_group_symbol_map(
-                        custom_groups,
-                        group_master,
-                        target_symbols,
-                        "sector17",
-                    )
-                elif cache_scope == "sector33":
+                if cache_scope == "sector33":
                     sector_group_symbol_map = _build_sector_group_symbol_map(
                         custom_groups,
                         group_master,
@@ -5186,7 +5160,7 @@ def main():
             disabled=not cache_ready,
         )
         if run_pairs:
-            sector17_filter = None if sector17_choice == "指定なし" else sector17_choice
+            sector17_filter = None
             sector33_filter = None if sector33_choice == "指定なし" else sector33_choice
             anchor_symbol = selected_symbol if search_scope == "選択銘柄起点(同一セクター)" else None
             if manual_group_filter != "指定なし" and not manual_group_symbols:
@@ -5956,16 +5930,14 @@ def main():
         sector_options = []
         if "sector33" in listed_df.columns:
             sector_options.append("sector33")
-        if "sector17" in listed_df.columns:
-            sector_options.append("sector17")
         if not sector_options:
-            st.warning("銘柄マスタに sector33/sector17 が無いためペアトレードを実行できません。")
+            st.warning("銘柄マスタに sector33 が無いためペアトレードを実行できません。")
         else:
             sector_col = st.selectbox(
                 "業種区分の列",
                 options=sector_options,
                 index=0,
-                help="listed_master.csv にある sector33 / sector17 を選択できます。",
+                help="listed_master.csv にある sector33 を選択できます。",
             )
             pair_col1, pair_col2 = st.columns(2)
             with pair_col1:
