@@ -13,6 +13,7 @@ from app.jquants_fetcher import (
     _get_id_token,
     _normalize_daily_quotes,
     _normalize_topix,
+    _normalize_listed_master,
     fetch_listed_master,
     get_growth_universe,
     should_run_after_close,
@@ -153,6 +154,26 @@ class NormalizeTopixTests(unittest.TestCase):
         self.assertEqual(normalized.loc[0, "code"], "TOPIX")
         self.assertEqual(normalized.loc[0, "close"], 2005)
 
+
+
+
+class NormalizeListedMasterTests(unittest.TestCase):
+    def test_sector33_uses_code_and_name_when_available(self):
+        df_raw = pd.DataFrame(
+            [
+                {
+                    "LocalCode": "7203",
+                    "CompanyName": "トヨタ自動車",
+                    "MarketCodeName": "プライム",
+                    "Sector33Code": "3700",
+                    "Sector33CodeName": "輸送用機器",
+                }
+            ]
+        )
+
+        normalized = _normalize_listed_master(df_raw)
+
+        self.assertEqual(normalized.loc[0, "sector33"], "3700:輸送用機器")
 
 class FetchListedMasterTests(unittest.TestCase):
     @patch("app.jquants_fetcher._request_with_token")

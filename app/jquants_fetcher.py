@@ -496,7 +496,16 @@ def _normalize_listed_master(df_raw: pd.DataFrame) -> pd.DataFrame:
     if "Sector17Code" in df.columns and "sector17" not in df.columns:
         df["sector17"] = df["Sector17Code"]
     if "Sector33Code" in df.columns and "sector33" not in df.columns:
-        df["sector33"] = df["Sector33Code"]
+        sector33_code = df["Sector33Code"].astype(str).str.strip()
+        sector33_name = None
+        for candidate in ["Sector33CodeName", "sector33_name", "sector33Name"]:
+            if candidate in df.columns:
+                sector33_name = df[candidate].astype(str).str.strip()
+                break
+        if sector33_name is not None:
+            df["sector33"] = sector33_code + ":" + sector33_name
+        else:
+            df["sector33"] = sector33_code
 
     market_code_series = _combine_columns(
         df,
