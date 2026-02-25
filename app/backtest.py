@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 import numpy as np
 import pandas as pd
 
-from .data_loader import get_available_symbols, load_price_csv
+from .data_loader import get_available_symbols, load_price_csv, load_topix_csv
 from .minervini_screen import MinerviniScreenConfig, compute_minervini_indicators
 
 
@@ -1346,6 +1346,361 @@ def run_new_high_breakout_backtest(
 
     summary_df = pd.DataFrame(summary_records)
     return trades_df, summary_df
+
+
+def _build_bull_regime_mask(
+    topix_df: pd.DataFrame,
+    ma_window: int = 200,
+    slope_lookback: int = 20,
+    momentum_lookback: int = 126,
+    require_positive_momentum: bool = True,
+) -> pd.DataFrame:
+    """TOPIX から Bull レジーム（強い上昇相場）判定を作る。"""
+
+    df = topix_df[["date", "close"]].copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+
+    df["topix_ma"] = df["close"].rolling(ma_window).mean()
+    slope = df["topix_ma"] - df["topix_ma"].shift(slope_lookback)
+    bull = (df["close"] > df["topix_ma"]) & (slope > 0)
+    if require_positive_momentum:
+        bull = bull & (df["close"].pct_change(momentum_lookback) > 0)
+    df["is_bull"] = bull.fillna(False)
+    return df
+
+
+def run_bull_market_new_high_momentum_backtest(
+    symbols: Optional[Iterable[str]] = None,
+    topix_df: Optional[pd.DataFrame] = None,
+    high_lookback: int = 252,
+    hold_days: int = 20,
+    event_cooldown_days: int = 20,
+    volume_sma_window: int = 20,
+    volume_multiplier: float = 1.0,
+    liquidity_lookback: int = 20,
+    top_liquidity_count: int = 100,
+    one_way_cost_bps: float = 15.0,
+    rebalance_weekday: Optional[int] = 0,
+) -> Dict[str, pd.DataFrame]:
+    """強い上昇相場に限定した最高値更新モメンタム戦略を検証する。"""
+
+    if topix_df is None:
+        topix_df = load_topix_csv()
+    regime_df = _build_bull_regime_mask(topix_df)
+    topix_close_by_date = regime_df.set_index("date")["close"]
+    topix_ret = topix_close_by_date.pct_change().rename("benchmark_return")
+    bull_by_date = regime_df.set_index("date")["is_bull"]
+
+    raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    if "topix" in {str(s).lower() for s in raw_symbols}:
+        raw_symbols = [s for s in raw_symbols if str(s).lower() != "topix"]
+
+    symbol_frames: Dict[str, pd.DataFrame] = {}
+    liquidity_scores: List[Tuple[str, float]] = []
+    for symbol in raw_symbols:
+        try:
+            df = load_price_csv(symbol)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        df = df.sort_values("date").reset_index(drop=True)
+        if any(col not in df.columns for col in ["date", "open", "close", "volume"]):
+            continue
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        df["dollar_volume"] = pd.to_numeric(df["close"], errors="coerce") * pd.to_numeric(
+            df["volume"], errors="coerce"
+        )
+        rolling_liquidity = df["dollar_volume"].rolling(liquidity_lookback).mean()
+        score = float(rolling_liquidity.dropna().iloc[-1]) if rolling_liquidity.notna().any() else np.nan
+        if np.isnan(score):
+            continue
+        liquidity_scores.append((symbol, score))
+        symbol_frames[symbol] = df
+
+    if not liquidity_scores:
+        empty_df = pd.DataFrame()
+        return {
+            "signals": empty_df,
+            "trades": empty_df,
+            "daily_returns": empty_df,
+            "event_study": empty_df,
+            "summary": empty_df,
+        }
+
+    liquidity_scores.sort(key=lambda x: x[1], reverse=True)
+    selected_symbols = [s for s, _ in liquidity_scores[: max(top_liquidity_count, 1)]]
+
+    trades: List[Dict[str, Any]] = []
+    events: List[Dict[str, Any]] = []
+    signal_records: List[Dict[str, Any]] = []
+
+    for symbol in selected_symbols:
+        df = symbol_frames[symbol].copy()
+        df["highest_close_prev"] = df["close"].shift(1).rolling(high_lookback).max()
+        df["volume_sma"] = df["volume"].rolling(volume_sma_window).mean()
+        df["is_bull"] = df["date"].map(bull_by_date).fillna(False)
+
+        last_signal_index: Optional[int] = None
+        for i in range(len(df)):
+            row = df.iloc[i]
+            if pd.isna(row["highest_close_prev"]) or pd.isna(row["volume_sma"]):
+                continue
+            if last_signal_index is not None and i - last_signal_index < event_cooldown_days:
+                continue
+            if bool(row["is_bull"]) is False:
+                continue
+            if row["close"] <= row["highest_close_prev"]:
+                continue
+            if row["volume"] < row["volume_sma"] * volume_multiplier:
+                continue
+
+            entry_i = i + 1
+            exit_i = i + hold_days + 1
+            if exit_i >= len(df):
+                continue
+            if rebalance_weekday is not None:
+                entry_weekday = pd.Timestamp(df.iloc[entry_i]["date"]).weekday()
+                if entry_weekday != rebalance_weekday:
+                    continue
+
+            entry_open = float(df.iloc[entry_i]["open"])
+            exit_open = float(df.iloc[exit_i]["open"])
+            if entry_open <= 0:
+                continue
+            gross_ret = (exit_open - entry_open) / entry_open
+            total_cost = 2.0 * one_way_cost_bps / 10000.0
+            net_ret = gross_ret - total_cost
+
+            signal_date = pd.Timestamp(row["date"])
+            entry_date = pd.Timestamp(df.iloc[entry_i]["date"])
+            exit_date = pd.Timestamp(df.iloc[exit_i]["date"])
+            signal_records.append(
+                {
+                    "symbol": symbol,
+                    "signal_date": signal_date,
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "is_bull": True,
+                    "breakout_close": float(row["close"]),
+                    "highest_close_prev": float(row["highest_close_prev"]),
+                    "volume_ratio": float(row["volume"] / row["volume_sma"]),
+                }
+            )
+            trades.append(
+                {
+                    "symbol": symbol,
+                    "signal_date": signal_date,
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "entry_open": entry_open,
+                    "exit_open": exit_open,
+                    "gross_return": gross_ret,
+                    "net_return": net_ret,
+                    "holding_days": hold_days,
+                }
+            )
+
+            for horizon in (20, 60):
+                fwd_i = i + horizon
+                if fwd_i >= len(df):
+                    continue
+                start_close = float(df.iloc[i]["close"])
+                end_close = float(df.iloc[fwd_i]["close"])
+                if start_close <= 0:
+                    continue
+                stock_ret = (end_close - start_close) / start_close
+
+                topix_start = topix_close_by_date.get(signal_date)
+                topix_end = topix_close_by_date.get(pd.Timestamp(df.iloc[fwd_i]["date"]))
+                if pd.isna(topix_start) or pd.isna(topix_end) or topix_start == 0:
+                    continue
+                bench_ret = (float(topix_end) - float(topix_start)) / float(topix_start)
+                events.append(
+                    {
+                        "symbol": symbol,
+                        "signal_date": signal_date,
+                        "horizon": horizon,
+                        "stock_return": stock_ret,
+                        "benchmark_return": bench_ret,
+                        "excess_return": stock_ret - bench_ret,
+                        "regime": "bull",
+                    }
+                )
+
+            last_signal_index = i
+
+    trades_df = pd.DataFrame(trades)
+    signals_df = pd.DataFrame(signal_records)
+    event_df = pd.DataFrame(events)
+
+    if trades_df.empty:
+        empty_df = pd.DataFrame()
+        return {
+            "signals": signals_df,
+            "trades": trades_df,
+            "daily_returns": empty_df,
+            "event_study": event_df,
+            "summary": empty_df,
+        }
+
+    active_by_date: Dict[pd.Timestamp, List[float]] = {}
+    turnover_entry: Dict[pd.Timestamp, int] = {}
+    turnover_exit: Dict[pd.Timestamp, int] = {}
+
+    for trade in trades:
+        symbol = str(trade["symbol"])
+        df = symbol_frames[symbol].set_index(pd.to_datetime(symbol_frames[symbol]["date"]).dt.normalize())
+        entry_date = pd.Timestamp(trade["entry_date"])
+        exit_date = pd.Timestamp(trade["exit_date"])
+        if entry_date not in df.index or exit_date not in df.index:
+            continue
+        entry_idx = df.index.get_loc(entry_date)
+        exit_idx = df.index.get_loc(exit_date)
+        if isinstance(entry_idx, slice) or isinstance(exit_idx, slice):
+            continue
+        close_series = df["close"].astype(float)
+        trade_dates = close_series.index[entry_idx: exit_idx + 1]
+        if len(trade_dates) == 0:
+            continue
+
+        entry_open = float(trade["entry_open"])
+        first_date = trade_dates[0]
+        first_close = float(close_series.loc[first_date])
+        if entry_open > 0:
+            active_by_date.setdefault(first_date, []).append((first_close - entry_open) / entry_open)
+
+        for di in range(1, len(trade_dates)):
+            dt_prev = trade_dates[di - 1]
+            dt_now = trade_dates[di]
+            prev_close = float(close_series.loc[dt_prev])
+            now_close = float(close_series.loc[dt_now])
+            if prev_close <= 0:
+                continue
+            active_by_date.setdefault(dt_now, []).append((now_close - prev_close) / prev_close)
+
+        turnover_entry[entry_date] = turnover_entry.get(entry_date, 0) + 1
+        turnover_exit[exit_date] = turnover_exit.get(exit_date, 0) + 1
+
+    dates = sorted(active_by_date.keys())
+    daily_records: List[Dict[str, Any]] = []
+    cumulative = 1.0
+    for dt in dates:
+        rets = active_by_date.get(dt, [])
+        if not rets:
+            continue
+        strategy_ret = float(np.mean(rets))
+        benchmark = float(topix_ret.get(dt, np.nan))
+        if np.isnan(benchmark):
+            benchmark = 0.0
+        excess = strategy_ret - benchmark
+        cumulative *= 1.0 + strategy_ret
+        daily_records.append(
+            {
+                "date": dt,
+                "strategy_return": strategy_ret,
+                "benchmark_return": benchmark,
+                "excess_return": excess,
+                "equity_curve": cumulative,
+                "entries": int(turnover_entry.get(dt, 0)),
+                "exits": int(turnover_exit.get(dt, 0)),
+            }
+        )
+
+    daily_df = pd.DataFrame(daily_records)
+    if daily_df.empty:
+        summary_df = pd.DataFrame(
+            [
+                {
+                    "selected_symbols": len(selected_symbols),
+                    "trades": int(trades_df.shape[0]),
+                    "event_count": int(event_df.shape[0]),
+                }
+            ]
+        )
+        return {
+            "signals": signals_df,
+            "trades": trades_df,
+            "daily_returns": daily_df,
+            "event_study": event_df,
+            "summary": summary_df,
+        }
+
+    daily_df = daily_df.sort_values("date").reset_index(drop=True)
+    equity = daily_df["equity_curve"]
+    running_max = equity.cummax()
+    drawdown = equity / running_max - 1.0
+    max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
+
+    ann_factor = 252.0
+    mean_excess = float(daily_df["excess_return"].mean())
+    std_excess = float(daily_df["excess_return"].std(ddof=1))
+    information_ratio = (mean_excess / std_excess * np.sqrt(ann_factor)) if std_excess > 0 else np.nan
+
+    strategy_total = float((1.0 + daily_df["strategy_return"]).prod() - 1.0)
+    benchmark_total = float((1.0 + daily_df["benchmark_return"]).prod() - 1.0)
+    years = max(float(len(daily_df)) / ann_factor, 1.0 / ann_factor)
+    cagr = float((1.0 + strategy_total) ** (1.0 / years) - 1.0)
+    calmar = cagr / abs(max_drawdown) if max_drawdown < 0 else np.nan
+
+    up_days = daily_df["benchmark_return"] > 0
+    down_days = daily_df["benchmark_return"] < 0
+    up_capture = (
+        float(daily_df.loc[up_days, "strategy_return"].sum() / daily_df.loc[up_days, "benchmark_return"].sum())
+        if up_days.any() and daily_df.loc[up_days, "benchmark_return"].sum() != 0
+        else np.nan
+    )
+    down_capture = (
+        float(daily_df.loc[down_days, "strategy_return"].sum() / daily_df.loc[down_days, "benchmark_return"].sum())
+        if down_days.any() and daily_df.loc[down_days, "benchmark_return"].sum() != 0
+        else np.nan
+    )
+
+    avg_positions = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
+    turnover = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
+
+    event_summary = (
+        event_df.groupby("horizon", as_index=False)
+        .agg(
+            event_count=("excess_return", "count"),
+            avg_stock_return=("stock_return", "mean"),
+            avg_benchmark_return=("benchmark_return", "mean"),
+            avg_excess_return=("excess_return", "mean"),
+            median_excess_return=("excess_return", "median"),
+        )
+        if not event_df.empty
+        else pd.DataFrame()
+    )
+
+    summary_row = {
+        "selected_symbols": int(len(selected_symbols)),
+        "trades": int(trades_df.shape[0]),
+        "event_count": int(event_df.shape[0]),
+        "strategy_total_return": strategy_total,
+        "benchmark_total_return": benchmark_total,
+        "total_excess_return": strategy_total - benchmark_total,
+        "information_ratio": information_ratio,
+        "up_capture": up_capture,
+        "down_capture": down_capture,
+        "max_drawdown": max_drawdown,
+        "calmar": calmar,
+        "avg_daily_turnover": turnover,
+        "avg_daily_entries_exits": avg_positions,
+        "avg_trade_net_return": float(trades_df["net_return"].mean()),
+        "win_rate": float((trades_df["net_return"] > 0).mean()),
+    }
+    summary_df = pd.DataFrame([summary_row])
+    if not event_summary.empty:
+        event_summary = event_summary.sort_values("horizon").reset_index(drop=True)
+
+    return {
+        "signals": signals_df,
+        "trades": trades_df,
+        "daily_returns": daily_df,
+        "event_study": event_summary,
+        "summary": summary_df,
+    }
 
 
 def grid_search_selling_climax(
