@@ -110,6 +110,35 @@ python -m app.jquants_fetcher --codes 7203 --append-date YYYY-MM-DD
 
 正常に終了すると `data/price_csv/7203.csv` と `data/meta/7203.json` が更新されます。Streamlit側でも同銘柄を選択して表示できることを確認してください。
 
+
+## 強い上昇相場 × 最高値更新モメンタムのバックテスト
+
+`app/backtest.py` に、TOPIX の Bull レジーム（200日移動平均上 + 200日線の上向き + 126日モメンタム正）で絞り込んだ
+新高値更新モメンタム戦略の検証関数 `run_bull_market_new_high_momentum_backtest` を追加しています。
+
+- 出来高・売買代金の大きい銘柄を優先するため、`top_liquidity_count` で流動性上位の銘柄数を指定できます。
+- イベントスタディ（20日/60日の超過リターン）と、実運用想定の売買バックテスト（翌営業日寄りでエントリー、H日保有、コスト控除後）を同時に返します。
+- 返却値は `signals / trades / daily_returns / event_study / summary` の辞書です。
+
+```python
+from app.backtest import run_bull_market_new_high_momentum_backtest
+
+result = run_bull_market_new_high_momentum_backtest(
+    symbols=None,                 # None なら data/price_csv 全銘柄
+    high_lookback=252,            # 52週高値
+    hold_days=20,                 # 保有日数
+    event_cooldown_days=20,       # イベントの連発抑制
+    top_liquidity_count=150,      # 流動性上位150銘柄
+    one_way_cost_bps=15.0,        # 片道コスト(bp)
+    rebalance_weekday=0,          # 月曜のみ新規建て（Noneで毎日）
+)
+
+print(result["summary"].to_string(index=False))
+print(result["event_study"].to_string(index=False))
+```
+
+> 事前に `python -m app.jquants_fetcher --include-topix` で `data/price_csv/topix.csv` を更新しておくとスムーズです。
+
 ## ペアトレードのバックテスト
 
 `app/pair_trading.py` に簡易のペアトレードバックテストを追加しています。業種（`sector33` / `sector17`）ごとにペア候補を生成し、ローリングOLSでヘッジ比率を推定してスプレッドのZスコアを用いて売買します。
