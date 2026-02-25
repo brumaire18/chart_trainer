@@ -42,6 +42,7 @@ from app.backtest import (
     run_canslim_backtest,
     run_minervini_backtest,
     run_minervini_grid_search,
+    run_bull_market_new_high_momentum_backtest,
     scan_canslim_patterns,
     scan_cup_with_handle_screen,
 )
@@ -5306,6 +5307,16 @@ def main():
             st.session_state["minervini_backtest_results"] = None
         if "minervini_backtest_summary" not in st.session_state:
             st.session_state["minervini_backtest_summary"] = None
+        if "bull_breakout_summary" not in st.session_state:
+            st.session_state["bull_breakout_summary"] = None
+        if "bull_breakout_event_study" not in st.session_state:
+            st.session_state["bull_breakout_event_study"] = None
+        if "bull_breakout_trades" not in st.session_state:
+            st.session_state["bull_breakout_trades"] = None
+        if "bull_breakout_signals" not in st.session_state:
+            st.session_state["bull_breakout_signals"] = None
+        if "bull_breakout_daily_returns" not in st.session_state:
+            st.session_state["bull_breakout_daily_returns"] = None
 
         backtest_col1, backtest_col2 = st.columns(2)
         with backtest_col1:
@@ -5537,6 +5548,167 @@ def main():
         if minervini_results is not None and not minervini_results.empty:
             st.markdown("#### シグナル一覧")
             st.dataframe(minervini_results.head(200), use_container_width=True)
+
+        st.divider()
+        st.subheader("強い上昇相場 × 最高値更新モメンタム バックテスト")
+        st.caption("TOPIX Bullレジーム時のみ、流動性上位銘柄の新高値更新を検証します。")
+
+        bull_col1, bull_col2 = st.columns(2)
+        with bull_col1:
+            bull_high_lookback = st.number_input(
+                "新高値判定の期間（日）",
+                min_value=20,
+                max_value=520,
+                value=252,
+                step=1,
+                key="bull_high_lookback",
+            )
+            bull_hold_days = st.number_input(
+                "保有日数（日）",
+                min_value=5,
+                max_value=120,
+                value=20,
+                step=1,
+                key="bull_hold_days",
+            )
+            bull_event_cooldown_days = st.number_input(
+                "同一銘柄の再シグナル抑制（日）",
+                min_value=0,
+                max_value=120,
+                value=20,
+                step=1,
+                key="bull_event_cooldown_days",
+            )
+            bull_volume_multiplier = st.number_input(
+                "出来高倍率の下限（当日 / 出来高MA）",
+                min_value=0.0,
+                max_value=5.0,
+                value=1.0,
+                step=0.1,
+                key="bull_volume_multiplier",
+            )
+            bull_one_way_cost_bps = st.number_input(
+                "片道コスト（bp）",
+                min_value=0.0,
+                max_value=100.0,
+                value=15.0,
+                step=1.0,
+                key="bull_one_way_cost_bps",
+            )
+        with bull_col2:
+            bull_top_liquidity_count = st.number_input(
+                "流動性上位銘柄数",
+                min_value=10,
+                max_value=1000,
+                value=150,
+                step=10,
+                key="bull_top_liquidity_count",
+            )
+            bull_liquidity_lookback = st.number_input(
+                "流動性（売買代金）評価期間（日）",
+                min_value=5,
+                max_value=120,
+                value=20,
+                step=1,
+                key="bull_liquidity_lookback",
+            )
+            bull_volume_sma_window = st.number_input(
+                "出来高移動平均（日）",
+                min_value=5,
+                max_value=120,
+                value=20,
+                step=1,
+                key="bull_volume_sma_window",
+            )
+            bull_rebalance_mode = st.selectbox(
+                "新規エントリーの実行日",
+                options=["毎営業日", "月曜のみ"],
+                index=1,
+                key="bull_rebalance_mode",
+            )
+
+        run_bull_breakout_backtest = st.button(
+            "Bull相場 新高値モメンタムを実行",
+            type="primary",
+            key="run_bull_breakout_backtest",
+        )
+        if run_bull_breakout_backtest:
+            try:
+                load_topix_csv()
+            except (FileNotFoundError, ValueError) as exc:
+                st.error(
+                    "TOPIXデータが不足しています。先に『データ更新』でTOPIXを更新するか、"
+                    "`python -m app.jquants_fetcher --include-topix` を実行してください。"
+                )
+                st.caption(f"詳細: {exc}")
+            else:
+                progress_update, progress_done = _build_progress_updater(
+                    "Bull相場 新高値モメンタム バックテスト"
+                )
+                progress_update(0, 1, "計算中")
+                rebalance_weekday = 0 if bull_rebalance_mode == "月曜のみ" else None
+                result = run_bull_market_new_high_momentum_backtest(
+                    high_lookback=int(bull_high_lookback),
+                    hold_days=int(bull_hold_days),
+                    event_cooldown_days=int(bull_event_cooldown_days),
+                    volume_sma_window=int(bull_volume_sma_window),
+                    volume_multiplier=float(bull_volume_multiplier),
+                    liquidity_lookback=int(bull_liquidity_lookback),
+                    top_liquidity_count=int(bull_top_liquidity_count),
+                    one_way_cost_bps=float(bull_one_way_cost_bps),
+                    rebalance_weekday=rebalance_weekday,
+                )
+                progress_done()
+                st.session_state["bull_breakout_summary"] = result.get("summary")
+                st.session_state["bull_breakout_event_study"] = result.get("event_study")
+                st.session_state["bull_breakout_trades"] = result.get("trades")
+                st.session_state["bull_breakout_signals"] = result.get("signals")
+                st.session_state["bull_breakout_daily_returns"] = result.get("daily_returns")
+
+        bull_summary = st.session_state.get("bull_breakout_summary")
+        bull_event_study = st.session_state.get("bull_breakout_event_study")
+        bull_trades = st.session_state.get("bull_breakout_trades")
+        bull_signals = st.session_state.get("bull_breakout_signals")
+        bull_daily_returns = st.session_state.get("bull_breakout_daily_returns")
+
+        if bull_summary is not None and not bull_summary.empty:
+            st.markdown("#### サマリー")
+            st.dataframe(bull_summary, use_container_width=True)
+
+        if bull_event_study is not None and not bull_event_study.empty:
+            st.markdown("#### イベントスタディ（Bullレジーム）")
+            st.dataframe(bull_event_study, use_container_width=True)
+
+        if bull_daily_returns is not None and not bull_daily_returns.empty:
+            st.markdown("#### 日次リターン")
+            display_daily = bull_daily_returns.copy()
+            display_daily["date"] = pd.to_datetime(display_daily["date"]).dt.strftime("%Y-%m-%d")
+            st.dataframe(display_daily.tail(300), use_container_width=True)
+
+            equity_fig = go.Figure()
+            equity_fig.add_trace(
+                go.Scatter(
+                    x=bull_daily_returns["date"],
+                    y=bull_daily_returns["equity_curve"],
+                    mode="lines",
+                    name="戦略エクイティ",
+                )
+            )
+            equity_fig.update_layout(
+                title="Bull相場 新高値モメンタムのエクイティカーブ",
+                xaxis_title="Date",
+                yaxis_title="Equity",
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+            st.plotly_chart(equity_fig, use_container_width=True)
+
+        if bull_trades is not None and not bull_trades.empty:
+            st.markdown("#### トレード一覧（上位200件）")
+            st.dataframe(bull_trades.head(200), use_container_width=True)
+
+        if bull_signals is not None and not bull_signals.empty:
+            st.markdown("#### シグナル一覧（上位200件）")
+            st.dataframe(bull_signals.head(200), use_container_width=True)
 
         st.markdown("#### ミネルヴィニ条件グリッドサーチ")
         st.caption(
