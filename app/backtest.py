@@ -1389,7 +1389,11 @@ def run_bull_market_new_high_momentum_backtest(
         topix_df = load_topix_csv()
     regime_df = _build_bull_regime_mask(topix_df)
     topix_close_by_date = regime_df.set_index("date")["close"]
-    topix_ret = topix_close_by_date.pct_change().rename("benchmark_return")
+    if "open" in regime_df.columns:
+        topix_open_by_date = regime_df.set_index("date")["open"].astype(float)
+        topix_ret = topix_open_by_date.pct_change().shift(-1).rename("benchmark_return")
+    else:
+        topix_ret = topix_close_by_date.pct_change().rename("benchmark_return")
     bull_by_date = regime_df.set_index("date")["is_bull"]
 
     raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
@@ -1560,37 +1564,32 @@ def run_bull_market_new_high_momentum_backtest(
         exit_idx = df.index.get_loc(exit_date)
         if isinstance(entry_idx, slice) or isinstance(exit_idx, slice):
             continue
-        close_series = df["close"].astype(float)
-        trade_dates = close_series.index[entry_idx: exit_idx + 1]
-        if len(trade_dates) == 0:
+        if exit_idx <= entry_idx:
             continue
 
-        entry_open = float(trade["entry_open"])
-        first_date = trade_dates[0]
-        first_close = float(close_series.loc[first_date])
-        if entry_open > 0:
-            active_by_date.setdefault(first_date, []).append((first_close - entry_open) / entry_open)
+        open_series = df["open"].astype(float)
+        trade_dates = open_series.index
 
-        for di in range(1, len(trade_dates)):
-            dt_prev = trade_dates[di - 1]
+        # 約定価格（open）と整合させるため、日次損益も open-to-open で計算する。
+        # exit_date は open で手仕舞う前提なので、[entry_date, exit_date) までを保有区間にする。
+        for di in range(entry_idx, exit_idx):
             dt_now = trade_dates[di]
-            prev_close = float(close_series.loc[dt_prev])
-            now_close = float(close_series.loc[dt_now])
-            if prev_close <= 0:
+            now_open = float(open_series.iloc[di])
+            next_open = float(open_series.iloc[di + 1])
+            if now_open <= 0:
                 continue
-            active_by_date.setdefault(dt_now, []).append((now_close - prev_close) / prev_close)
+            active_by_date.setdefault(pd.Timestamp(dt_now), []).append((next_open - now_open) / now_open)
 
         turnover_entry[entry_date] = turnover_entry.get(entry_date, 0) + 1
         turnover_exit[exit_date] = turnover_exit.get(exit_date, 0) + 1
 
-    dates = sorted(active_by_date.keys())
+    topix_dates = sorted(pd.to_datetime(topix_ret.index).normalize().unique())
+    dates = topix_dates if len(topix_dates) > 0 else sorted(active_by_date.keys())
     daily_records: List[Dict[str, Any]] = []
     cumulative = 1.0
     for dt in dates:
         rets = active_by_date.get(dt, [])
-        if not rets:
-            continue
-        strategy_ret = float(np.mean(rets))
+        strategy_ret = float(np.mean(rets)) if rets else 0.0
         benchmark = float(topix_ret.get(dt, np.nan))
         if np.isnan(benchmark):
             benchmark = 0.0
@@ -1657,8 +1656,8 @@ def run_bull_market_new_high_momentum_backtest(
         else np.nan
     )
 
-    avg_positions = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
-    turnover = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
+    avg_trade_events_on_active_days = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
+    avg_daily_trade_events = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
 
     event_summary = (
         event_df.groupby("horizon", as_index=False)
@@ -1685,8 +1684,10 @@ def run_bull_market_new_high_momentum_backtest(
         "down_capture": down_capture,
         "max_drawdown": max_drawdown,
         "calmar": calmar,
-        "avg_daily_turnover": turnover,
-        "avg_daily_entries_exits": avg_positions,
+        "avg_daily_trade_events": avg_daily_trade_events,
+        "avg_daily_turnover": avg_daily_trade_events,
+        "avg_trade_events_on_active_days": avg_trade_events_on_active_days,
+        "avg_daily_entries_exits": avg_trade_events_on_active_days,
         "avg_trade_net_return": float(trades_df["net_return"].mean()),
         "win_rate": float((trades_df["net_return"] > 0).mean()),
     }
