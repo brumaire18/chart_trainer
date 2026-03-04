@@ -1392,6 +1392,11 @@ def run_bull_market_new_high_momentum_backtest(
     regime_df = _build_bull_regime_mask(topix_df)
     topix_close_by_date = regime_df.set_index("date")["close"]
     topix_ret = topix_close_by_date.pct_change().rename("benchmark_return")
+    if "open" in regime_df.columns:
+        topix_open_by_date = regime_df.set_index("date")["open"].astype(float)
+        topix_ret = topix_open_by_date.pct_change().shift(-1).rename("benchmark_return")
+    else:
+        topix_ret = topix_close_by_date.pct_change().rename("benchmark_return")
     bull_by_date = regime_df.set_index("date")["is_bull"]
 
     raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
@@ -1621,18 +1626,34 @@ def run_bull_market_new_high_momentum_backtest(
             if prev_close <= 0:
                 continue
             active_by_date.setdefault(dt_now, []).append((now_close - prev_close) / prev_close)
+        if exit_idx <= entry_idx:
+            continue
+
+        open_series = df["open"].astype(float)
+        trade_dates = open_series.index
+
+        # 約定価格（open）と整合させるため、日次損益も open-to-open で計算する。
+        # exit_date は open で手仕舞う前提なので、[entry_date, exit_date) までを保有区間にする。
+        for di in range(entry_idx, exit_idx):
+            dt_now = trade_dates[di]
+            now_open = float(open_series.iloc[di])
+            next_open = float(open_series.iloc[di + 1])
+            if now_open <= 0:
+                continue
+            active_by_date.setdefault(pd.Timestamp(dt_now), []).append((next_open - now_open) / now_open)
 
         turnover_entry[entry_date] = turnover_entry.get(entry_date, 0) + 1
         turnover_exit[exit_date] = turnover_exit.get(exit_date, 0) + 1
 
-    dates = sorted(active_by_date.keys())
+    topix_dates = sorted(pd.to_datetime(topix_ret.index).normalize().unique())
+    dates = topix_dates if len(topix_dates) > 0 else sorted(active_by_date.keys())
     daily_records: List[Dict[str, Any]] = []
     cumulative = 1.0
     for dt in dates:
         rets = active_by_date.get(dt, [])
         if not rets:
             continue
-        strategy_ret = float(np.mean(rets))
+        strategy_ret = float(np.mean(rets)) if rets else 0.0
         benchmark = float(topix_ret.get(dt, np.nan))
         if np.isnan(benchmark):
             benchmark = 0.0
@@ -1701,6 +1722,8 @@ def run_bull_market_new_high_momentum_backtest(
 
     avg_positions = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
     turnover = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
+    avg_trade_events_on_active_days = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
+    avg_daily_trade_events = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
 
     event_summary = (
         event_df.groupby("horizon", as_index=False)
@@ -1727,8 +1750,10 @@ def run_bull_market_new_high_momentum_backtest(
         "down_capture": down_capture,
         "max_drawdown": max_drawdown,
         "calmar": calmar,
-        "avg_daily_turnover": turnover,
-        "avg_daily_entries_exits": avg_positions,
+        "avg_daily_trade_events": avg_daily_trade_events,
+        "avg_daily_turnover": avg_daily_trade_events,
+        "avg_trade_events_on_active_days": avg_trade_events_on_active_days,
+        "avg_daily_entries_exits": avg_trade_events_on_active_days,
         "avg_trade_net_return": float(trades_df["net_return"].mean()),
         "win_rate": float((trades_df["net_return"] > 0).mean()),
     }
