@@ -41,6 +41,81 @@ def split_symbols_randomly(
     return train_symbols, validation_symbols
 
 
+def compute_rolling_avg_dollar_volume(
+    close: pd.Series,
+    volume: pd.Series,
+    lookback: int,
+) -> pd.Series:
+    """close*volume のローリング平均売買代金を計算する共通ヘルパー。"""
+
+    if lookback <= 0:
+        raise ValueError(f"lookback must be positive: {lookback}")
+    return (close * volume).rolling(lookback, min_periods=lookback).mean()
+
+
+def build_daily_turnover_universe(
+    panel_df: pd.DataFrame,
+    top_k: int = 1000,
+    min_close: float = 1.0,
+    max_close: Optional[float] = None,
+    return_bool_mask: bool = False,
+) -> Any:
+    """日次売買代金ランキングからユニバースを作る。
+
+    除外条件:
+    - date/symbol/close/volume の欠損
+    - volume <= 0
+    - close < min_close
+    - max_close 指定時は close > max_close
+    """
+
+    required_cols = {"date", "symbol", "close", "volume"}
+    if not required_cols.issubset(panel_df.columns):
+        missing = sorted(required_cols - set(panel_df.columns))
+        raise ValueError(f"panel_df is missing required columns: {missing}")
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive: {top_k}")
+
+    df = panel_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["symbol"] = df["symbol"].astype(str)
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+
+    valid_mask = (
+        df["date"].notna()
+        & df["symbol"].notna()
+        & df["close"].notna()
+        & df["volume"].notna()
+        & (df["volume"] > 0)
+        & (df["close"] >= float(min_close))
+    )
+    if max_close is not None:
+        valid_mask &= df["close"] <= float(max_close)
+
+    valid_df = df.loc[valid_mask, ["date", "symbol", "close", "volume"]].copy()
+    valid_df["turnover"] = valid_df["close"] * valid_df["volume"]
+
+    ranked = valid_df.sort_values(["date", "turnover", "symbol"], ascending=[True, False, True])
+    selected = ranked.groupby("date", sort=True).head(int(top_k)).copy()
+
+    if return_bool_mask:
+        selected_key = set(zip(selected["date"].tolist(), selected["symbol"].tolist()))
+        return pd.Series(
+            [
+                (dt, sym) in selected_key
+                for dt, sym in zip(df["date"].tolist(), df["symbol"].tolist())
+            ],
+            index=panel_df.index,
+            dtype=bool,
+        )
+
+    date_to_symbols: Dict[pd.Timestamp, List[str]] = {}
+    for dt, group in selected.groupby("date", sort=True):
+        date_to_symbols[dt] = group["symbol"].tolist()
+    return date_to_symbols
+
+
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """主要なテクニカル指標を計算する。"""
 
@@ -307,9 +382,7 @@ def _build_selling_climax_feature_cache(
         for lookback in sorted_lookbacks
     }
     avg_dollar_volume = {
-        lookback: (df["close"] * df["volume"])
-        .rolling(lookback, min_periods=lookback)
-        .mean()
+        lookback: compute_rolling_avg_dollar_volume(df["close"], df["volume"], lookback)
         for lookback in sorted_lookbacks
     }
 
@@ -1413,10 +1486,11 @@ def run_bull_market_new_high_momentum_backtest(
         if any(col not in df.columns for col in ["date", "open", "close", "volume"]):
             continue
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-        df["dollar_volume"] = pd.to_numeric(df["close"], errors="coerce") * pd.to_numeric(
-            df["volume"], errors="coerce"
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+        rolling_liquidity = compute_rolling_avg_dollar_volume(
+            df["close"], df["volume"], liquidity_lookback
         )
-        rolling_liquidity = df["dollar_volume"].rolling(liquidity_lookback).mean()
         score = float(rolling_liquidity.dropna().iloc[-1]) if rolling_liquidity.notna().any() else np.nan
         if np.isnan(score):
             continue
@@ -1758,8 +1832,9 @@ def run_ma5_deviation_mean_reversion_backtest(
         df["deviation"] = df["close"] / df["ma5"] - 1.0
         df["daily_ret"] = df["close"].pct_change()
         df["volatility"] = df["daily_ret"].rolling(volatility_lookback).std(ddof=0)
-        df["dollar_volume"] = df["close"] * df["volume"]
-        df["avg_dollar_volume"] = df["dollar_volume"].rolling(liquidity_lookback).mean()
+        df["avg_dollar_volume"] = compute_rolling_avg_dollar_volume(
+            df["close"], df["volume"], liquidity_lookback
+        )
         df["liquidity_pass"] = df["avg_dollar_volume"] >= min_avg_dollar_volume
         records.append(
             df[
