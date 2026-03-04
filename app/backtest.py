@@ -1788,6 +1788,13 @@ def run_ma5_deviation_mean_reversion_backtest(
     min_avg_dollar_volume: float = 50_000_000.0,
     liquidity_lookback: int = 20,
     volatility_lookback: int = 20,
+    take_profit_pct: float = 0.05,
+    stop_loss_pct: float = 0.03,
+    mean_revert_exit_threshold: float = 0.005,
+    max_holding_days: int = 5,
+    commission_bps: float = 10.0,
+    slippage_bps: float = 5.0,
+    allow_reentry_after_exit_on_same_day: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """5日移動平均乖離の逆張りロングショート戦略を日次で検証する。"""
 
@@ -1799,6 +1806,8 @@ def run_ma5_deviation_mean_reversion_backtest(
     valid_weight_mode = {"equal", "volatility_adjusted"}
     if weight_mode not in valid_weight_mode:
         raise ValueError(f"weight_mode must be one of {valid_weight_mode}: {weight_mode}")
+    if max_holding_days <= 0:
+        raise ValueError(f"max_holding_days must be > 0: {max_holding_days}")
 
     raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
     if "topix" in {str(s).lower() for s in raw_symbols}:
@@ -1861,11 +1870,98 @@ def run_ma5_deviation_mean_reversion_backtest(
         for date, group in panel_df.groupby("date", sort=True)
     }
     all_dates = sorted(date_to_cross_section.keys())
+    date_to_index = {d: i for i, d in enumerate(all_dates)}
+    symbol_date_to_row = {
+        symbol: group.set_index("date").sort_index()
+        for symbol, group in panel_df.groupby("symbol", sort=False)
+    }
+    trading_cost_pct = (commission_bps + slippage_bps) / 10_000.0
 
     trade_records: List[Dict[str, Any]] = []
     daily_records: List[Dict[str, Any]] = []
+    open_positions: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def _pick_exit_reason(raw_ret: float, deviation: float, held_days: int) -> Optional[str]:
+        # 優先順位: stop_loss > take_profit > mean_revert > time_stop
+        if raw_ret <= -stop_loss_pct:
+            return "stop_loss"
+        if raw_ret >= take_profit_pct:
+            return "take_profit"
+        if abs(deviation) <= mean_revert_exit_threshold:
+            return "mean_revert"
+        if held_days >= max_holding_days:
+            return "time_stop"
+        return None
 
     for signal_date in all_dates:
+        exited_symbols: set = set()
+        day_pnl = 0.0
+
+        # 先に既存ポジションの決済判定を行う（exit-first優先）。
+        for key, pos in list(open_positions.items()):
+            symbol = pos["symbol"]
+            symbol_df = symbol_date_to_row.get(symbol)
+            if symbol_df is None or signal_date not in symbol_df.index:
+                continue
+            row = symbol_df.loc[signal_date]
+            current_close = float(row["close"])
+            current_deviation = float(row["deviation"])
+            if not np.isfinite(current_close) or current_close <= 0 or not np.isfinite(current_deviation):
+                continue
+
+            raw_ret = current_close / pos["entry_price"] - 1.0
+            if pos["side"] == "short":
+                raw_ret *= -1.0
+
+            held_days = date_to_index[signal_date] - date_to_index[pos["entry_date"]] + 1
+            exit_reason = _pick_exit_reason(raw_ret=raw_ret, deviation=current_deviation, held_days=held_days)
+            if exit_reason is None:
+                continue
+
+            exit_date = signal_date
+            exit_px = current_close
+            if exit_timing == "next_open":
+                next_idx = date_to_index[signal_date] + 1
+                if next_idx >= len(all_dates):
+                    continue
+                next_date = all_dates[next_idx]
+                if next_date not in symbol_df.index:
+                    continue
+                next_row = symbol_df.loc[next_date]
+                next_open = float(next_row["open"])
+                if not np.isfinite(next_open) or next_open <= 0:
+                    continue
+                exit_date = next_date
+                exit_px = next_open
+                raw_ret = exit_px / pos["entry_price"] - 1.0
+                if pos["side"] == "short":
+                    raw_ret *= -1.0
+
+            net_ret = raw_ret - (2.0 * trading_cost_pct)
+            weighted_return = net_ret * pos["weight"]
+            day_pnl += weighted_return
+            exited_symbols.add(symbol)
+            trade_records.append(
+                {
+                    "symbol": symbol,
+                    "direction": pos["side"],
+                    "signal_date": pd.Timestamp(pos["signal_date"]),
+                    "entry_date": pd.Timestamp(pos["entry_date"]),
+                    "exit_date": pd.Timestamp(exit_date),
+                    "entry_price": float(pos["entry_price"]),
+                    "exit_price": float(exit_px),
+                    "weight": float(pos["weight"]),
+                    "pnl": float(weighted_return),
+                    "raw_return": float(raw_ret),
+                    "net_return": float(net_ret),
+                    "cost_pct": float(2.0 * trading_cost_pct),
+                    "deviation": float(pos["signal_deviation"]),
+                    "exit_reason": exit_reason,
+                    "holding_days": int(held_days),
+                }
+            )
+            del open_positions[key]
+
         cross = date_to_cross_section[signal_date]
         candidates = cross[
             cross["liquidity_pass"]
@@ -1873,12 +1969,12 @@ def run_ma5_deviation_mean_reversion_backtest(
             & np.isfinite(cross["deviation"])
         ].copy()
         if candidates.empty:
-            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         count_each_side = min(top_n, candidates.shape[0] // 2)
         if count_each_side <= 0:
-            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         long_candidates = candidates.nsmallest(count_each_side, "deviation").copy()
@@ -1886,28 +1982,24 @@ def run_ma5_deviation_mean_reversion_backtest(
         long_candidates["side"] = "long"
         short_candidates["side"] = "short"
         picks = pd.concat([long_candidates, short_candidates], ignore_index=True)
-        picks = picks.drop_duplicates(subset=["symbol", "side"])
+        picks["abs_deviation"] = picks["deviation"].abs()
+        picks = (
+            picks.sort_values(["symbol", "abs_deviation"], ascending=[True, False])
+            .drop_duplicates(subset=["symbol"], keep="first")
+            .drop(columns=["abs_deviation"])
+        )
 
         entry_date = signal_date
         if entry_timing == "next_open":
-            next_dates = [d for d in all_dates if d > signal_date]
-            if not next_dates:
-                daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            next_idx = date_to_index[signal_date] + 1
+            if next_idx >= len(all_dates):
+                daily_records.append({"date": signal_date, "strategy_return": day_pnl})
                 continue
-            entry_date = next_dates[0]
-
-        exit_date = entry_date
-        if exit_timing == "next_open":
-            next_dates = [d for d in all_dates if d > entry_date]
-            if not next_dates:
-                daily_records.append({"date": signal_date, "strategy_return": 0.0})
-                continue
-            exit_date = next_dates[0]
+            entry_date = all_dates[next_idx]
 
         entry_cross = date_to_cross_section.get(entry_date)
-        exit_cross = date_to_cross_section.get(exit_date)
-        if entry_cross is None or exit_cross is None:
-            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+        if entry_cross is None:
+            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         merged = picks.merge(
@@ -1916,15 +2008,9 @@ def run_ma5_deviation_mean_reversion_backtest(
             ),
             on="symbol",
             how="inner",
-        ).merge(
-            exit_cross[["symbol", "open", "close"]].rename(
-                columns={"open": "exit_open", "close": "exit_close"}
-            ),
-            on="symbol",
-            how="inner",
         )
         if merged.empty:
-            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         if entry_timing == "same_close":
@@ -1932,20 +2018,19 @@ def run_ma5_deviation_mean_reversion_backtest(
         else:
             merged["entry_price"] = merged["entry_open"]
 
-        if exit_timing == "same_close":
-            merged["exit_price"] = merged["exit_close"]
-            exit_reason = "same_day_close"
-        else:
-            merged["exit_price"] = merged["exit_open"]
-            exit_reason = "next_open"
-
-        merged = merged[(merged["entry_price"] > 0) & (merged["exit_price"] > 0)].copy()
+        merged = merged[(merged["entry_price"] > 0)].copy()
         if merged.empty:
-            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
-        merged["raw_return"] = merged["exit_price"] / merged["entry_price"] - 1.0
-        merged.loc[merged["side"] == "short", "raw_return"] *= -1.0
+        if not allow_reentry_after_exit_on_same_day:
+            merged = merged[~merged["symbol"].isin(exited_symbols)]
+        merged = merged[
+            ~merged.apply(lambda r: (r["symbol"], r["side"]) in open_positions, axis=1)
+        ]
+        if merged.empty:
+            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
+            continue
 
         if weight_mode == "volatility_adjusted":
             merged["inv_vol"] = 1.0 / merged["entry_volatility"].replace(0, np.nan)
@@ -1965,27 +2050,18 @@ def run_ma5_deviation_mean_reversion_backtest(
                 if side_count > 0:
                     merged.loc[side_mask, "weight"] = 0.5 / side_count
 
-        merged["weighted_return"] = merged["raw_return"] * merged["weight"]
-        portfolio_ret = float(merged["weighted_return"].sum())
-        daily_records.append({"date": exit_date, "strategy_return": portfolio_ret})
-
         for _, row in merged.iterrows():
-            trade_records.append(
-                {
-                    "symbol": row["symbol"],
-                    "direction": row["side"],
-                    "signal_date": pd.Timestamp(signal_date),
-                    "entry_date": pd.Timestamp(entry_date),
-                    "exit_date": pd.Timestamp(exit_date),
-                    "entry_price": float(row["entry_price"]),
-                    "exit_price": float(row["exit_price"]),
-                    "weight": float(row["weight"]),
-                    "pnl": float(row["weighted_return"]),
-                    "raw_return": float(row["raw_return"]),
-                    "deviation": float(row["deviation"]),
-                    "exit_reason": exit_reason,
-                }
-            )
+            open_positions[(str(row["symbol"]), str(row["side"]))] = {
+                "symbol": str(row["symbol"]),
+                "side": str(row["side"]),
+                "signal_date": pd.Timestamp(signal_date),
+                "entry_date": pd.Timestamp(entry_date),
+                "entry_price": float(row["entry_price"]),
+                "weight": float(row["weight"]),
+                "signal_deviation": float(row["deviation"]),
+            }
+
+        daily_records.append({"date": signal_date, "strategy_return": day_pnl})
 
     trades_df = pd.DataFrame(trade_records)
     if not daily_records:
@@ -2013,7 +2089,7 @@ def run_ma5_deviation_mean_reversion_backtest(
     dd = daily_df["equity_curve"] / daily_df["equity_curve"].cummax() - 1.0
     mdd = float(dd.min()) if not dd.empty else 0.0
 
-    win_rate = float((trades_df["raw_return"] > 0).mean()) if not trades_df.empty else np.nan
+    win_rate = float((trades_df["net_return"] > 0).mean()) if not trades_df.empty else np.nan
     summary_df = pd.DataFrame(
         [
             {
@@ -2022,6 +2098,14 @@ def run_ma5_deviation_mean_reversion_backtest(
                 "entry_timing": entry_timing,
                 "exit_timing": exit_timing,
                 "weight_mode": weight_mode,
+                "take_profit_pct": take_profit_pct,
+                "stop_loss_pct": stop_loss_pct,
+                "mean_revert_exit_threshold": mean_revert_exit_threshold,
+                "max_holding_days": int(max_holding_days),
+                "commission_bps": float(commission_bps),
+                "slippage_bps": float(slippage_bps),
+                "allow_reentry_after_exit_on_same_day": bool(allow_reentry_after_exit_on_same_day),
+                "signal_priority": "exit_first_then_entry",
                 "trade_count": int(trades_df.shape[0]),
                 "win_rate": win_rate,
                 "cagr": cagr,
