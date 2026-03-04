@@ -1791,6 +1791,7 @@ def run_ma5_deviation_mean_reversion_backtest(
     take_profit_pct: float = 0.05,
     stop_loss_pct: float = 0.03,
     mean_revert_exit_threshold: float = 0.005,
+    entry_deviation_threshold: float = 0.0,
     max_holding_days: int = 5,
     commission_bps: float = 10.0,
     slippage_bps: float = 5.0,
@@ -1808,6 +1809,10 @@ def run_ma5_deviation_mean_reversion_backtest(
         raise ValueError(f"weight_mode must be one of {valid_weight_mode}: {weight_mode}")
     if max_holding_days <= 0:
         raise ValueError(f"max_holding_days must be > 0: {max_holding_days}")
+    if entry_deviation_threshold < 0:
+        raise ValueError(
+            f"entry_deviation_threshold must be >= 0: {entry_deviation_threshold}"
+        )
 
     raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
     if "topix" in {str(s).lower() for s in raw_symbols}:
@@ -1967,6 +1972,7 @@ def run_ma5_deviation_mean_reversion_backtest(
             cross["liquidity_pass"]
             & cross["deviation"].notna()
             & np.isfinite(cross["deviation"])
+            & (cross["deviation"].abs() >= entry_deviation_threshold)
         ].copy()
         if candidates.empty:
             daily_records.append({"date": signal_date, "strategy_return": day_pnl})
@@ -2101,6 +2107,7 @@ def run_ma5_deviation_mean_reversion_backtest(
                 "take_profit_pct": take_profit_pct,
                 "stop_loss_pct": stop_loss_pct,
                 "mean_revert_exit_threshold": mean_revert_exit_threshold,
+                "entry_deviation_threshold": float(entry_deviation_threshold),
                 "max_holding_days": int(max_holding_days),
                 "commission_bps": float(commission_bps),
                 "slippage_bps": float(slippage_bps),

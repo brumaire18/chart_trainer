@@ -40,6 +40,7 @@ from app.backtest import (
     grid_search_cup_shape,
     grid_search_selling_climax,
     run_canslim_backtest,
+    run_ma5_deviation_mean_reversion_backtest,
     run_minervini_backtest,
     run_minervini_grid_search,
     run_bull_market_new_high_momentum_backtest,
@@ -5317,6 +5318,12 @@ def main():
             st.session_state["bull_breakout_signals"] = None
         if "bull_breakout_daily_returns" not in st.session_state:
             st.session_state["bull_breakout_daily_returns"] = None
+        if "ma5_dev_backtest_summary" not in st.session_state:
+            st.session_state["ma5_dev_backtest_summary"] = None
+        if "ma5_dev_backtest_trades" not in st.session_state:
+            st.session_state["ma5_dev_backtest_trades"] = None
+        if "ma5_dev_backtest_daily" not in st.session_state:
+            st.session_state["ma5_dev_backtest_daily"] = None
 
         backtest_col1, backtest_col2 = st.columns(2)
         with backtest_col1:
@@ -5456,6 +5463,215 @@ def main():
                     tickformat="%Y-%m-%d",
                     rangebreaks=breakdown_rangebreaks,
                 )
+
+        st.divider()
+        st.subheader("MA5乖離 逆張りロング・ショート バックテスト")
+        st.caption("5日移動平均乖離の大きい銘柄を対象に、均等ロング・ショートの逆張り戦略を検証します。")
+
+        ma5_col1, ma5_col2 = st.columns(2)
+        with ma5_col1:
+            ma5_top_k = st.number_input(
+                "対象銘柄数（流動性上位）",
+                min_value=100,
+                max_value=4000,
+                value=1000,
+                step=100,
+                key="ma5_top_k",
+            )
+            ma5_long_short_count = st.number_input(
+                "ロング/ショート採用銘柄数（片側）",
+                min_value=1,
+                max_value=300,
+                value=10,
+                step=1,
+                key="ma5_long_short_count",
+            )
+            ma5_entry_deviation_threshold = st.number_input(
+                "エントリー乖離しきい値（絶対値）",
+                min_value=0.0,
+                max_value=0.3,
+                value=0.02,
+                step=0.005,
+                format="%.3f",
+                key="ma5_entry_deviation_threshold",
+            )
+            ma5_take_profit_pct = st.number_input(
+                "利確幅（%）",
+                min_value=0.0,
+                max_value=0.5,
+                value=0.05,
+                step=0.01,
+                key="ma5_take_profit_pct",
+            )
+            ma5_stop_loss_pct = st.number_input(
+                "損切り幅（%）",
+                min_value=0.0,
+                max_value=0.5,
+                value=0.03,
+                step=0.01,
+                key="ma5_stop_loss_pct",
+            )
+        with ma5_col2:
+            ma5_max_holding_days = st.number_input(
+                "最大保有日数（日）",
+                min_value=1,
+                max_value=60,
+                value=5,
+                step=1,
+                key="ma5_max_holding_days",
+            )
+            ma5_commission_bps = st.number_input(
+                "手数料（bp）",
+                min_value=0.0,
+                max_value=100.0,
+                value=10.0,
+                step=1.0,
+                key="ma5_commission_bps",
+            )
+            ma5_slippage_bps = st.number_input(
+                "スリッページ（bp）",
+                min_value=0.0,
+                max_value=100.0,
+                value=5.0,
+                step=1.0,
+                key="ma5_slippage_bps",
+            )
+            ma5_period = st.date_input(
+                "検証期間",
+                value=(date.today() - timedelta(days=365 * 3), date.today()),
+                key="ma5_period",
+            )
+
+        run_ma5_dev_backtest = st.button(
+            "MA5乖離 逆張りバックテストを実行",
+            type="primary",
+            key="run_ma5_dev_backtest",
+        )
+        if run_ma5_dev_backtest:
+            try:
+                if not isinstance(ma5_period, tuple) or len(ma5_period) != 2:
+                    raise ValueError("検証期間は開始日と終了日の両方を指定してください。")
+                period_start = pd.to_datetime(ma5_period[0]).normalize()
+                period_end = pd.to_datetime(ma5_period[1]).normalize()
+                if period_start > period_end:
+                    raise ValueError("検証期間の開始日が終了日より後になっています。")
+
+                all_symbols = [s for s in get_available_symbols() if str(s).lower() != "topix"]
+                if not all_symbols:
+                    raise ValueError("利用可能な銘柄データが見つかりません。")
+
+                progress_update, progress_done = _build_progress_updater(
+                    "MA5乖離 逆張りバックテスト"
+                )
+                progress_update(0, max(len(all_symbols), 1), "銘柄データ準備")
+
+                prepared_data = {}
+                liquidity_scores = []
+                for idx_symbol, symbol in enumerate(all_symbols, start=1):
+                    try:
+                        df_symbol = load_price_csv(symbol).copy()
+                    except Exception:
+                        progress_update(idx_symbol, len(all_symbols), "銘柄データ準備")
+                        continue
+                    if df_symbol.empty:
+                        progress_update(idx_symbol, len(all_symbols), "銘柄データ準備")
+                        continue
+
+                    df_symbol["date"] = pd.to_datetime(df_symbol["date"], errors="coerce")
+                    df_symbol = df_symbol.dropna(subset=["date", "open", "close", "volume"])
+                    df_symbol = df_symbol[
+                        (df_symbol["date"] >= period_start) & (df_symbol["date"] <= period_end)
+                    ].copy()
+                    if df_symbol.empty:
+                        progress_update(idx_symbol, len(all_symbols), "銘柄データ準備")
+                        continue
+
+                    df_symbol = df_symbol.sort_values("date").reset_index(drop=True)
+                    prepared_data[str(symbol)] = df_symbol
+                    avg_dollar = (df_symbol["close"] * df_symbol["volume"]).tail(20).mean()
+                    if pd.notna(avg_dollar):
+                        liquidity_scores.append((str(symbol), float(avg_dollar)))
+                    progress_update(idx_symbol, len(all_symbols), "銘柄データ準備")
+
+                if not liquidity_scores:
+                    raise ValueError("指定期間に利用可能な価格データがありません。")
+
+                liquidity_scores.sort(key=lambda x: x[1], reverse=True)
+                selected_symbols = [s for s, _ in liquidity_scores[: int(ma5_top_k)]]
+                selected_data = {s: prepared_data[s] for s in selected_symbols if s in prepared_data}
+                if not selected_data:
+                    raise ValueError("対象銘柄のデータ準備に失敗しました。")
+
+                progress_update(0, 1, "バックテスト計算")
+                trades_df, summary_df = run_ma5_deviation_mean_reversion_backtest(
+                    symbols=selected_symbols,
+                    symbol_price_data=selected_data,
+                    top_n=int(ma5_long_short_count),
+                    take_profit_pct=float(ma5_take_profit_pct),
+                    stop_loss_pct=float(ma5_stop_loss_pct),
+                    entry_deviation_threshold=float(ma5_entry_deviation_threshold),
+                    max_holding_days=int(ma5_max_holding_days),
+                    commission_bps=float(ma5_commission_bps),
+                    slippage_bps=float(ma5_slippage_bps),
+                )
+                progress_done()
+
+                daily_dates = pd.date_range(start=period_start, end=period_end, freq="B")
+                if daily_dates.empty:
+                    daily_dates = pd.DatetimeIndex([period_start])
+                if trades_df is not None and not trades_df.empty:
+                    daily_df = (
+                        trades_df.groupby("exit_date", as_index=False)
+                        .agg(strategy_return=("pnl", "sum"))
+                        .rename(columns={"exit_date": "date"})
+                    )
+                    daily_df["date"] = pd.to_datetime(daily_df["date"]).dt.normalize()
+                    daily_df = (
+                        daily_df.set_index("date")
+                        .reindex(daily_dates, fill_value=0.0)
+                        .rename_axis("date")
+                        .reset_index()
+                    )
+                else:
+                    daily_df = pd.DataFrame({"date": daily_dates, "strategy_return": 0.0})
+                daily_df["equity_curve"] = (1.0 + daily_df["strategy_return"]).cumprod()
+
+                st.session_state["ma5_dev_backtest_summary"] = summary_df
+                st.session_state["ma5_dev_backtest_trades"] = trades_df
+                st.session_state["ma5_dev_backtest_daily"] = daily_df
+            except Exception as exc:
+                st.error(f"MA5乖離バックテストの実行中にエラーが発生しました: {exc}")
+
+        ma5_summary = st.session_state.get("ma5_dev_backtest_summary")
+        ma5_trades = st.session_state.get("ma5_dev_backtest_trades")
+        ma5_daily = st.session_state.get("ma5_dev_backtest_daily")
+
+        if ma5_summary is not None and not ma5_summary.empty:
+            st.markdown("#### サマリー")
+            st.dataframe(ma5_summary, use_container_width=True)
+
+        if ma5_trades is not None and not ma5_trades.empty:
+            st.markdown("#### トレード一覧（上位200件）")
+            st.dataframe(ma5_trades.head(200), use_container_width=True)
+
+        if ma5_daily is not None and not ma5_daily.empty:
+            st.markdown("#### 日次エクイティカーブ")
+            ma5_fig = go.Figure()
+            ma5_fig.add_trace(
+                go.Scatter(
+                    x=ma5_daily["date"],
+                    y=ma5_daily["equity_curve"],
+                    mode="lines",
+                    name="戦略エクイティ",
+                )
+            )
+            ma5_fig.update_layout(
+                title="MA5乖離 逆張りロング・ショートのエクイティカーブ",
+                xaxis_title="Date",
+                yaxis_title="Equity",
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+            st.plotly_chart(ma5_fig, use_container_width=True)
 
         st.divider()
         st.subheader("ミネルヴィニ・トレンドテンプレート バックテスト")
