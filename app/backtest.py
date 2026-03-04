@@ -1878,7 +1878,7 @@ def run_ma5_deviation_mean_reversion_backtest(
     trading_cost_pct = (commission_bps + slippage_bps) / 10_000.0
 
     trade_records: List[Dict[str, Any]] = []
-    daily_records: List[Dict[str, Any]] = []
+    daily_pnl_by_date: Dict[pd.Timestamp, float] = {pd.Timestamp(d): 0.0 for d in all_dates}
     open_positions: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def _pick_exit_reason(raw_ret: float, deviation: float, held_days: int) -> Optional[str]:
@@ -1895,7 +1895,6 @@ def run_ma5_deviation_mean_reversion_backtest(
 
     for signal_date in all_dates:
         exited_symbols: set = set()
-        day_pnl = 0.0
 
         # 先に既存ポジションの決済判定を行う（exit-first優先）。
         for key, pos in list(open_positions.items()):
@@ -1939,7 +1938,9 @@ def run_ma5_deviation_mean_reversion_backtest(
 
             net_ret = raw_ret - (2.0 * trading_cost_pct)
             weighted_return = net_ret * pos["weight"]
-            day_pnl += weighted_return
+            daily_pnl_by_date[pd.Timestamp(exit_date)] = (
+                daily_pnl_by_date.get(pd.Timestamp(exit_date), 0.0) + float(weighted_return)
+            )
             exited_symbols.add(symbol)
             trade_records.append(
                 {
@@ -1969,12 +1970,10 @@ def run_ma5_deviation_mean_reversion_backtest(
             & np.isfinite(cross["deviation"])
         ].copy()
         if candidates.empty:
-            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         count_each_side = min(top_n, candidates.shape[0] // 2)
         if count_each_side <= 0:
-            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         long_candidates = candidates.nsmallest(count_each_side, "deviation").copy()
@@ -1993,13 +1992,11 @@ def run_ma5_deviation_mean_reversion_backtest(
         if entry_timing == "next_open":
             next_idx = date_to_index[signal_date] + 1
             if next_idx >= len(all_dates):
-                daily_records.append({"date": signal_date, "strategy_return": day_pnl})
                 continue
             entry_date = all_dates[next_idx]
 
         entry_cross = date_to_cross_section.get(entry_date)
         if entry_cross is None:
-            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         merged = picks.merge(
@@ -2010,7 +2007,6 @@ def run_ma5_deviation_mean_reversion_backtest(
             how="inner",
         )
         if merged.empty:
-            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         if entry_timing == "same_close":
@@ -2020,7 +2016,6 @@ def run_ma5_deviation_mean_reversion_backtest(
 
         merged = merged[(merged["entry_price"] > 0)].copy()
         if merged.empty:
-            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         if not allow_reentry_after_exit_on_same_day:
@@ -2029,7 +2024,6 @@ def run_ma5_deviation_mean_reversion_backtest(
             ~merged.apply(lambda r: (r["symbol"], r["side"]) in open_positions, axis=1)
         ]
         if merged.empty:
-            daily_records.append({"date": signal_date, "strategy_return": day_pnl})
             continue
 
         if weight_mode == "volatility_adjusted":
@@ -2061,14 +2055,68 @@ def run_ma5_deviation_mean_reversion_backtest(
                 "signal_deviation": float(row["deviation"]),
             }
 
-        daily_records.append({"date": signal_date, "strategy_return": day_pnl})
+    # バックテスト期間終了時に未決済ポジションを強制決済する。
+    if open_positions:
+        for key, pos in list(open_positions.items()):
+            symbol = pos["symbol"]
+            symbol_df = symbol_date_to_row.get(symbol)
+            if symbol_df is None or symbol_df.empty:
+                del open_positions[key]
+                continue
+
+            last_idx = symbol_df.index.max()
+            if pd.isna(last_idx):
+                del open_positions[key]
+                continue
+
+            last_row = symbol_df.loc[last_idx]
+            exit_close = float(last_row["close"])
+            if not np.isfinite(exit_close) or exit_close <= 0:
+                del open_positions[key]
+                continue
+
+            exit_date = pd.Timestamp(last_idx)
+            raw_ret = exit_close / pos["entry_price"] - 1.0
+            if pos["side"] == "short":
+                raw_ret *= -1.0
+
+            if exit_date in date_to_index and pos["entry_date"] in date_to_index:
+                holding_days = date_to_index[exit_date] - date_to_index[pos["entry_date"]] + 1
+            else:
+                holding_days = max(1, int((exit_date - pos["entry_date"]).days) + 1)
+
+            net_ret = raw_ret - (2.0 * trading_cost_pct)
+            weighted_return = net_ret * pos["weight"]
+            daily_pnl_by_date[exit_date] = daily_pnl_by_date.get(exit_date, 0.0) + float(weighted_return)
+            trade_records.append(
+                {
+                    "symbol": symbol,
+                    "direction": pos["side"],
+                    "signal_date": pd.Timestamp(pos["signal_date"]),
+                    "entry_date": pd.Timestamp(pos["entry_date"]),
+                    "exit_date": exit_date,
+                    "entry_price": float(pos["entry_price"]),
+                    "exit_price": float(exit_close),
+                    "weight": float(pos["weight"]),
+                    "pnl": float(weighted_return),
+                    "raw_return": float(raw_ret),
+                    "net_return": float(net_ret),
+                    "cost_pct": float(2.0 * trading_cost_pct),
+                    "deviation": float(pos["signal_deviation"]),
+                    "exit_reason": "forced_liquidation",
+                    "holding_days": int(holding_days),
+                }
+            )
+            del open_positions[key]
 
     trades_df = pd.DataFrame(trade_records)
-    if not daily_records:
+    if not daily_pnl_by_date:
         return trades_df, pd.DataFrame()
 
     daily_df = (
-        pd.DataFrame(daily_records)
+        pd.DataFrame(
+            [{"date": date, "strategy_return": pnl} for date, pnl in daily_pnl_by_date.items()]
+        )
         .groupby("date", as_index=False)
         .agg(strategy_return=("strategy_return", "sum"))
         .sort_values("date")
