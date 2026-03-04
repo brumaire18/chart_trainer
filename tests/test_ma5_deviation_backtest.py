@@ -88,5 +88,44 @@ class MA5DeviationMeanReversionBacktestTests(unittest.TestCase):
         self.assertEqual(summary_df.iloc[0]["weight_mode"], "volatility_adjusted")
 
 
+    @patch("app.backtest.load_price_csv")
+    def test_exit_reasons_and_trading_cost_columns(self, mock_load_price_csv):
+        universe = {
+            "1111": self._build_price_df(seed=21, base_price=2000.0, amp=90.0),
+            "2222": self._build_price_df(seed=22, base_price=2500.0, amp=120.0),
+            "3333": self._build_price_df(seed=23, base_price=1800.0, amp=70.0),
+            "4444": self._build_price_df(seed=24, base_price=3000.0, amp=150.0),
+        }
+        mock_load_price_csv.side_effect = lambda symbol: universe[symbol]
+
+        trades_df, summary_df = run_ma5_deviation_mean_reversion_backtest(
+            symbols=list(universe.keys()),
+            top_n=1,
+            entry_timing="next_open",
+            exit_timing="same_close",
+            weight_mode="equal",
+            min_avg_dollar_volume=10_000_000.0,
+            take_profit_pct=0.01,
+            stop_loss_pct=0.01,
+            mean_revert_exit_threshold=0.002,
+            max_holding_days=3,
+            commission_bps=5.0,
+            slippage_bps=5.0,
+        )
+
+        self.assertFalse(trades_df.empty)
+        self.assertIn("net_return", trades_df.columns)
+        self.assertIn("cost_pct", trades_df.columns)
+        self.assertIn("holding_days", trades_df.columns)
+        self.assertTrue(
+            set(trades_df["exit_reason"].unique()).issubset(
+                {"take_profit", "stop_loss", "mean_revert", "time_stop"}
+            )
+        )
+        self.assertTrue((trades_df["cost_pct"] > 0).all())
+        self.assertIn("signal_priority", summary_df.columns)
+        self.assertEqual(summary_df.iloc[0]["signal_priority"], "exit_first_then_entry")
+
+
 if __name__ == "__main__":
     unittest.main()
