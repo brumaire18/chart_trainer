@@ -118,7 +118,8 @@ python -m app.jquants_fetcher --codes 7203 --append-date YYYY-MM-DD
 
 - 出来高・売買代金の大きい銘柄を優先するため、`top_liquidity_count` で流動性上位の銘柄数を指定できます。
 - イベントスタディ（20日/60日の超過リターン）と、実運用想定の売買バックテスト（翌営業日寄りでエントリー、H日保有、コスト控除後）を同時に返します。
-- 返却値は `signals / trades / daily_returns / event_study / summary` の辞書です。
+- さらに「押し目待ちエントリー（シグナル日終値から指定%下落を待ってからエントリー）」の比較も可能で、
+  返却値は `signals / trades / daily_returns / event_study / summary / pullback_trades / pullback_summary` の辞書です。
 
 ```python
 from app.backtest import run_bull_market_new_high_momentum_backtest
@@ -131,6 +132,8 @@ result = run_bull_market_new_high_momentum_backtest(
     top_liquidity_count=150,      # 流動性上位150銘柄
     one_way_cost_bps=15.0,        # 片道コスト(bp)
     rebalance_weekday=0,          # 月曜のみ新規建て（Noneで毎日）
+    pullback_wait_days=10,        # 押し目を待つ最大日数
+    pullback_pct=0.03,            # 押し目率（3%）
 )
 
 print(result["summary"].to_string(index=False))

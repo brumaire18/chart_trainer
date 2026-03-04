@@ -1382,6 +1382,8 @@ def run_bull_market_new_high_momentum_backtest(
     top_liquidity_count: int = 100,
     one_way_cost_bps: float = 15.0,
     rebalance_weekday: Optional[int] = 0,
+    pullback_wait_days: int = 10,
+    pullback_pct: float = 0.03,
 ) -> Dict[str, pd.DataFrame]:
     """強い上昇相場に限定した最高値更新モメンタム戦略を検証する。"""
 
@@ -1389,6 +1391,7 @@ def run_bull_market_new_high_momentum_backtest(
         topix_df = load_topix_csv()
     regime_df = _build_bull_regime_mask(topix_df)
     topix_close_by_date = regime_df.set_index("date")["close"]
+    topix_ret = topix_close_by_date.pct_change().rename("benchmark_return")
     if "open" in regime_df.columns:
         topix_open_by_date = regime_df.set_index("date")["open"].astype(float)
         topix_ret = topix_open_by_date.pct_change().shift(-1).rename("benchmark_return")
@@ -1431,12 +1434,15 @@ def run_bull_market_new_high_momentum_backtest(
             "daily_returns": empty_df,
             "event_study": empty_df,
             "summary": empty_df,
+            "pullback_trades": empty_df,
+            "pullback_summary": empty_df,
         }
 
     liquidity_scores.sort(key=lambda x: x[1], reverse=True)
     selected_symbols = [s for s, _ in liquidity_scores[: max(top_liquidity_count, 1)]]
 
     trades: List[Dict[str, Any]] = []
+    pullback_trades: List[Dict[str, Any]] = []
     events: List[Dict[str, Any]] = []
     signal_records: List[Dict[str, Any]] = []
 
@@ -1506,6 +1512,40 @@ def run_bull_market_new_high_momentum_backtest(
                 }
             )
 
+            # 押し目待ち版: シグナル日終値から pullback_pct 下落した水準に達したら、翌営業日寄りでエントリー
+            pullback_trigger_price = float(row["close"]) * (1.0 - max(pullback_pct, 0.0))
+            pullback_entry_i: Optional[int] = None
+            latest_check_i = min(i + max(pullback_wait_days, 0), len(df) - 2)
+            for check_i in range(i + 1, latest_check_i + 1):
+                if float(df.iloc[check_i]["low"]) <= pullback_trigger_price:
+                    pullback_entry_i = check_i + 1
+                    break
+
+            if pullback_entry_i is not None:
+                pullback_exit_i = pullback_entry_i + hold_days
+                if pullback_exit_i < len(df):
+                    pullback_entry_open = float(df.iloc[pullback_entry_i]["open"])
+                    pullback_exit_open = float(df.iloc[pullback_exit_i]["open"])
+                    if pullback_entry_open > 0:
+                        pullback_gross_ret = (pullback_exit_open - pullback_entry_open) / pullback_entry_open
+                        total_cost = 2.0 * one_way_cost_bps / 10000.0
+                        pullback_net_ret = pullback_gross_ret - total_cost
+                        pullback_trades.append(
+                            {
+                                "symbol": symbol,
+                                "signal_date": signal_date,
+                                "trigger_date": pd.Timestamp(df.iloc[check_i]["date"]),
+                                "entry_date": pd.Timestamp(df.iloc[pullback_entry_i]["date"]),
+                                "exit_date": pd.Timestamp(df.iloc[pullback_exit_i]["date"]),
+                                "entry_open": pullback_entry_open,
+                                "exit_open": pullback_exit_open,
+                                "gross_return": pullback_gross_ret,
+                                "net_return": pullback_net_ret,
+                                "holding_days": hold_days,
+                                "pullback_trigger_price": pullback_trigger_price,
+                            }
+                        )
+
             for horizon in (20, 60):
                 fwd_i = i + horizon
                 if fwd_i >= len(df):
@@ -1536,6 +1576,7 @@ def run_bull_market_new_high_momentum_backtest(
             last_signal_index = i
 
     trades_df = pd.DataFrame(trades)
+    pullback_trades_df = pd.DataFrame(pullback_trades)
     signals_df = pd.DataFrame(signal_records)
     event_df = pd.DataFrame(events)
 
@@ -1547,6 +1588,8 @@ def run_bull_market_new_high_momentum_backtest(
             "daily_returns": empty_df,
             "event_study": event_df,
             "summary": empty_df,
+            "pullback_trades": pullback_trades_df,
+            "pullback_summary": empty_df,
         }
 
     active_by_date: Dict[pd.Timestamp, List[float]] = {}
@@ -1564,6 +1607,25 @@ def run_bull_market_new_high_momentum_backtest(
         exit_idx = df.index.get_loc(exit_date)
         if isinstance(entry_idx, slice) or isinstance(exit_idx, slice):
             continue
+        close_series = df["close"].astype(float)
+        trade_dates = close_series.index[entry_idx: exit_idx + 1]
+        if len(trade_dates) == 0:
+            continue
+
+        entry_open = float(trade["entry_open"])
+        first_date = trade_dates[0]
+        first_close = float(close_series.loc[first_date])
+        if entry_open > 0:
+            active_by_date.setdefault(first_date, []).append((first_close - entry_open) / entry_open)
+
+        for di in range(1, len(trade_dates)):
+            dt_prev = trade_dates[di - 1]
+            dt_now = trade_dates[di]
+            prev_close = float(close_series.loc[dt_prev])
+            now_close = float(close_series.loc[dt_now])
+            if prev_close <= 0:
+                continue
+            active_by_date.setdefault(dt_now, []).append((now_close - prev_close) / prev_close)
         if exit_idx <= entry_idx:
             continue
 
@@ -1589,6 +1651,8 @@ def run_bull_market_new_high_momentum_backtest(
     cumulative = 1.0
     for dt in dates:
         rets = active_by_date.get(dt, [])
+        if not rets:
+            continue
         strategy_ret = float(np.mean(rets)) if rets else 0.0
         benchmark = float(topix_ret.get(dt, np.nan))
         if np.isnan(benchmark):
@@ -1656,6 +1720,8 @@ def run_bull_market_new_high_momentum_backtest(
         else np.nan
     )
 
+    avg_positions = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
+    turnover = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
     avg_trade_events_on_active_days = float((daily_df["entries"] + daily_df["exits"]).replace(0, np.nan).mean())
     avg_daily_trade_events = float((daily_df["entries"] + daily_df["exits"]).sum() / max(len(daily_df), 1))
 
@@ -1692,6 +1758,34 @@ def run_bull_market_new_high_momentum_backtest(
         "win_rate": float((trades_df["net_return"] > 0).mean()),
     }
     summary_df = pd.DataFrame([summary_row])
+
+    if pullback_trades_df.empty:
+        pullback_summary_df = pd.DataFrame(
+            [
+                {
+                    "pullback_wait_days": int(pullback_wait_days),
+                    "pullback_pct": float(pullback_pct),
+                    "pullback_trades": 0,
+                    "pullback_avg_trade_net_return": np.nan,
+                    "pullback_win_rate": np.nan,
+                    "pullback_total_return": np.nan,
+                }
+            ]
+        )
+    else:
+        pullback_total_return = float((1.0 + pullback_trades_df["net_return"]).prod() - 1.0)
+        pullback_summary_df = pd.DataFrame(
+            [
+                {
+                    "pullback_wait_days": int(pullback_wait_days),
+                    "pullback_pct": float(pullback_pct),
+                    "pullback_trades": int(pullback_trades_df.shape[0]),
+                    "pullback_avg_trade_net_return": float(pullback_trades_df["net_return"].mean()),
+                    "pullback_win_rate": float((pullback_trades_df["net_return"] > 0).mean()),
+                    "pullback_total_return": pullback_total_return,
+                }
+            ]
+        )
     if not event_summary.empty:
         event_summary = event_summary.sort_values("horizon").reset_index(drop=True)
 
@@ -1701,6 +1795,8 @@ def run_bull_market_new_high_momentum_backtest(
         "daily_returns": daily_df,
         "event_study": event_summary,
         "summary": summary_df,
+        "pullback_trades": pullback_trades_df,
+        "pullback_summary": pullback_summary_df,
     }
 
 

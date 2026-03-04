@@ -5317,6 +5317,10 @@ def main():
             st.session_state["bull_breakout_signals"] = None
         if "bull_breakout_daily_returns" not in st.session_state:
             st.session_state["bull_breakout_daily_returns"] = None
+        if "bull_breakout_pullback_trades" not in st.session_state:
+            st.session_state["bull_breakout_pullback_trades"] = None
+        if "bull_breakout_pullback_summary" not in st.session_state:
+            st.session_state["bull_breakout_pullback_summary"] = None
 
         backtest_col1, backtest_col2 = st.columns(2)
         with backtest_col1:
@@ -5595,6 +5599,15 @@ def main():
                 step=1.0,
                 key="bull_one_way_cost_bps",
             )
+            bull_pullback_pct = st.number_input(
+                "押し目率（%）",
+                min_value=0.0,
+                max_value=20.0,
+                value=3.0,
+                step=0.5,
+                key="bull_pullback_pct",
+                help="シグナル日の終値からこの割合だけ下落した押し目を待ってエントリーします。",
+            )
         with bull_col2:
             bull_top_liquidity_count = st.number_input(
                 "流動性上位銘柄数",
@@ -5625,6 +5638,14 @@ def main():
                 options=["毎営業日", "月曜のみ"],
                 index=1,
                 key="bull_rebalance_mode",
+            )
+            bull_pullback_wait_days = st.number_input(
+                "押し目待ち最大日数",
+                min_value=1,
+                max_value=60,
+                value=10,
+                step=1,
+                key="bull_pullback_wait_days",
             )
 
         run_bull_breakout_backtest = st.button(
@@ -5657,6 +5678,8 @@ def main():
                     top_liquidity_count=int(bull_top_liquidity_count),
                     one_way_cost_bps=float(bull_one_way_cost_bps),
                     rebalance_weekday=rebalance_weekday,
+                    pullback_wait_days=int(bull_pullback_wait_days),
+                    pullback_pct=float(bull_pullback_pct) / 100.0,
                 )
                 progress_done()
                 st.session_state["bull_breakout_summary"] = result.get("summary")
@@ -5664,12 +5687,16 @@ def main():
                 st.session_state["bull_breakout_trades"] = result.get("trades")
                 st.session_state["bull_breakout_signals"] = result.get("signals")
                 st.session_state["bull_breakout_daily_returns"] = result.get("daily_returns")
+                st.session_state["bull_breakout_pullback_trades"] = result.get("pullback_trades")
+                st.session_state["bull_breakout_pullback_summary"] = result.get("pullback_summary")
 
         bull_summary = st.session_state.get("bull_breakout_summary")
         bull_event_study = st.session_state.get("bull_breakout_event_study")
         bull_trades = st.session_state.get("bull_breakout_trades")
         bull_signals = st.session_state.get("bull_breakout_signals")
         bull_daily_returns = st.session_state.get("bull_breakout_daily_returns")
+        bull_pullback_trades = st.session_state.get("bull_breakout_pullback_trades")
+        bull_pullback_summary = st.session_state.get("bull_breakout_pullback_summary")
 
         if bull_summary is not None and not bull_summary.empty:
             st.markdown("#### サマリー")
@@ -5709,6 +5736,14 @@ def main():
         if bull_signals is not None and not bull_signals.empty:
             st.markdown("#### シグナル一覧（上位200件）")
             st.dataframe(bull_signals.head(200), use_container_width=True)
+
+        if bull_pullback_summary is not None and not bull_pullback_summary.empty:
+            st.markdown("#### 押し目待ちエントリーのサマリー")
+            st.dataframe(bull_pullback_summary, use_container_width=True)
+
+        if bull_pullback_trades is not None and not bull_pullback_trades.empty:
+            st.markdown("#### 押し目待ちトレード一覧（上位200件）")
+            st.dataframe(bull_pullback_trades.head(200), use_container_width=True)
 
         st.markdown("#### ミネルヴィニ条件グリッドサーチ")
         st.caption(

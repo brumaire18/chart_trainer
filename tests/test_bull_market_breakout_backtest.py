@@ -65,11 +65,15 @@ class BullMarketBreakoutBacktestTests(unittest.TestCase):
         self.assertFalse(result["trades"].empty)
         self.assertFalse(result["daily_returns"].empty)
         self.assertFalse(result["event_study"].empty)
+        self.assertIn("pullback_summary", result)
+        self.assertFalse(result["pullback_summary"].empty)
 
         summary = result["summary"].iloc[0]
         self.assertEqual(int(summary["selected_symbols"]), 1)
         self.assertGreaterEqual(float(summary["trades"]), 1)
         self.assertIn("information_ratio", result["summary"].columns)
+        self.assertIn("pullback_trades", result)
+        self.assertIn("pullback_total_return", result["pullback_summary"].columns)
 
     @patch("app.backtest.load_price_csv")
     def test_returns_empty_when_no_symbol_data(self, mock_load_price_csv):
@@ -82,6 +86,7 @@ class BullMarketBreakoutBacktestTests(unittest.TestCase):
 
         self.assertTrue(result["summary"].empty)
         self.assertTrue(result["trades"].empty)
+        self.assertTrue(result["pullback_summary"].empty)
 
 
 if __name__ == "__main__":
