@@ -1704,6 +1704,261 @@ def run_bull_market_new_high_momentum_backtest(
     }
 
 
+def run_ma5_deviation_mean_reversion_backtest(
+    symbols: Optional[Iterable[str]] = None,
+    symbol_price_data: Optional[Dict[str, pd.DataFrame]] = None,
+    top_n: int = 10,
+    entry_timing: str = "next_open",
+    exit_timing: str = "next_open",
+    weight_mode: str = "equal",
+    min_avg_dollar_volume: float = 50_000_000.0,
+    liquidity_lookback: int = 20,
+    volatility_lookback: int = 20,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """5日移動平均乖離の逆張りロングショート戦略を日次で検証する。"""
+
+    valid_timing = {"same_close", "next_open"}
+    if entry_timing not in valid_timing:
+        raise ValueError(f"entry_timing must be one of {valid_timing}: {entry_timing}")
+    if exit_timing not in valid_timing:
+        raise ValueError(f"exit_timing must be one of {valid_timing}: {exit_timing}")
+    valid_weight_mode = {"equal", "volatility_adjusted"}
+    if weight_mode not in valid_weight_mode:
+        raise ValueError(f"weight_mode must be one of {valid_weight_mode}: {weight_mode}")
+
+    raw_symbols = list(symbols) if symbols is not None else get_available_symbols()
+    if "topix" in {str(s).lower() for s in raw_symbols}:
+        raw_symbols = [s for s in raw_symbols if str(s).lower() != "topix"]
+
+    records: List[pd.DataFrame] = []
+    for symbol in raw_symbols:
+        try:
+            if symbol_price_data is not None and symbol in symbol_price_data:
+                df = symbol_price_data[symbol].copy()
+            else:
+                df = load_price_csv(symbol)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        required_cols = {"date", "open", "close", "volume"}
+        if not required_cols.issubset(df.columns):
+            continue
+
+        df = df.sort_values("date").reset_index(drop=True)
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        for col in ["open", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["date", "open", "close", "volume"])
+        if df.empty:
+            continue
+
+        df["symbol"] = str(symbol)
+        df["ma5"] = df["close"].rolling(5).mean()
+        df["deviation"] = df["close"] / df["ma5"] - 1.0
+        df["daily_ret"] = df["close"].pct_change()
+        df["volatility"] = df["daily_ret"].rolling(volatility_lookback).std(ddof=0)
+        df["dollar_volume"] = df["close"] * df["volume"]
+        df["avg_dollar_volume"] = df["dollar_volume"].rolling(liquidity_lookback).mean()
+        df["liquidity_pass"] = df["avg_dollar_volume"] >= min_avg_dollar_volume
+        records.append(
+            df[
+                [
+                    "date",
+                    "symbol",
+                    "open",
+                    "close",
+                    "deviation",
+                    "volatility",
+                    "liquidity_pass",
+                ]
+            ]
+        )
+
+    if not records:
+        return pd.DataFrame(), pd.DataFrame()
+
+    panel_df = pd.concat(records, ignore_index=True)
+    panel_df = panel_df.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+    date_to_cross_section: Dict[pd.Timestamp, pd.DataFrame] = {
+        date: group.copy()
+        for date, group in panel_df.groupby("date", sort=True)
+    }
+    all_dates = sorted(date_to_cross_section.keys())
+
+    trade_records: List[Dict[str, Any]] = []
+    daily_records: List[Dict[str, Any]] = []
+
+    for signal_date in all_dates:
+        cross = date_to_cross_section[signal_date]
+        candidates = cross[
+            cross["liquidity_pass"]
+            & cross["deviation"].notna()
+            & np.isfinite(cross["deviation"])
+        ].copy()
+        if candidates.empty:
+            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            continue
+
+        count_each_side = min(top_n, candidates.shape[0] // 2)
+        if count_each_side <= 0:
+            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            continue
+
+        long_candidates = candidates.nsmallest(count_each_side, "deviation").copy()
+        short_candidates = candidates.nlargest(count_each_side, "deviation").copy()
+        long_candidates["side"] = "long"
+        short_candidates["side"] = "short"
+        picks = pd.concat([long_candidates, short_candidates], ignore_index=True)
+        picks = picks.drop_duplicates(subset=["symbol", "side"])
+
+        entry_date = signal_date
+        if entry_timing == "next_open":
+            next_dates = [d for d in all_dates if d > signal_date]
+            if not next_dates:
+                daily_records.append({"date": signal_date, "strategy_return": 0.0})
+                continue
+            entry_date = next_dates[0]
+
+        exit_date = entry_date
+        if exit_timing == "next_open":
+            next_dates = [d for d in all_dates if d > entry_date]
+            if not next_dates:
+                daily_records.append({"date": signal_date, "strategy_return": 0.0})
+                continue
+            exit_date = next_dates[0]
+
+        entry_cross = date_to_cross_section.get(entry_date)
+        exit_cross = date_to_cross_section.get(exit_date)
+        if entry_cross is None or exit_cross is None:
+            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            continue
+
+        merged = picks.merge(
+            entry_cross[["symbol", "open", "close", "volatility"]].rename(
+                columns={"open": "entry_open", "close": "entry_close", "volatility": "entry_volatility"}
+            ),
+            on="symbol",
+            how="inner",
+        ).merge(
+            exit_cross[["symbol", "open", "close"]].rename(
+                columns={"open": "exit_open", "close": "exit_close"}
+            ),
+            on="symbol",
+            how="inner",
+        )
+        if merged.empty:
+            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            continue
+
+        if entry_timing == "same_close":
+            merged["entry_price"] = merged["entry_close"]
+        else:
+            merged["entry_price"] = merged["entry_open"]
+
+        if exit_timing == "same_close":
+            merged["exit_price"] = merged["exit_close"]
+            exit_reason = "same_day_close"
+        else:
+            merged["exit_price"] = merged["exit_open"]
+            exit_reason = "next_open"
+
+        merged = merged[(merged["entry_price"] > 0) & (merged["exit_price"] > 0)].copy()
+        if merged.empty:
+            daily_records.append({"date": signal_date, "strategy_return": 0.0})
+            continue
+
+        merged["raw_return"] = merged["exit_price"] / merged["entry_price"] - 1.0
+        merged.loc[merged["side"] == "short", "raw_return"] *= -1.0
+
+        if weight_mode == "volatility_adjusted":
+            merged["inv_vol"] = 1.0 / merged["entry_volatility"].replace(0, np.nan)
+            for side in ["long", "short"]:
+                side_mask = merged["side"] == side
+                side_sum = merged.loc[side_mask, "inv_vol"].sum()
+                if side_sum > 0:
+                    merged.loc[side_mask, "weight"] = 0.5 * (merged.loc[side_mask, "inv_vol"] / side_sum)
+                else:
+                    side_count = int(side_mask.sum())
+                    if side_count > 0:
+                        merged.loc[side_mask, "weight"] = 0.5 / side_count
+        else:
+            for side in ["long", "short"]:
+                side_mask = merged["side"] == side
+                side_count = int(side_mask.sum())
+                if side_count > 0:
+                    merged.loc[side_mask, "weight"] = 0.5 / side_count
+
+        merged["weighted_return"] = merged["raw_return"] * merged["weight"]
+        portfolio_ret = float(merged["weighted_return"].sum())
+        daily_records.append({"date": exit_date, "strategy_return": portfolio_ret})
+
+        for _, row in merged.iterrows():
+            trade_records.append(
+                {
+                    "symbol": row["symbol"],
+                    "direction": row["side"],
+                    "signal_date": pd.Timestamp(signal_date),
+                    "entry_date": pd.Timestamp(entry_date),
+                    "exit_date": pd.Timestamp(exit_date),
+                    "entry_price": float(row["entry_price"]),
+                    "exit_price": float(row["exit_price"]),
+                    "weight": float(row["weight"]),
+                    "pnl": float(row["weighted_return"]),
+                    "raw_return": float(row["raw_return"]),
+                    "deviation": float(row["deviation"]),
+                    "exit_reason": exit_reason,
+                }
+            )
+
+    trades_df = pd.DataFrame(trade_records)
+    if not daily_records:
+        return trades_df, pd.DataFrame()
+
+    daily_df = (
+        pd.DataFrame(daily_records)
+        .groupby("date", as_index=False)
+        .agg(strategy_return=("strategy_return", "sum"))
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    daily_df["equity_curve"] = (1.0 + daily_df["strategy_return"]).cumprod()
+
+    if daily_df.empty:
+        return trades_df, pd.DataFrame()
+
+    ann_factor = 252.0
+    total_return = float(daily_df["equity_curve"].iloc[-1] - 1.0)
+    years = max(float(len(daily_df)) / ann_factor, 1.0 / ann_factor)
+    cagr = float((1.0 + total_return) ** (1.0 / years) - 1.0)
+    std_daily = float(daily_df["strategy_return"].std(ddof=1))
+    mean_daily = float(daily_df["strategy_return"].mean())
+    sharpe = (mean_daily / std_daily) * np.sqrt(ann_factor) if std_daily > 0 else np.nan
+    dd = daily_df["equity_curve"] / daily_df["equity_curve"].cummax() - 1.0
+    mdd = float(dd.min()) if not dd.empty else 0.0
+
+    win_rate = float((trades_df["raw_return"] > 0).mean()) if not trades_df.empty else np.nan
+    summary_df = pd.DataFrame(
+        [
+            {
+                "strategy": "ma5_deviation_mean_reversion",
+                "top_n": int(top_n),
+                "entry_timing": entry_timing,
+                "exit_timing": exit_timing,
+                "weight_mode": weight_mode,
+                "trade_count": int(trades_df.shape[0]),
+                "win_rate": win_rate,
+                "cagr": cagr,
+                "sharpe": sharpe,
+                "max_drawdown": mdd,
+                "total_return": total_return,
+            }
+        ]
+    )
+    return trades_df, summary_df
+
+
 def grid_search_selling_climax(
     symbols: Optional[Iterable[str]] = None,
     seed: int = 42,
