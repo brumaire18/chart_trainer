@@ -3991,6 +3991,20 @@ def main():
             step=0.05,
             help="取っ手の序盤と終盤を比較し、出来高縮小傾向を確認します。",
         )
+        cup_handle_enable_aggregation = st.checkbox(
+            "同日候補を品質スコアで集約",
+            value=True,
+            help="同じシグナル日で複数候補がある場合、品質スコアの高い候補のみ採用します。",
+        )
+        cup_handle_aggregation_mode = st.selectbox(
+            "集約単位",
+            options=["date", "date_window"],
+            format_func=lambda v: {
+                "date": "date単位（同日で最高スコアのみ）",
+                "date_window": "date + cup_window + handle_window単位",
+            }[v],
+            index=0,
+        )
         cup_handle_enable_symmetry_check = st.checkbox(
             "左右非対称チェックを有効化",
             value=False,
@@ -4166,6 +4180,8 @@ def main():
                     "cup_handle_rs_min": float(cup_handle_rs_min),
                     "cup_handle_breakout_vol": float(cup_handle_breakout_vol),
                     "cup_handle_dry_vol_ratio": float(cup_handle_dry_vol_ratio),
+                    "cup_handle_enable_aggregation": bool(cup_handle_enable_aggregation),
+                    "cup_handle_aggregation_mode": str(cup_handle_aggregation_mode),
                     "cup_handle_enable_symmetry_check": bool(cup_handle_enable_symmetry_check),
                     "cup_handle_max_duration_ratio": float(cup_handle_max_duration_ratio),
                     "cup_handle_max_slope_ratio": float(cup_handle_max_slope_ratio),
@@ -4437,6 +4453,8 @@ def main():
                             rs_min_change=cup_handle_rs_min,
                             breakout_volume_multiplier=cup_handle_breakout_vol,
                             handle_dry_volume_ratio=cup_handle_dry_vol_ratio,
+                            enable_aggregation=cup_handle_enable_aggregation,
+                            aggregation_mode=cup_handle_aggregation_mode,
                             min_handle_days=cup_handle_min_days,
                             handle_slope_min=cup_handle_slope_min,
                             handle_slope_max=cup_handle_slope_max,
@@ -4538,6 +4556,10 @@ def main():
                         cup_handle_volume = None
                         cup_handle_slope = None
                         cup_handle_vol_contraction = None
+                        cup_handle_quality_score = None
+                        cup_handle_score_volume = None
+                        cup_handle_score_rs = None
+                        cup_handle_score_handle_depth = None
                         cup_handle_date = None
                         if cup_handle_signal:
                             cup_handle_weeks = cup_handle_signal["cup_window"] / 5
@@ -4549,6 +4571,10 @@ def main():
                             cup_handle_vol_contraction = cup_handle_signal.get(
                                 "handle_volume_contraction_rate"
                             )
+                            cup_handle_quality_score = cup_handle_signal.get("quality_score")
+                            cup_handle_score_volume = cup_handle_signal.get("score_breakout_volume")
+                            cup_handle_score_rs = cup_handle_signal.get("score_rs_change")
+                            cup_handle_score_handle_depth = cup_handle_signal.get("score_handle_depth")
                             cup_handle_date = cup_handle_signal["date"]
                         screening_results.append(
                             {
@@ -4587,6 +4613,26 @@ def main():
                                 "取っ手出来高収縮率": (
                                     round(cup_handle_vol_contraction, 4)
                                     if cup_handle_vol_contraction is not None
+                                    else None
+                                ),
+                                "取っ手品質スコア": (
+                                    round(cup_handle_quality_score, 4)
+                                    if cup_handle_quality_score is not None
+                                    else None
+                                ),
+                                "スコア内訳_出来高": (
+                                    round(cup_handle_score_volume, 4)
+                                    if cup_handle_score_volume is not None
+                                    else None
+                                ),
+                                "スコア内訳_RS": (
+                                    round(cup_handle_score_rs, 4)
+                                    if cup_handle_score_rs is not None
+                                    else None
+                                ),
+                                "スコア内訳_ハンドル深さ": (
+                                    round(cup_handle_score_handle_depth, 4)
+                                    if cup_handle_score_handle_depth is not None
                                     else None
                                 ),
                                 "新高値シグナル日": new_high_date,
