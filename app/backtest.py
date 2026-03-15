@@ -855,6 +855,8 @@ def scan_cup_with_handle_screen(
     handle_slope_max: float = 0.01,
     handle_volume_half_max_ratio: float = 1.0,
     handle_volume_front_back_max_ratio: float = 1.0,
+    enable_aggregation: bool = False,
+    aggregation_mode: str = "date",
 ) -> List[Dict[str, float]]:
     """
     取っ手付きカップのスクリーニング条件を満たすブレイクアウトを探索する。
@@ -871,6 +873,12 @@ def scan_cup_with_handle_screen(
 
     df_sorted = df.sort_values("date").reset_index(drop=True)
     df_ind = _compute_indicators(df_sorted)
+
+    allowed_aggregation_modes = {"date", "date_window"}
+    if aggregation_mode not in allowed_aggregation_modes:
+        raise ValueError(
+            f"aggregation_mode must be one of {sorted(allowed_aggregation_modes)}: {aggregation_mode}"
+        )
 
     results: List[Dict[str, float]] = []
     max_window = max(cup_windows) + max(handle_windows)
@@ -948,6 +956,23 @@ def scan_cup_with_handle_screen(
                 if rs_change < rs_min_change:
                     continue
 
+                handle_depth = float(pattern_info.get("handle_depth", np.nan))
+                depth_goodness = 0.0
+                if handle_max_depth > 0 and pd.notna(handle_depth):
+                    depth_goodness = max(0.0, min(1.0, 1.0 - (handle_depth / handle_max_depth)))
+
+                volume_excess = max(0.0, breakout_volume_ratio - breakout_volume_multiplier)
+                breakout_volume_score = min(1.0, volume_excess / max(1.0, breakout_volume_multiplier))
+
+                rs_improvement = max(0.0, rs_change - rs_min_change)
+                rs_score = min(1.0, rs_improvement / 20.0)
+
+                quality_score = (
+                    breakout_volume_score * 0.4
+                    + rs_score * 0.35
+                    + depth_goodness * 0.25
+                )
+
                 results.append(
                     {
                         "date": breakout_row["date"],
@@ -969,10 +994,33 @@ def scan_cup_with_handle_screen(
                         "handle_volume_front_back_ratio": float(
                             pattern_info["handle_volume_front_back_ratio"]
                         ),
+                        "handle_depth": handle_depth,
+                        "quality_score": float(quality_score),
+                        "score_breakout_volume": float(breakout_volume_score),
+                        "score_rs_change": float(rs_score),
+                        "score_handle_depth": float(depth_goodness),
                     }
                 )
 
-    return results
+    if not enable_aggregation:
+        return results
+
+    grouped_results: Dict[Tuple[Any, ...], Dict[str, float]] = {}
+    for row in results:
+        if aggregation_mode == "date":
+            group_key = (pd.Timestamp(row["date"]).normalize(),)
+        else:
+            group_key = (
+                pd.Timestamp(row["date"]).normalize(),
+                int(row["cup_window"]),
+                int(row["handle_window"]),
+            )
+
+        existing = grouped_results.get(group_key)
+        if existing is None or row["quality_score"] > existing["quality_score"]:
+            grouped_results[group_key] = row
+
+    return sorted(grouped_results.values(), key=lambda item: item["date"])
 
 
 def run_canslim_backtest(
