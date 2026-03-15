@@ -3952,6 +3952,55 @@ def main():
             step=0.05,
             help="取っ手期間の出来高が平均より小さいことを判定します。",
         )
+        cup_handle_enable_symmetry_check = st.checkbox(
+            "左右非対称チェックを有効化",
+            value=False,
+            help="左右ピークとボトム位置から、期間比・傾き比が極端なパターンを除外します。",
+        )
+        cup_handle_max_duration_ratio = st.slider(
+            "左右の期間比上限",
+            min_value=1.0,
+            max_value=8.0,
+            value=4.0,
+            step=0.1,
+        )
+        cup_handle_max_slope_ratio = st.slider(
+            "左右の傾き比上限",
+            min_value=1.0,
+            max_value=8.0,
+            value=4.0,
+            step=0.1,
+        )
+        cup_handle_require_bottom_stay = st.checkbox(
+            "ボトム滞在チェックを有効化",
+            value=False,
+            help="ボトム付近に一定本数滞在していない1日ヒゲ底を除外します。",
+        )
+        cup_handle_min_bottom_stay_bars = st.slider(
+            "ボトム滞在の最小本数",
+            min_value=1,
+            max_value=10,
+            value=2,
+        )
+        cup_handle_bottom_tolerance_pct = st.slider(
+            "ボトム近傍判定の許容幅（%）",
+            min_value=0.0,
+            max_value=10.0,
+            value=3.0,
+            step=0.1,
+        )
+        cup_handle_limit_recovery_speed = st.checkbox(
+            "急峻V字除外チェックを有効化",
+            value=False,
+            help="ボトム前後の回復速度が速すぎるパターンを除外します。",
+        )
+        cup_handle_max_recovery_speed_per_bar = st.slider(
+            "1本あたり回復速度上限（左ピーク比）",
+            min_value=0.01,
+            max_value=0.5,
+            value=0.2,
+            step=0.01,
+        )
         apply_weekly_volume_quartile = st.checkbox(
             "週足売買代金上位1/4を抽出",
             value=False,
@@ -4078,6 +4127,14 @@ def main():
                     "cup_handle_rs_min": float(cup_handle_rs_min),
                     "cup_handle_breakout_vol": float(cup_handle_breakout_vol),
                     "cup_handle_dry_vol_ratio": float(cup_handle_dry_vol_ratio),
+                    "cup_handle_enable_symmetry_check": bool(cup_handle_enable_symmetry_check),
+                    "cup_handle_max_duration_ratio": float(cup_handle_max_duration_ratio),
+                    "cup_handle_max_slope_ratio": float(cup_handle_max_slope_ratio),
+                    "cup_handle_require_bottom_stay": bool(cup_handle_require_bottom_stay),
+                    "cup_handle_min_bottom_stay_bars": int(cup_handle_min_bottom_stay_bars),
+                    "cup_handle_bottom_tolerance_pct": float(cup_handle_bottom_tolerance_pct),
+                    "cup_handle_limit_recovery_speed": bool(cup_handle_limit_recovery_speed),
+                    "cup_handle_max_recovery_speed_per_bar": float(cup_handle_max_recovery_speed_per_bar),
                     "apply_weekly_volume_quartile": apply_weekly_volume_quartile,
                     "screen_new_high": screen_new_high,
                     "screen_selling_climax": screen_selling_climax,
@@ -4341,6 +4398,14 @@ def main():
                             rs_min_change=cup_handle_rs_min,
                             breakout_volume_multiplier=cup_handle_breakout_vol,
                             handle_dry_volume_ratio=cup_handle_dry_vol_ratio,
+                            enable_peak_bottom_symmetry_check=cup_handle_enable_symmetry_check,
+                            max_left_right_duration_ratio=cup_handle_max_duration_ratio,
+                            max_left_right_slope_ratio=cup_handle_max_slope_ratio,
+                            require_bottom_stay=cup_handle_require_bottom_stay,
+                            min_bottom_stay_bars=cup_handle_min_bottom_stay_bars,
+                            bottom_stay_tolerance_ratio=cup_handle_bottom_tolerance_pct / 100,
+                            limit_recovery_speed=cup_handle_limit_recovery_speed,
+                            max_recovery_speed_per_bar=cup_handle_max_recovery_speed_per_bar,
                         )
                         if signals:
                             cup_handle_signal = max(signals, key=lambda item: item["date"])
