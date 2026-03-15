@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from app.pair_trading import generate_pairs_by_sector_candidates
+from app.pair_trading import compute_fdr_qvalues, generate_pairs_by_sector_candidates
 from ui_streamlit import (
     _apply_checked_codes_to_groups,
     _build_search_result_df,
@@ -19,6 +19,8 @@ from ui_streamlit import (
     _filter_symbols_by_search,
     _apply_breadth_exclusions,
     _build_swing_point_series,
+    _apply_pair_stat_filter,
+    _filter_pairs_by_manual_groups,
     _build_sector_group_symbol_map,
     _group_matches_sector_filter,
     _filter_symbol_disclosures,
@@ -531,6 +533,57 @@ class ManualGroupSectorVisibilityTest(unittest.TestCase):
         self.assertFalse(
             _group_matches_sector_filter("横断", group_master, "17業種", "輸送用機器")
         )
+
+
+
+
+class PairStatFilterTests(unittest.TestCase):
+    def test_compute_fdr_qvalues_returns_monotonic_values(self):
+        q_values = compute_fdr_qvalues(pd.Series([0.01, 0.04, 0.03, float("nan")]))
+
+        self.assertAlmostEqual(float(q_values.iloc[0]), 0.03, places=6)
+        self.assertAlmostEqual(float(q_values.iloc[1]), 0.04, places=6)
+        self.assertAlmostEqual(float(q_values.iloc[2]), 0.04, places=6)
+        self.assertTrue(pd.isna(q_values.iloc[3]))
+
+    def test_apply_pair_stat_filter_with_q_value(self):
+        df = pd.DataFrame(
+            {
+                "symbol_a": ["1111", "2222", "3333"],
+                "symbol_b": ["4444", "5555", "6666"],
+                "p_value": [0.01, 0.04, 0.20],
+            }
+        )
+
+        out = _apply_pair_stat_filter(df, stat_filter_type="q_value", stat_filter_threshold=0.05)
+
+        self.assertEqual(len(out), 1)
+        self.assertIn("q_value", out.columns)
+
+
+
+
+class PairManualGroupFilterTests(unittest.TestCase):
+    def test_keeps_group_internal_and_ungrouped_pairs(self):
+        pairs_df = pd.DataFrame(
+            {
+                "symbol_a": ["1111", "1111", "8888"],
+                "symbol_b": ["2222", "3333", "9999"],
+            }
+        )
+        custom_groups = {"G1": ["1111", "2222"], "G2": ["3333", "4444"]}
+
+        out = _filter_pairs_by_manual_groups(pairs_df, custom_groups)
+
+        self.assertEqual(out[["symbol_a", "symbol_b"]].values.tolist(), [["1111", "2222"], ["8888", "9999"]])
+
+    def test_excludes_pair_when_only_one_side_grouped(self):
+        pairs_df = pd.DataFrame({"symbol_a": ["1111"], "symbol_b": ["7777"]})
+        custom_groups = {"G1": ["1111", "2222"]}
+
+        out = _filter_pairs_by_manual_groups(pairs_df, custom_groups)
+
+        self.assertTrue(out.empty)
 
 
 

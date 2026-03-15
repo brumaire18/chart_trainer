@@ -875,7 +875,27 @@ def evaluate_pair_candidates(
     for column in numeric_columns:
         if column in results_df.columns:
             results_df[column] = pd.to_numeric(results_df[column], errors="coerce")
+    if "p_value" in results_df.columns:
+        results_df["q_value"] = compute_fdr_qvalues(results_df["p_value"])
     return results_df
+
+
+def compute_fdr_qvalues(p_values: pd.Series) -> pd.Series:
+    """Compute Benjamini-Hochberg FDR q-values from p-values."""
+    series = pd.to_numeric(pd.Series(p_values), errors="coerce")
+    q_values = pd.Series(np.nan, index=series.index, dtype=float)
+    valid = series.dropna()
+    if valid.empty:
+        return q_values
+
+    ordered = valid.sort_values()
+    n = float(len(ordered))
+    ranks = np.arange(1, len(ordered) + 1, dtype=float)
+    bh = (ordered.to_numpy(dtype=float) * n) / ranks
+    bh = np.minimum.accumulate(bh[::-1])[::-1]
+    bh = np.clip(bh, 0.0, 1.0)
+    q_values.loc[ordered.index] = bh
+    return q_values
 
 
 def _is_same_index_etf_pair(
