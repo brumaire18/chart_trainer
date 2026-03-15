@@ -4206,6 +4206,7 @@ def main():
                 macd_debug_logs = [] if macd_debug else None
                 failure_logs = []
                 reason_counter = Counter()
+                cup_handle_diagnostics = Counter()
                 weekly_turnover_map = {}
                 weekly_turnover_threshold = None
 
@@ -4439,7 +4440,7 @@ def main():
                                 5,
                             )
                         )
-                        signals = scan_cup_with_handle_screen(
+                        cup_handle_scan_result = scan_cup_with_handle_screen(
                             df_ind_full,
                             lookback_days=cup_handle_lookback_days,
                             cup_windows=cup_windows,
@@ -4468,7 +4469,10 @@ def main():
                             bottom_stay_tolerance_ratio=cup_handle_bottom_tolerance_pct / 100,
                             limit_recovery_speed=cup_handle_limit_recovery_speed,
                             max_recovery_speed_per_bar=cup_handle_max_recovery_speed_per_bar,
+                            return_diagnostics=True,
                         )
+                        signals, cup_handle_diag_map = cup_handle_scan_result
+                        cup_handle_diagnostics.update(cup_handle_diag_map)
                         if signals:
                             cup_handle_signal = max(signals, key=lambda item: item["date"])
                         else:
@@ -4682,6 +4686,7 @@ def main():
                 st.session_state["macd_debug_logs"] = macd_debug_logs or []
                 st.session_state["screening_failure_logs"] = failure_logs
                 st.session_state["screening_reason_counter"] = reason_counter
+                st.session_state["cup_handle_diagnostics"] = dict(cup_handle_diagnostics)
 
         if screening_results is None:
             st.info("条件を設定して『スクリーニングを実行』を押してください。")
@@ -4690,6 +4695,22 @@ def main():
             df_result = df_result.sort_values("日次騰落率%", ascending=False, na_position="last")
             st.success(f"{len(df_result)} 銘柄が条件に合致しました。")
             st.dataframe(df_result, use_container_width=True)
+            cup_handle_diag_counter = Counter(st.session_state.get("cup_handle_diagnostics", {}))
+            if apply_cup_handle_condition and cup_handle_diag_counter:
+                total_diag = sum(cup_handle_diag_counter.values())
+                top_diag_reason, top_diag_count = cup_handle_diag_counter.most_common(1)[0]
+                st.caption(
+                    "取っ手付きカップ診断: "
+                    f"主因={top_diag_reason} ({top_diag_count}/{total_diag}件)"
+                )
+                with st.expander("取っ手付きカップ診断サマリ", expanded=False):
+                    diag_df = pd.DataFrame(
+                        [
+                            {"理由": reason, "件数": count, "比率%": round(count / total_diag * 100, 1)}
+                            for reason, count in cup_handle_diag_counter.most_common()
+                        ]
+                    )
+                    st.dataframe(diag_df, use_container_width=True)
             enable_preview = st.checkbox(
                 "日足チャートプレビューを表示（件数が多い場合は負荷が高くなります）",
                 value=False,
@@ -4785,7 +4806,23 @@ def main():
                         st.plotly_chart(preview_fig, use_container_width=True)
         else:
             reason_counter = st.session_state.get("screening_reason_counter", Counter())
+            cup_handle_diag_counter = Counter(st.session_state.get("cup_handle_diagnostics", {}))
             total_failures = sum(reason_counter.values())
+            if apply_cup_handle_condition and cup_handle_diag_counter:
+                total_diag = sum(cup_handle_diag_counter.values())
+                top_diag_reason, top_diag_count = cup_handle_diag_counter.most_common(1)[0]
+                st.caption(
+                    "取っ手付きカップ診断: "
+                    f"主因={top_diag_reason} ({top_diag_count}/{total_diag}件)"
+                )
+                with st.expander("取っ手付きカップ診断サマリ", expanded=False):
+                    diag_df = pd.DataFrame(
+                        [
+                            {"理由": reason, "件数": count, "比率%": round(count / total_diag * 100, 1)}
+                            for reason, count in cup_handle_diag_counter.most_common()
+                        ]
+                    )
+                    st.dataframe(diag_df, use_container_width=True)
             if total_failures:
                 summary_text = ", ".join(
                     [

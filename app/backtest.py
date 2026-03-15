@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from itertools import product
 import random
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -857,7 +857,8 @@ def scan_cup_with_handle_screen(
     handle_volume_front_back_max_ratio: float = 1.0,
     enable_aggregation: bool = False,
     aggregation_mode: str = "date",
-) -> List[Dict[str, float]]:
+    return_diagnostics: bool = False,
+) -> Union[List[Dict[str, float]], Tuple[List[Dict[str, float]], Dict[str, int]]]:
     """
     取っ手付きカップのスクリーニング条件を満たすブレイクアウトを探索する。
 
@@ -865,8 +866,20 @@ def scan_cup_with_handle_screen(
         条件を満たしたブレイクアウトの情報を辞書で返す。
     """
 
+    diagnostics: Dict[str, int] = {}
+
+    def add_diag(reason: str) -> None:
+        diagnostics[reason] = diagnostics.get(reason, 0) + 1
+
+    def finalize(
+        rows: List[Dict[str, float]],
+    ) -> Union[List[Dict[str, float]], Tuple[List[Dict[str, float]], Dict[str, int]]]:
+        if return_diagnostics:
+            return rows, diagnostics
+        return rows
+
     if df.empty:
-        return []
+        return finalize([])
 
     cup_windows = cup_windows or [50]
     handle_windows = handle_windows or [10]
@@ -888,16 +901,19 @@ def scan_cup_with_handle_screen(
         breakout_row = df_ind.iloc[idx]
         volume_sma = breakout_row.get("volume_sma20")
         if pd.isna(volume_sma) or volume_sma <= 0:
+            add_diag("volume_sma_missing")
             continue
 
         breakout_volume_ratio = float(breakout_row["volume"] / volume_sma)
         if breakout_volume_ratio < breakout_volume_multiplier:
+            add_diag("volume_ng")
             continue
 
         for cup_window in cup_windows:
             for handle_window in handle_windows:
                 min_window = cup_window + handle_window
                 if idx - min_window < 0:
+                    add_diag("window_short")
                     continue
 
                 pattern_info = _detect_pattern(
@@ -923,37 +939,46 @@ def scan_cup_with_handle_screen(
                     handle_volume_front_back_max_ratio=handle_volume_front_back_max_ratio,
                 )
                 if pattern_info is None:
+                    add_diag("pattern_ng")
                     continue
 
                 if breakout_row["close"] <= pattern_info["right_peak"]:
+                    add_diag("breakout_price_ng")
                     continue
 
                 price_gain = (breakout_row["close"] - pattern_info["bottom"]) / pattern_info["bottom"]
                 if price_gain < min_price_gain:
+                    add_diag("price_gain_ng")
                     continue
 
                 handle_slice = df_ind.iloc[idx - handle_window : idx]
                 if handle_slice.empty:
+                    add_diag("handle_data_missing")
                     continue
 
                 handle_volume_avg = float(handle_slice["volume"].mean())
                 handle_volume_sma = float(handle_slice["volume_sma20"].mean())
                 if handle_volume_sma <= 0 or handle_volume_avg > handle_volume_sma * handle_dry_volume_ratio:
+                    add_diag("handle_volume_ng")
                     continue
 
                 handle_low = float(handle_slice["close"].min())
                 handle_sma_max = float(handle_slice["sma50"].max())
                 if pd.isna(handle_sma_max) or handle_low < handle_sma_max:
+                    add_diag("handle_sma50_ng")
                     continue
 
                 if "topix_rs" not in df_ind.columns or idx - rs_lookback < 0:
+                    add_diag("rs_missing")
                     continue
                 rs_now = df_ind.iloc[idx]["topix_rs"]
                 rs_prev = df_ind.iloc[idx - rs_lookback]["topix_rs"]
                 if pd.isna(rs_now) or pd.isna(rs_prev) or rs_prev == 0:
+                    add_diag("rs_invalid")
                     continue
                 rs_change = (rs_now / rs_prev - 1) * 100
                 if rs_change < rs_min_change:
+                    add_diag("rs_ng")
                     continue
 
                 handle_depth = float(pattern_info.get("handle_depth", np.nan))
@@ -1003,7 +1028,7 @@ def scan_cup_with_handle_screen(
                 )
 
     if not enable_aggregation:
-        return results
+        return finalize(results)
 
     grouped_results: Dict[Tuple[Any, ...], Dict[str, float]] = {}
     for row in results:
@@ -1020,7 +1045,7 @@ def scan_cup_with_handle_screen(
         if existing is None or row["quality_score"] > existing["quality_score"]:
             grouped_results[group_key] = row
 
-    return sorted(grouped_results.values(), key=lambda item: item["date"])
+    return finalize(sorted(grouped_results.values(), key=lambda item: item["date"]))
 
 
 def run_canslim_backtest(
