@@ -3952,6 +3952,45 @@ def main():
             step=0.05,
             help="取っ手期間の出来高が平均より小さいことを判定します。",
         )
+        cup_handle_min_days = st.slider(
+            "取っ手最小日数",
+            min_value=3,
+            max_value=20,
+            value=5,
+            help="取っ手日数が短すぎるケースを除外します。",
+        )
+        cup_handle_slope_min = st.slider(
+            "取っ手回帰傾きの下限（終値/右ピーク, 1日あたり）",
+            min_value=-0.10,
+            max_value=0.0,
+            value=-0.03,
+            step=0.005,
+            help="急落しすぎるハンドルを除外します。",
+        )
+        cup_handle_slope_max = st.slider(
+            "取っ手回帰傾きの上限（終値/右ピーク, 1日あたり）",
+            min_value=0.0,
+            max_value=0.10,
+            value=0.01,
+            step=0.005,
+            help="上向きすぎるハンドルを除外します。",
+        )
+        cup_handle_half_vol_ratio_max = st.slider(
+            "取っ手後半/前半出来高比 上限",
+            min_value=0.1,
+            max_value=1.5,
+            value=1.0,
+            step=0.05,
+            help="後半の平均出来高が前半より増えていないことを確認します。",
+        )
+        cup_handle_front_back_vol_ratio_max = st.slider(
+            "取っ手終盤/序盤出来高比 上限",
+            min_value=0.1,
+            max_value=1.5,
+            value=1.0,
+            step=0.05,
+            help="取っ手の序盤と終盤を比較し、出来高縮小傾向を確認します。",
+        )
         cup_handle_enable_symmetry_check = st.checkbox(
             "左右非対称チェックを有効化",
             value=False,
@@ -4398,6 +4437,11 @@ def main():
                             rs_min_change=cup_handle_rs_min,
                             breakout_volume_multiplier=cup_handle_breakout_vol,
                             handle_dry_volume_ratio=cup_handle_dry_vol_ratio,
+                            min_handle_days=cup_handle_min_days,
+                            handle_slope_min=cup_handle_slope_min,
+                            handle_slope_max=cup_handle_slope_max,
+                            handle_volume_half_max_ratio=cup_handle_half_vol_ratio_max,
+                            handle_volume_front_back_max_ratio=cup_handle_front_back_vol_ratio_max,
                             enable_peak_bottom_symmetry_check=cup_handle_enable_symmetry_check,
                             max_left_right_duration_ratio=cup_handle_max_duration_ratio,
                             max_left_right_slope_ratio=cup_handle_max_slope_ratio,
@@ -4492,6 +4536,8 @@ def main():
                         cup_handle_rs_change = None
                         cup_handle_gain = None
                         cup_handle_volume = None
+                        cup_handle_slope = None
+                        cup_handle_vol_contraction = None
                         cup_handle_date = None
                         if cup_handle_signal:
                             cup_handle_weeks = cup_handle_signal["cup_window"] / 5
@@ -4499,6 +4545,10 @@ def main():
                             cup_handle_rs_change = cup_handle_signal["rs_change"]
                             cup_handle_gain = cup_handle_signal["price_gain"] * 100
                             cup_handle_volume = cup_handle_signal["breakout_volume_ratio"]
+                            cup_handle_slope = cup_handle_signal.get("handle_slope")
+                            cup_handle_vol_contraction = cup_handle_signal.get(
+                                "handle_volume_contraction_rate"
+                            )
                             cup_handle_date = cup_handle_signal["date"]
                         screening_results.append(
                             {
@@ -4530,6 +4580,14 @@ def main():
                                 ),
                                 "取っ手付きカップ出来高倍率": (
                                     round(cup_handle_volume, 2) if cup_handle_volume is not None else None
+                                ),
+                                "取っ手傾き": (
+                                    round(cup_handle_slope, 4) if cup_handle_slope is not None else None
+                                ),
+                                "取っ手出来高収縮率": (
+                                    round(cup_handle_vol_contraction, 4)
+                                    if cup_handle_vol_contraction is not None
+                                    else None
                                 ),
                                 "新高値シグナル日": new_high_date,
                                 "セリングクライマックス日": selling_climax_date,

@@ -277,25 +277,75 @@ def _analyze_cup_base(
 
 def _analyze_handle(
     handle_prices: pd.Series,
+    handle_volumes: pd.Series,
     right_peak: float,
     handle_max_depth: float,
-) -> bool:
+    min_handle_days: int = 5,
+    handle_slope_min: float = -0.03,
+    handle_slope_max: float = 0.01,
+    handle_volume_half_max_ratio: float = 1.0,
+    handle_volume_front_back_max_ratio: float = 1.0,
+) -> Optional[Dict[str, float]]:
     """ハンドル部分の浅さを確認する。"""
 
-    if handle_prices.empty or right_peak <= 0:
-        return False
+    if handle_prices.empty or handle_volumes.empty or right_peak <= 0:
+        return None
+
+    if len(handle_prices) < int(min_handle_days):
+        return None
 
     handle_low = float(handle_prices.min())
     handle_high = float(handle_prices.max())
     handle_depth = (right_peak - handle_low) / right_peak
 
     if handle_depth > handle_max_depth:
-        return False
+        return None
 
     if handle_high > right_peak * 1.02:
-        return False
+        return None
 
-    return True
+    handle_index = np.arange(len(handle_prices), dtype=float)
+    normalized_prices = handle_prices.to_numpy(dtype=float) / float(right_peak)
+    if np.isnan(normalized_prices).any():
+        return None
+    handle_slope = float(np.polyfit(handle_index, normalized_prices, 1)[0])
+    if handle_slope < float(handle_slope_min) or handle_slope > float(handle_slope_max):
+        return None
+
+    half_idx = len(handle_volumes) // 2
+    if half_idx <= 0:
+        return None
+    first_half_vol = handle_volumes.iloc[:half_idx]
+    second_half_vol = handle_volumes.iloc[half_idx:]
+    if first_half_vol.empty or second_half_vol.empty:
+        return None
+
+    first_half_avg = float(first_half_vol.mean())
+    second_half_avg = float(second_half_vol.mean())
+    if first_half_avg <= 0:
+        return None
+
+    second_half_ratio = second_half_avg / first_half_avg
+    if second_half_ratio > float(handle_volume_half_max_ratio):
+        return None
+
+    edge_span = max(1, len(handle_volumes) // 3)
+    front_avg = float(handle_volumes.iloc[:edge_span].mean())
+    back_avg = float(handle_volumes.iloc[-edge_span:].mean())
+    if front_avg <= 0:
+        return None
+    front_back_ratio = back_avg / front_avg
+    if front_back_ratio > float(handle_volume_front_back_max_ratio):
+        return None
+
+    volume_contraction_rate = 1.0 - second_half_ratio
+
+    return {
+        "handle_slope": handle_slope,
+        "handle_volume_second_half_ratio": second_half_ratio,
+        "handle_volume_front_back_ratio": front_back_ratio,
+        "handle_volume_contraction_rate": volume_contraction_rate,
+    }
 
 
 def _detect_pattern(
@@ -314,6 +364,11 @@ def _detect_pattern(
     bottom_stay_tolerance_ratio: float = 0.03,
     limit_recovery_speed: bool = False,
     max_recovery_speed_per_bar: float = 0.2,
+    min_handle_days: int = 5,
+    handle_slope_min: float = -0.03,
+    handle_slope_max: float = 0.01,
+    handle_volume_half_max_ratio: float = 1.0,
+    handle_volume_front_back_max_ratio: float = 1.0,
 ) -> Optional[Dict[str, float]]:
     """指定した窗口でカップ/ソーサーとハンドルの形状を確認する。"""
 
@@ -323,6 +378,7 @@ def _detect_pattern(
 
     cup_prices = df["close"].iloc[start : idx - handle_window]
     handle_prices = df["close"].iloc[idx - handle_window : idx]
+    handle_volumes = df["volume"].iloc[idx - handle_window : idx]
 
     base_info = _analyze_cup_base(
         cup_prices,
@@ -341,7 +397,18 @@ def _detect_pattern(
     if base_info is None:
         return None
 
-    if not _analyze_handle(handle_prices, base_info["right_peak"], handle_max_depth):
+    handle_info = _analyze_handle(
+        handle_prices,
+        handle_volumes,
+        base_info["right_peak"],
+        handle_max_depth,
+        min_handle_days=min_handle_days,
+        handle_slope_min=handle_slope_min,
+        handle_slope_max=handle_slope_max,
+        handle_volume_half_max_ratio=handle_volume_half_max_ratio,
+        handle_volume_front_back_max_ratio=handle_volume_front_back_max_ratio,
+    )
+    if handle_info is None:
         return None
 
     handle_low = float(handle_prices.min())
@@ -350,6 +417,7 @@ def _detect_pattern(
     base_info["handle_low"] = handle_low
     base_info["handle_high"] = handle_high
     base_info["handle_depth"] = handle_depth
+    base_info.update(handle_info)
 
     return base_info
 
@@ -782,6 +850,11 @@ def scan_cup_with_handle_screen(
     bottom_stay_tolerance_ratio: float = 0.03,
     limit_recovery_speed: bool = False,
     max_recovery_speed_per_bar: float = 0.2,
+    min_handle_days: int = 5,
+    handle_slope_min: float = -0.03,
+    handle_slope_max: float = 0.01,
+    handle_volume_half_max_ratio: float = 1.0,
+    handle_volume_front_back_max_ratio: float = 1.0,
 ) -> List[Dict[str, float]]:
     """
     取っ手付きカップのスクリーニング条件を満たすブレイクアウトを探索する。
@@ -835,6 +908,11 @@ def scan_cup_with_handle_screen(
                     bottom_stay_tolerance_ratio=bottom_stay_tolerance_ratio,
                     limit_recovery_speed=limit_recovery_speed,
                     max_recovery_speed_per_bar=max_recovery_speed_per_bar,
+                    min_handle_days=min_handle_days,
+                    handle_slope_min=handle_slope_min,
+                    handle_slope_max=handle_slope_max,
+                    handle_volume_half_max_ratio=handle_volume_half_max_ratio,
+                    handle_volume_front_back_max_ratio=handle_volume_front_back_max_ratio,
                 )
                 if pattern_info is None:
                     continue
@@ -881,6 +959,16 @@ def scan_cup_with_handle_screen(
                         "rs_change": float(rs_change),
                         "handle_low": handle_low,
                         "sma50": handle_sma_max,
+                        "handle_slope": float(pattern_info["handle_slope"]),
+                        "handle_volume_contraction_rate": float(
+                            pattern_info["handle_volume_contraction_rate"]
+                        ),
+                        "handle_volume_second_half_ratio": float(
+                            pattern_info["handle_volume_second_half_ratio"]
+                        ),
+                        "handle_volume_front_back_ratio": float(
+                            pattern_info["handle_volume_front_back_ratio"]
+                        ),
                     }
                 )
 
