@@ -181,6 +181,14 @@ def _analyze_cup_base(
     depth_min: float,
     depth_max: float,
     recovery_ratio: float,
+    enable_peak_bottom_symmetry_check: bool = False,
+    max_left_right_duration_ratio: float = 4.0,
+    max_left_right_slope_ratio: float = 4.0,
+    require_bottom_stay: bool = False,
+    min_bottom_stay_bars: int = 2,
+    bottom_stay_tolerance_ratio: float = 0.03,
+    limit_recovery_speed: bool = False,
+    max_recovery_speed_per_bar: float = 0.2,
 ) -> Optional[Dict[str, float]]:
     """カップ/ソーサー形状を簡易判定して特徴量を返す。"""
 
@@ -197,9 +205,14 @@ def _analyze_cup_base(
     if middle_section.empty or right_section.empty:
         return None
 
-    left_peak = float(left_section.max())
-    right_peak = float(right_section.max())
-    bottom = float(middle_section.min())
+    cup_values = prices.to_numpy(dtype=float)
+    left_peak_pos = int(np.argmax(cup_values[:left_size]))
+    bottom_pos = left_size + int(np.argmin(cup_values[left_size:right_start]))
+    right_peak_pos = right_start + int(np.argmax(cup_values[right_start:]))
+
+    left_peak = float(cup_values[left_peak_pos])
+    right_peak = float(cup_values[right_peak_pos])
+    bottom = float(cup_values[bottom_pos])
 
     if left_peak <= 0:
         return None
@@ -211,11 +224,54 @@ def _analyze_cup_base(
     if right_peak < left_peak * recovery_ratio:
         return None
 
+    left_span = bottom_pos - left_peak_pos
+    right_span = right_peak_pos - bottom_pos
+    if left_span <= 0 or right_span <= 0:
+        return None
+
+    if enable_peak_bottom_symmetry_check:
+        duration_ratio = max(left_span, right_span) / max(min(left_span, right_span), 1)
+        if duration_ratio > float(max_left_right_duration_ratio):
+            return None
+
+        left_slope = (left_peak - bottom) / left_span
+        right_slope = (right_peak - bottom) / right_span
+        min_slope = min(left_slope, right_slope)
+        if min_slope <= 0:
+            return None
+        slope_ratio = max(left_slope, right_slope) / min_slope
+        if slope_ratio > float(max_left_right_slope_ratio):
+            return None
+
+    if require_bottom_stay:
+        bottom_band = bottom * (1 + float(bottom_stay_tolerance_ratio))
+        near_bottom_mask = cup_values <= bottom_band
+        longest_stay = 0
+        current_stay = 0
+        for is_near_bottom in near_bottom_mask:
+            if is_near_bottom:
+                current_stay += 1
+                longest_stay = max(longest_stay, current_stay)
+            else:
+                current_stay = 0
+        if longest_stay < int(min_bottom_stay_bars):
+            return None
+
+    if limit_recovery_speed:
+        left_drop_speed = depth / left_span
+        right_recovery_speed = ((right_peak - bottom) / left_peak) / right_span
+        max_speed = float(max_recovery_speed_per_bar)
+        if left_drop_speed > max_speed or right_recovery_speed > max_speed:
+            return None
+
     return {
         "left_peak": left_peak,
         "right_peak": right_peak,
         "bottom": bottom,
         "depth": depth,
+        "left_peak_pos": float(left_peak_pos),
+        "bottom_pos": float(bottom_pos),
+        "right_peak_pos": float(right_peak_pos),
     }
 
 
@@ -250,6 +306,14 @@ def _detect_pattern(
     depth_range: Tuple[float, float],
     recovery_ratio: float,
     handle_max_depth: float,
+    enable_peak_bottom_symmetry_check: bool = False,
+    max_left_right_duration_ratio: float = 4.0,
+    max_left_right_slope_ratio: float = 4.0,
+    require_bottom_stay: bool = False,
+    min_bottom_stay_bars: int = 2,
+    bottom_stay_tolerance_ratio: float = 0.03,
+    limit_recovery_speed: bool = False,
+    max_recovery_speed_per_bar: float = 0.2,
 ) -> Optional[Dict[str, float]]:
     """指定した窗口でカップ/ソーサーとハンドルの形状を確認する。"""
 
@@ -265,6 +329,14 @@ def _detect_pattern(
         depth_min=depth_range[0],
         depth_max=depth_range[1],
         recovery_ratio=recovery_ratio,
+        enable_peak_bottom_symmetry_check=enable_peak_bottom_symmetry_check,
+        max_left_right_duration_ratio=max_left_right_duration_ratio,
+        max_left_right_slope_ratio=max_left_right_slope_ratio,
+        require_bottom_stay=require_bottom_stay,
+        min_bottom_stay_bars=min_bottom_stay_bars,
+        bottom_stay_tolerance_ratio=bottom_stay_tolerance_ratio,
+        limit_recovery_speed=limit_recovery_speed,
+        max_recovery_speed_per_bar=max_recovery_speed_per_bar,
     )
     if base_info is None:
         return None
@@ -702,6 +774,14 @@ def scan_cup_with_handle_screen(
     rs_min_change: float = 0.0,
     breakout_volume_multiplier: float = 1.5,
     handle_dry_volume_ratio: float = 0.8,
+    enable_peak_bottom_symmetry_check: bool = False,
+    max_left_right_duration_ratio: float = 4.0,
+    max_left_right_slope_ratio: float = 4.0,
+    require_bottom_stay: bool = False,
+    min_bottom_stay_bars: int = 2,
+    bottom_stay_tolerance_ratio: float = 0.03,
+    limit_recovery_speed: bool = False,
+    max_recovery_speed_per_bar: float = 0.2,
 ) -> List[Dict[str, float]]:
     """
     取っ手付きカップのスクリーニング条件を満たすブレイクアウトを探索する。
@@ -747,6 +827,14 @@ def scan_cup_with_handle_screen(
                     depth_range=depth_range,
                     recovery_ratio=recovery_ratio,
                     handle_max_depth=handle_max_depth,
+                    enable_peak_bottom_symmetry_check=enable_peak_bottom_symmetry_check,
+                    max_left_right_duration_ratio=max_left_right_duration_ratio,
+                    max_left_right_slope_ratio=max_left_right_slope_ratio,
+                    require_bottom_stay=require_bottom_stay,
+                    min_bottom_stay_bars=min_bottom_stay_bars,
+                    bottom_stay_tolerance_ratio=bottom_stay_tolerance_ratio,
+                    limit_recovery_speed=limit_recovery_speed,
+                    max_recovery_speed_per_bar=max_recovery_speed_per_bar,
                 )
                 if pattern_info is None:
                     continue
