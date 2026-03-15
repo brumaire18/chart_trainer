@@ -31,6 +31,7 @@ from app.minervini_screen import MinerviniScreenConfig, screen_minervini_trend_t
 from app.pair_trading import (
     coint as cointegration_test,
     compute_pair_metrics,
+    compute_fdr_qvalues,
     compute_min_pair_samples,
     compute_spread_series,
     evaluate_pair_candidates,
@@ -1188,6 +1189,70 @@ def _filter_cached_pairs(
             | (df["symbol_b"].astype(str).str.zfill(4) == anchor_symbol)
         ]
     return df
+
+
+
+
+def _filter_pairs_by_manual_groups(
+    pairs_df: pd.DataFrame,
+    custom_groups: Dict[str, List[str]],
+) -> pd.DataFrame:
+    """手動分類済み銘柄は同一グループ内ペアのみ許可し、未分類は従来どおり許可する。"""
+    if pairs_df is None or pairs_df.empty:
+        return pairs_df
+
+    symbol_groups: Dict[str, set] = {}
+    for _, codes in (custom_groups or {}).items():
+        normalized_codes = [str(code).zfill(4) for code in codes]
+        group_set = set(normalized_codes)
+        for code in group_set:
+            symbol_groups.setdefault(code, set()).update(group_set)
+
+    if not symbol_groups:
+        return pairs_df
+
+    kept_rows = []
+    for row in pairs_df.itertuples(index=False):
+        row_dict = row._asdict()
+        symbol_a = str(row_dict.get("symbol_a", "")).zfill(4)
+        symbol_b = str(row_dict.get("symbol_b", "")).zfill(4)
+        if not symbol_a or not symbol_b:
+            continue
+        groups_a = symbol_groups.get(symbol_a)
+        groups_b = symbol_groups.get(symbol_b)
+
+        if groups_a is None and groups_b is None:
+            kept_rows.append(row_dict)
+            continue
+        if groups_a is None or groups_b is None:
+            continue
+        if symbol_b in groups_a and symbol_a in groups_b:
+            kept_rows.append(row_dict)
+
+    if not kept_rows:
+        return pairs_df.iloc[0:0]
+    return pd.DataFrame(kept_rows).reset_index(drop=True)
+
+
+def _apply_pair_stat_filter(
+    pairs_df: pd.DataFrame,
+    stat_filter_type: str,
+    stat_filter_threshold: float,
+) -> pd.DataFrame:
+    if pairs_df is None or pairs_df.empty:
+        return pairs_df
+
+    filtered = pairs_df.copy()
+    threshold = float(stat_filter_threshold)
+    if stat_filter_type == "q_value":
+        if "q_value" not in filtered.columns and "p_value" in filtered.columns:
+            filtered["q_value"] = compute_fdr_qvalues(filtered["p_value"])
+        if "q_value" in filtered.columns:
+            filtered = filtered[pd.to_numeric(filtered["q_value"], errors="coerce") <= threshold]
+    else:
+        if "p_value" in filtered.columns:
+            filtered = filtered[pd.to_numeric(filtered["p_value"], errors="coerce") <= threshold]
+    return filtered
 
 
 def _refresh_pair_metrics_latest(
@@ -6364,6 +6429,21 @@ def main():
                     value=(pair_trade_start, date.today()),
                     disabled=True,
                 )
+                stat_filter_type = st.selectbox(
+                    "統計フィルタ",
+                    options=["p_value", "q_value"],
+                    format_func=lambda v: "p値" if v == "p_value" else "q値 (FDR)",
+                    index=0,
+                    help="候補ペアの統計フィルタ方式を選択します。q値はBenjamini-Hochberg法で補正します。",
+                )
+                stat_filter_threshold = st.number_input(
+                    "統計フィルタ閾値",
+                    min_value=0.001,
+                    max_value=0.5,
+                    value=0.1,
+                    step=0.001,
+                    format="%.3f",
+                )
             cached_pairs_df, _ = _load_pair_cache()
             if cached_pairs_df is not None and not cached_pairs_df.empty:
                 cached_pairs_df = _attach_pair_sector_info(cached_pairs_df, listed_df)
@@ -6389,6 +6469,8 @@ def main():
                         "entry_z": float(entry_z),
                         "exit_z": float(exit_z),
                         "stop_z": float(stop_z),
+                        "stat_filter_type": stat_filter_type,
+                        "stat_filter_threshold": float(stat_filter_threshold),
                         "date_range": [
                             date_range[0].isoformat(),
                             date_range[1].isoformat(),
@@ -6403,8 +6485,12 @@ def main():
                     None,
                     None,
                 )
-                if "p_value" in filtered_pairs.columns:
-                    filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
+                filtered_pairs = _apply_pair_stat_filter(
+                    filtered_pairs,
+                    stat_filter_type=stat_filter_type,
+                    stat_filter_threshold=float(stat_filter_threshold),
+                )
+                filtered_pairs = _filter_pairs_by_manual_groups(filtered_pairs, custom_groups)
                 sector_key = "pair_sector33" if sector_col == "sector33" else "pair_sector17"
                 if sector_key in filtered_pairs.columns:
                     sector_counts = listed_df[sector_col].dropna().astype(str).value_counts()
@@ -6510,8 +6596,12 @@ def main():
                             None,
                             None,
                         )
-                        if "p_value" in filtered_pairs.columns:
-                            filtered_pairs = filtered_pairs[filtered_pairs["p_value"] <= 0.1]
+                        filtered_pairs = _apply_pair_stat_filter(
+                            filtered_pairs,
+                            stat_filter_type=stat_filter_type,
+                            stat_filter_threshold=float(stat_filter_threshold),
+                        )
+                        filtered_pairs = _filter_pairs_by_manual_groups(filtered_pairs, custom_groups)
                         sector_key = (
                             "pair_sector33"
                             if sector_col == "sector33"
