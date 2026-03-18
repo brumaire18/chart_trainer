@@ -24,6 +24,7 @@ from ui_streamlit import (
     _build_sector_group_symbol_map,
     _group_matches_sector_filter,
     _filter_symbol_disclosures,
+    _build_backtest_visualization_df,
 )
 
 
@@ -609,3 +610,28 @@ class FilterSymbolDisclosuresTests(unittest.TestCase):
         df = pd.DataFrame([{"code": "8306", "submit_datetime": "2024-01-04T09:00:00", "doc_id": "3"}])
         out = _filter_symbol_disclosures(df, "7203")
         self.assertTrue(out.empty)
+
+
+class BuildBacktestVisualizationDfTest(unittest.TestCase):
+    def test_builds_daily_aggregate_and_equity_curve(self):
+        results = pd.DataFrame(
+            [
+                {"date": "2024-01-01", "peak_return": 0.10},
+                {"date": "2024-01-01", "peak_return": -0.05},
+                {"date": "2024-01-02", "peak_return": 0.20},
+            ]
+        )
+
+        vis_df = _build_backtest_visualization_df(results)
+
+        self.assertEqual(len(vis_df), 2)
+        self.assertEqual(vis_df.loc[0, "signal_count"], 2)
+        self.assertAlmostEqual(vis_df.loc[0, "avg_peak_return"], 0.025)
+        self.assertAlmostEqual(vis_df.loc[0, "win_rate"], 0.5)
+        self.assertAlmostEqual(vis_df.loc[0, "equity_curve"], 1.025)
+        self.assertAlmostEqual(vis_df.loc[1, "equity_curve"], 1.025 * 1.2)
+
+    def test_returns_empty_when_required_columns_missing(self):
+        results = pd.DataFrame([{"date": "2024-01-01", "return": 0.1}])
+        vis_df = _build_backtest_visualization_df(results)
+        self.assertTrue(vis_df.empty)

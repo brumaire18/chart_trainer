@@ -1887,6 +1887,35 @@ def _build_pair_metrics_table(metrics: dict) -> pd.DataFrame:
     )
 
 
+
+
+def _build_backtest_visualization_df(results_df: pd.DataFrame) -> pd.DataFrame:
+    """バックテスト結果を日次集計し、可視化用の系列を返す。"""
+
+    required_cols = {"date", "peak_return"}
+    if results_df is None or results_df.empty or not required_cols.issubset(results_df.columns):
+        return pd.DataFrame()
+
+    df = results_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["peak_return"] = pd.to_numeric(df["peak_return"], errors="coerce")
+    df = df[df["date"].notna() & df["peak_return"].notna()].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        df.groupby("date", as_index=False)
+        .agg(
+            signal_count=("peak_return", "count"),
+            avg_peak_return=("peak_return", "mean"),
+            median_peak_return=("peak_return", "median"),
+            win_rate=("peak_return", lambda values: float((values >= 0).mean())),
+        )
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    grouped["equity_curve"] = (1.0 + grouped["avg_peak_return"]).cumprod()
+    return grouped
 def _render_pair_spread_chart(
     df_pair: pd.DataFrame,
     entry_threshold: float,
@@ -5734,6 +5763,61 @@ def main():
                     tickformat="%Y-%m-%d",
                     rangebreaks=breakdown_rangebreaks,
                 )
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("#### バックテスト可視化")
+            vis_df = _build_backtest_visualization_df(backtest_results)
+            if vis_df.empty:
+                st.info("可視化に必要なデータが不足しています。")
+            else:
+                vis_col1, vis_col2 = st.columns(2)
+                with vis_col1:
+                    equity_fig = go.Figure()
+                    equity_fig.add_trace(
+                        go.Scatter(
+                            x=vis_df["date"],
+                            y=vis_df["equity_curve"],
+                            mode="lines",
+                            name="日次平均ピークリターンの複利",
+                            line=dict(color="#1f77b4"),
+                        )
+                    )
+                    equity_fig.update_layout(
+                        title="CAN-SLIM: 日次平均ピークリターンの累積",
+                        xaxis_title="Date",
+                        yaxis_title="Equity",
+                        margin=dict(l=20, r=20, t=50, b=20),
+                    )
+                    st.plotly_chart(equity_fig, use_container_width=True)
+                with vis_col2:
+                    win_fig = go.Figure()
+                    win_fig.add_trace(
+                        go.Bar(
+                            x=vis_df["date"],
+                            y=vis_df["win_rate"] * 100.0,
+                            name="勝率(%)",
+                            marker_color="#2ca02c",
+                            opacity=0.75,
+                        )
+                    )
+                    win_fig.add_trace(
+                        go.Scatter(
+                            x=vis_df["date"],
+                            y=vis_df["signal_count"],
+                            mode="lines+markers",
+                            name="シグナル数",
+                            yaxis="y2",
+                            line=dict(color="#ff7f0e"),
+                        )
+                    )
+                    win_fig.update_layout(
+                        title="CAN-SLIM: 日次勝率とシグナル数",
+                        xaxis_title="Date",
+                        yaxis=dict(title="勝率(%)", range=[0, 100]),
+                        yaxis2=dict(title="シグナル数", overlaying="y", side="right"),
+                        margin=dict(l=20, r=20, t=50, b=20),
+                    )
+                    st.plotly_chart(win_fig, use_container_width=True)
 
         st.divider()
         st.subheader("MA5乖離 逆張りロング・ショート バックテスト")
@@ -6035,6 +6119,29 @@ def main():
         if minervini_results is not None and not minervini_results.empty:
             st.markdown("#### シグナル一覧")
             st.dataframe(minervini_results.head(200), use_container_width=True)
+
+            st.markdown("#### バックテスト可視化")
+            minervini_vis_df = _build_backtest_visualization_df(minervini_results)
+            if minervini_vis_df.empty:
+                st.info("可視化に必要なデータが不足しています。")
+            else:
+                minervini_fig = go.Figure()
+                minervini_fig.add_trace(
+                    go.Scatter(
+                        x=minervini_vis_df["date"],
+                        y=minervini_vis_df["equity_curve"],
+                        mode="lines",
+                        name="日次平均ピークリターンの複利",
+                        line=dict(color="#9467bd"),
+                    )
+                )
+                minervini_fig.update_layout(
+                    title="ミネルヴィニ: 日次平均ピークリターンの累積",
+                    xaxis_title="Date",
+                    yaxis_title="Equity",
+                    margin=dict(l=20, r=20, t=50, b=20),
+                )
+                st.plotly_chart(minervini_fig, use_container_width=True)
 
         st.divider()
         st.subheader("強い上昇相場 × 最高値更新モメンタム バックテスト")
