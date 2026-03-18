@@ -242,6 +242,37 @@ def _parse_numeric_grid_values(text: str, cast_type: type) -> List:
     return values
 
 
+def _summarize_cup_handle_strictness(
+    depth_range_pct: Tuple[int, int],
+    recovery_ratio: float,
+    handle_max_depth: float,
+    rs_min_change: float,
+    breakout_volume_multiplier: float,
+) -> Tuple[str, str]:
+    """取っ手付きカップ条件の厳しさを簡易スコアで要約する。"""
+    score = 0
+    width = depth_range_pct[1] - depth_range_pct[0]
+
+    if width <= 12:
+        score += 1
+    if depth_range_pct[0] >= 15:
+        score += 1
+    if recovery_ratio >= 0.9:
+        score += 1
+    if handle_max_depth <= 0.12:
+        score += 1
+    if rs_min_change >= 5:
+        score += 1
+    if breakout_volume_multiplier >= 1.8:
+        score += 1
+
+    if score >= 5:
+        return "厳しめ", "予想ヒット率: 低（厳格な条件で絞り込み）"
+    if score >= 3:
+        return "標準", "予想ヒット率: 中（バランス重視）"
+    return "緩め", "予想ヒット率: 高（候補数を広めに確保）"
+
+
 def _parse_depth_range_grid_values(text: str) -> List[Tuple[float, float]]:
     """深さレンジ候補を `0.12-0.35,0.15-0.40` 形式で解釈する。"""
     ranges: List[Tuple[float, float]] = []
@@ -3887,6 +3918,42 @@ def main():
             help="最適化で得られた値をここに入力してスクリーニングへ反映できます。",
         )
         apply_cup_handle_condition = st.checkbox("取っ手付きカップ条件を適用", value=False)
+
+        cup_handle_presets = {
+            "保守的": {
+                "cup_handle_depth_range": (15, 28),
+                "cup_handle_recovery_ratio": 0.90,
+                "cup_handle_handle_max_depth": 0.12,
+                "cup_handle_rs_min": 5,
+                "cup_handle_breakout_vol": 1.8,
+            },
+            "標準": {
+                "cup_handle_depth_range": (12, 33),
+                "cup_handle_recovery_ratio": 0.85,
+                "cup_handle_handle_max_depth": 0.15,
+                "cup_handle_rs_min": 0,
+                "cup_handle_breakout_vol": 1.5,
+            },
+            "積極的": {
+                "cup_handle_depth_range": (8, 38),
+                "cup_handle_recovery_ratio": 0.80,
+                "cup_handle_handle_max_depth": 0.20,
+                "cup_handle_rs_min": -5,
+                "cup_handle_breakout_vol": 1.2,
+            },
+        }
+        st.caption("プリセット: 主要パラメータ（depth_range / recovery_ratio / handle_max_depth / rs_min_change）を一括反映")
+        preset_cols = st.columns(3)
+        for col, preset_name in zip(preset_cols, ["保守的", "標準", "積極的"]):
+            if col.button(preset_name, key=f"cup_handle_preset_{preset_name}", use_container_width=True):
+                for state_key, state_value in cup_handle_presets[preset_name].items():
+                    st.session_state[state_key] = state_value
+                st.session_state["cup_handle_selected_preset"] = preset_name
+
+        selected_preset = st.session_state.get("cup_handle_selected_preset", "標準")
+        if selected_preset in cup_handle_presets:
+            st.caption(f"現在のプリセット: {selected_preset}")
+
         cup_handle_lookback_days = st.slider(
             "取っ手付きカップのブレイク判定期間（日）",
             min_value=5,
@@ -3913,8 +3980,30 @@ def main():
             min_value=5,
             max_value=50,
             value=(12, 33),
+            key="cup_handle_depth_range",
             help="左側の頂点から安値までの調整幅の範囲を指定します。",
         )
+        st.caption("depth_range: カップの深さ許容範囲。狭いほど厳格です。")
+        cup_handle_recovery_ratio = st.slider(
+            "右ピーク回復率の下限（recovery_ratio）",
+            min_value=0.70,
+            max_value=0.98,
+            value=0.85,
+            step=0.01,
+            key="cup_handle_recovery_ratio",
+            help="右側ピークが左側ピークに対してどこまで回復しているかを判定します。",
+        )
+        st.caption("recovery_ratio: 高いほどカップ右側の回復を強く要求します。")
+        cup_handle_handle_max_depth = st.slider(
+            "取っ手の最大調整率（handle_max_depth）",
+            min_value=0.05,
+            max_value=0.30,
+            value=0.15,
+            step=0.01,
+            key="cup_handle_handle_max_depth",
+            help="右ピークから取っ手安値までの下落率上限です。",
+        )
+        st.caption("handle_max_depth: 小さいほど浅い取っ手のみ採用し、厳しくなります。")
         cup_handle_price_gain = st.slider(
             "ブレイクまでの上昇率下限（%）",
             min_value=0,
@@ -3934,14 +4023,17 @@ def main():
             min_value=-50,
             max_value=50,
             value=0,
+            key="cup_handle_rs_min",
             help="RS改善率が指定以上の銘柄を抽出します。",
         )
+        st.caption("rs_min_change: 相対強度の改善率の下限。高いほど選抜が厳しくなります。")
         cup_handle_breakout_vol = st.number_input(
             "ブレイク出来高倍率",
             min_value=0.5,
             max_value=10.0,
             value=1.5,
             step=0.1,
+            key="cup_handle_breakout_vol",
             help="ブレイク時の出来高が20日平均の何倍以上かを指定します。",
         )
         cup_handle_dry_vol_ratio = st.number_input(
@@ -4131,6 +4223,17 @@ def main():
             value=0.3,
             step=0.05,
         )
+
+        cup_strictness_level, cup_strictness_summary = _summarize_cup_handle_strictness(
+            depth_range_pct=cup_handle_depth_range,
+            recovery_ratio=float(cup_handle_recovery_ratio),
+            handle_max_depth=float(cup_handle_handle_max_depth),
+            rs_min_change=float(cup_handle_rs_min),
+            breakout_volume_multiplier=float(cup_handle_breakout_vol),
+        )
+        st.info(
+            f"取っ手付きカップ条件の厳しさ: **{cup_strictness_level}** / {cup_strictness_summary}"
+        )
         topix_cache_key = _get_price_cache_key("topix")
 
         run_screening = st.button("スクリーニングを実行", type="primary")
@@ -4175,6 +4278,8 @@ def main():
                     "cup_handle_cup_weeks": list(cup_handle_cup_weeks),
                     "cup_handle_handle_weeks": list(cup_handle_handle_weeks),
                     "cup_handle_depth_range": list(cup_handle_depth_range),
+                    "cup_handle_recovery_ratio": float(cup_handle_recovery_ratio),
+                    "cup_handle_handle_max_depth": float(cup_handle_handle_max_depth),
                     "cup_handle_price_gain": float(cup_handle_price_gain),
                     "cup_handle_rs_lookback": int(cup_handle_rs_lookback),
                     "cup_handle_rs_min": float(cup_handle_rs_min),
@@ -4449,6 +4554,8 @@ def main():
                                 cup_handle_depth_range[0] / 100,
                                 cup_handle_depth_range[1] / 100,
                             ),
+                            recovery_ratio=cup_handle_recovery_ratio,
+                            handle_max_depth=cup_handle_handle_max_depth,
                             min_price_gain=cup_handle_price_gain / 100,
                             rs_lookback=cup_handle_rs_lookback,
                             rs_min_change=cup_handle_rs_min,
