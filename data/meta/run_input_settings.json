@@ -1,0 +1,62 @@
+{
+  "technical_screening": {
+    "saved_at": "2026-02-18T23:42:10",
+    "values": {
+      "target_markets": [],
+      "apply_rsi_condition": false,
+      "rsi_range": [
+        40,
+        65
+      ],
+      "apply_topix_rs_condition": false,
+      "topix_rs_lookback": 20,
+      "topix_rs_threshold": 0.0,
+      "macd_condition": "golden",
+      "macd_lookback": 5,
+      "macd_debug": false,
+      "show_detailed_log": false,
+      "require_sma20_trend": false,
+      "sma_trend_lookback": 3,
+      "apply_ma_approach_condition": false,
+      "ma_target": "sma50",
+      "ma_approach_lookback": 5,
+      "ma_distance_threshold_pct": 3.0,
+      "apply_volume_condition": false,
+      "volume_multiplier": 0.8,
+      "apply_canslim_condition": false,
+      "canslim_recent_days": 30,
+      "canslim_cup_window": 50,
+      "canslim_saucer_window": 80,
+      "canslim_handle_window": 10,
+      "canslim_volume_multiplier": 1.5,
+      "apply_cup_handle_condition": false,
+      "cup_handle_lookback_days": 30,
+      "cup_handle_cup_weeks": [
+        7,
+        65
+      ],
+      "cup_handle_handle_weeks": [
+        1,
+        2
+      ],
+      "cup_handle_depth_range": [
+        12,
+        33
+      ],
+      "cup_handle_price_gain": 30.0,
+      "cup_handle_rs_lookback": 20,
+      "cup_handle_rs_min": 0.0,
+      "cup_handle_breakout_vol": 1.5,
+      "cup_handle_dry_vol_ratio": 0.8,
+      "apply_weekly_volume_quartile": false,
+      "screen_new_high": true,
+      "screen_selling_climax": false,
+      "signal_lookback_days": 2,
+      "signal_new_high_lookback": 252,
+      "signal_selling_volume_lookback": 20,
+      "signal_selling_volume_multiplier": 2.0,
+      "signal_selling_drop_pct": 4.0,
+      "signal_selling_close_position": 0.3
+    }
+  }
+}

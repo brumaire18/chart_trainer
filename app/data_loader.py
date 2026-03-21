@@ -11,6 +11,13 @@ from .config import (
     PRICE_CSV_DIR,
 )
 from .jquants_client import JQuantsClient
+from .leadlag_data import (
+    LeadLagUniverseItem,
+    find_leadlag_item,
+    get_leadlag_price_dir,
+    load_leadlag_universe,
+    normalize_leadlag_market,
+)
 
 
 MANUAL_STOCK_SPLITS: Dict[str, List[Tuple[str, float]]] = {
@@ -114,6 +121,365 @@ def get_available_symbols() -> List[str]:
     for path in PRICE_CSV_DIR.glob("*.csv"):
         symbols.append(path.stem)
     return sorted(symbols)
+
+
+def _find_first_existing_column(
+    df_raw: pd.DataFrame, candidates: List[str]
+) -> Optional[str]:
+    for candidate in candidates:
+        if candidate in df_raw.columns:
+            return candidate
+    return None
+
+
+def _looks_like_jquants_daily_quotes(df_raw: pd.DataFrame) -> bool:
+    if "Date" not in df_raw.columns:
+        return False
+    if "Code" in df_raw.columns:
+        return True
+    adjustment_candidates = [
+        "AdjustmentFactor",
+        "AdjustmentOpen",
+        "AdjustmentClose",
+        "AdjO",
+        "AdjC",
+    ]
+    return any(col in df_raw.columns for col in adjustment_candidates)
+
+
+def _normalize_generic_ohlcv(
+    df_raw: pd.DataFrame, symbol: str, market: str
+) -> pd.DataFrame:
+    date_col = _find_first_existing_column(
+        df_raw,
+        [
+            "date",
+            "Date",
+            "datetime",
+            "DateTime",
+            "timestamp",
+            "Timestamp",
+            "time",
+            "Time",
+        ],
+    )
+    open_col = _find_first_existing_column(df_raw, ["open", "Open", "O"])
+    high_col = _find_first_existing_column(df_raw, ["high", "High", "H"])
+    low_col = _find_first_existing_column(df_raw, ["low", "Low", "L"])
+    close_col = _find_first_existing_column(df_raw, ["close", "Close", "C"])
+    volume_col = _find_first_existing_column(df_raw, ["volume", "Volume", "Vo"])
+
+    if not all([date_col, open_col, high_col, low_col, close_col, volume_col]):
+        raise ValueError(
+            "Unsupported leadlag csv format. Expected date/open/high/low/close/volume columns."
+        )
+
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(df_raw[date_col], errors="coerce"),
+            "open": pd.to_numeric(df_raw[open_col], errors="coerce"),
+            "high": pd.to_numeric(df_raw[high_col], errors="coerce"),
+            "low": pd.to_numeric(df_raw[low_col], errors="coerce"),
+            "close": pd.to_numeric(df_raw[close_col], errors="coerce"),
+            "volume": pd.to_numeric(df_raw[volume_col], errors="coerce"),
+        }
+    )
+    df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df["datetime"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    df["code"] = symbol
+    df["market"] = market
+    return df[
+        ["date", "datetime", "code", "market", "open", "high", "low", "close", "volume"]
+    ].sort_values("date").reset_index(drop=True)
+
+
+def _normalize_leadlag_price_df(
+    df_raw: pd.DataFrame, symbol: str, market: str
+) -> pd.DataFrame:
+    normalized_cols = ["date", "open", "high", "low", "close", "volume"]
+    if all(col in df_raw.columns for col in normalized_cols):
+        df = df_raw.copy()
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        if "datetime" in df.columns:
+            dt_values = pd.to_datetime(df["datetime"], errors="coerce")
+            dt_values = dt_values.fillna(pd.to_datetime(df["date"]))
+        else:
+            dt_values = pd.to_datetime(df["date"])
+        df["datetime"] = dt_values.dt.strftime("%Y-%m-%dT%H:%M:%S")
+        df["code"] = symbol
+        df["market"] = market
+        return df[
+            ["date", "datetime", "code", "market", "open", "high", "low", "close", "volume"]
+        ].sort_values("date").reset_index(drop=True)
+
+    if _looks_like_jquants_daily_quotes(df_raw):
+        return _normalize_from_jquants(df_raw, symbol=symbol, market=market)
+
+    return _normalize_generic_ohlcv(df_raw, symbol=symbol, market=market)
+
+
+def _resolve_leadlag_item(symbol: str) -> LeadLagUniverseItem:
+    item = find_leadlag_item(symbol, universe_items=load_leadlag_universe())
+    if item is None:
+        raise ValueError(
+            "Symbol {} is not in leadlag universe definition.".format(symbol)
+        )
+    return item
+
+
+def get_available_leadlag_symbols(market: Optional[str] = None) -> List[str]:
+    normalized_market = normalize_leadlag_market(market)
+    symbols: List[str] = []
+    for item in load_leadlag_universe():
+        if normalized_market and item.market != normalized_market:
+            continue
+        csv_path = get_leadlag_price_dir(item.market) / "{}.csv".format(item.symbol)
+        if csv_path.exists():
+            symbols.append(item.symbol)
+    return sorted(symbols)
+
+
+def load_leadlag_price(symbol: str) -> pd.DataFrame:
+    item = _resolve_leadlag_item(symbol)
+    csv_path = get_leadlag_price_dir(item.market) / "{}.csv".format(item.symbol)
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            "leadlag csv was not found: {}. expected under data/price_csv/leadlag_us or leadlag_jp".format(
+                csv_path
+            )
+        )
+    df_raw = pd.read_csv(csv_path)
+    df = _normalize_leadlag_price_df(df_raw, symbol=item.symbol, market=item.market)
+    df["symbol"] = item.symbol
+    df["name"] = item.name
+    df["sector"] = item.sector
+    df["style_bucket"] = item.style_bucket
+    df["path_group"] = item.path_group
+    return df[
+        [
+            "date",
+            "datetime",
+            "symbol",
+            "code",
+            "market",
+            "name",
+            "sector",
+            "style_bucket",
+            "path_group",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
+    ].sort_values("date").reset_index(drop=True)
+
+
+def load_leadlag_panel(market: Optional[str] = None) -> pd.DataFrame:
+    target_symbols = get_available_leadlag_symbols(market=market)
+    if not target_symbols:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "datetime",
+                "symbol",
+                "code",
+                "market",
+                "name",
+                "sector",
+                "style_bucket",
+                "path_group",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
+        )
+
+    frames: List[pd.DataFrame] = []
+    for symbol in target_symbols:
+        frames.append(load_leadlag_price(symbol))
+    panel_df = pd.concat(frames, axis=0, ignore_index=True)
+    panel_df["date"] = pd.to_datetime(panel_df["date"]).dt.normalize()
+    panel_df = panel_df.sort_values(["date", "market", "symbol"]).reset_index(drop=True)
+    return panel_df
+
+
+def compute_us_close_to_close_returns(
+    us_price_df: pd.DataFrame,
+    return_col: str = "us_close_to_close_return",
+) -> pd.DataFrame:
+    if "date" not in us_price_df.columns or "close" not in us_price_df.columns:
+        raise ValueError("us_price_df must include date and close columns")
+
+    df = us_price_df.copy()
+    if "market" in df.columns:
+        df = df[df["market"].astype(str).str.upper() == "US"]
+
+    symbol_col = "symbol" if "symbol" in df.columns else "code"
+    if symbol_col not in df.columns:
+        raise ValueError("us_price_df must include symbol or code column")
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["date", "close", symbol_col])
+    df = df.sort_values([symbol_col, "date"]).reset_index(drop=True)
+
+    df["prev_close_us"] = df.groupby(symbol_col)["close"].shift(1)
+    df[return_col] = df["close"] / df["prev_close_us"] - 1.0
+    df["signal_date_us"] = df["date"]
+    df["signal_weekday_us"] = df["signal_date_us"].dt.day_name()
+    df = df.dropna(subset=[return_col, "signal_date_us"]).reset_index(drop=True)
+    return df
+
+
+def compute_jp_open_to_close_returns(
+    jp_price_df: pd.DataFrame,
+    return_col: str = "jp_open_to_close_return",
+) -> pd.DataFrame:
+    required_cols = {"date", "open", "close"}
+    missing_cols = [col for col in required_cols if col not in jp_price_df.columns]
+    if missing_cols:
+        raise ValueError(
+            "jp_price_df must include columns: {}".format(",".join(sorted(required_cols)))
+        )
+
+    df = jp_price_df.copy()
+    if "market" in df.columns:
+        df = df[df["market"].astype(str).str.upper() == "JP"]
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["open"] = pd.to_numeric(df["open"], errors="coerce")
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["date", "open", "close"]).reset_index(drop=True)
+    df = df[df["open"] != 0].copy()
+
+    df[return_col] = df["close"] / df["open"] - 1.0
+    df["trade_date_jp"] = df["date"]
+    df["trade_weekday_jp"] = df["trade_date_jp"].dt.day_name()
+    return df
+
+
+def _build_us_to_jp_calendar_mapping(
+    us_signal_dates: pd.Series, jp_trade_dates: pd.Series
+) -> pd.DataFrame:
+    normalized_us_dates = pd.DatetimeIndex(
+        pd.to_datetime(us_signal_dates, errors="coerce").dropna().dt.normalize().unique()
+    ).sort_values()
+    normalized_jp_dates = pd.DatetimeIndex(
+        pd.to_datetime(jp_trade_dates, errors="coerce").dropna().dt.normalize().unique()
+    ).sort_values()
+
+    mapping_columns = [
+        "signal_date_us",
+        "trade_date_jp",
+        "signal_weekday_us",
+        "trade_weekday_jp",
+        "calendar_lag_days",
+        "is_signal_friday",
+    ]
+    if len(normalized_us_dates) == 0 or len(normalized_jp_dates) == 0:
+        return pd.DataFrame(columns=mapping_columns)
+
+    records: List[Dict[str, object]] = []
+    for signal_date in normalized_us_dates:
+        next_idx = normalized_jp_dates.searchsorted(signal_date, side="right")
+        if next_idx >= len(normalized_jp_dates):
+            continue
+        trade_date = normalized_jp_dates[next_idx]
+        records.append(
+            {
+                "signal_date_us": signal_date,
+                "trade_date_jp": trade_date,
+                "signal_weekday_us": signal_date.day_name(),
+                "trade_weekday_jp": trade_date.day_name(),
+                "calendar_lag_days": int((trade_date - signal_date).days),
+                "is_signal_friday": bool(signal_date.dayofweek == 4),
+            }
+        )
+    return pd.DataFrame(records, columns=mapping_columns)
+
+
+def align_us_signal_and_jp_target(
+    us_signal_df: pd.DataFrame,
+    jp_target_df: pd.DataFrame,
+    join_key: str = "path_group",
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if us_signal_df.empty or jp_target_df.empty:
+        mapping_df = _build_us_to_jp_calendar_mapping(
+            us_signal_df.get("signal_date_us", us_signal_df.get("date", pd.Series(dtype="datetime64[ns]"))),
+            jp_target_df.get("trade_date_jp", jp_target_df.get("date", pd.Series(dtype="datetime64[ns]"))),
+        )
+        return pd.DataFrame(), mapping_df
+
+    us = us_signal_df.copy()
+    jp = jp_target_df.copy()
+
+    if "market" in us.columns:
+        us = us[us["market"].astype(str).str.upper() == "US"]
+    if "market" in jp.columns:
+        jp = jp[jp["market"].astype(str).str.upper() == "JP"]
+
+    if us.empty or jp.empty:
+        return pd.DataFrame(), pd.DataFrame(
+            columns=[
+                "signal_date_us",
+                "trade_date_jp",
+                "signal_weekday_us",
+                "trade_weekday_jp",
+                "calendar_lag_days",
+                "is_signal_friday",
+            ]
+        )
+
+    us_date_col = "signal_date_us" if "signal_date_us" in us.columns else "date"
+    jp_date_col = "trade_date_jp" if "trade_date_jp" in jp.columns else "date"
+
+    us["signal_date_us"] = pd.to_datetime(us[us_date_col], errors="coerce").dt.normalize()
+    jp["trade_date_jp"] = pd.to_datetime(jp[jp_date_col], errors="coerce").dt.normalize()
+    us = us.dropna(subset=["signal_date_us"]).reset_index(drop=True)
+    jp = jp.dropna(subset=["trade_date_jp"]).reset_index(drop=True)
+
+    mapping_df = _build_us_to_jp_calendar_mapping(
+        us_signal_dates=us["signal_date_us"],
+        jp_trade_dates=jp["trade_date_jp"],
+    )
+    if mapping_df.empty:
+        return pd.DataFrame(), mapping_df
+
+    mapped_us = pd.merge(
+        us,
+        mapping_df,
+        on="signal_date_us",
+        how="inner",
+        validate="many_to_one",
+    )
+
+    join_cols = ["trade_date_jp"]
+    if (
+        join_key
+        and join_key in mapped_us.columns
+        and join_key in jp.columns
+    ):
+        join_cols.append(join_key)
+
+    aligned_df = pd.merge(
+        mapped_us,
+        jp,
+        on=join_cols,
+        how="inner",
+        suffixes=("_us", "_jp"),
+    )
+    aligned_df = aligned_df.sort_values(
+        ["trade_date_jp", "signal_date_us"]
+    ).reset_index(drop=True)
+    return aligned_df, mapping_df
 
 
 def enforce_light_plan_window(

@@ -1,0 +1,1098 @@
+{
+  "ゼネコン": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "土木・インフラ": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "ハウスメーカー": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "リフォーム": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "設備工事": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "プラント・エンジニアリング": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "特殊工事": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "電気工事": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "建材": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "解体": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "空調": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "建設": {
+    "sector_type": "33業種",
+    "sector_value": "2050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "2050"
+      }
+    ]
+  },
+  "調味料・加工食品": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "飲料・酒類": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "冷食・惣菜・食品特殊": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "中食": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "外食": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "菓子・スナック": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "穀物": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "食肉": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "水産": {
+    "sector_type": "33業種",
+    "sector_value": "50",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "50"
+      }
+    ]
+  },
+  "乳製品": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "ヘルスケア": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "資料・畜産上流": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "たばこ": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "製粉": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "製パン": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "製糖": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "氷菓": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "製油": {
+    "sector_type": "33業種",
+    "sector_value": "3050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "半導体素材": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      },
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      },
+      {
+        "sector_type": "33業種",
+        "sector_value": "3050"
+      }
+    ]
+  },
+  "鉱業": {
+    "sector_type": "33業種",
+    "sector_value": "1050",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "1050"
+      }
+    ]
+  },
+  "農業": {
+    "sector_type": "33業種",
+    "sector_value": "50",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "50"
+      }
+    ]
+  },
+  "畜産": {
+    "sector_type": "33業種",
+    "sector_value": "50",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "50"
+      }
+    ]
+  },
+  "繊維": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "機能材": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      },
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "不動産": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "アパレル": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "インテリア": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "インナー": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "フェルト": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "繊維製品": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "染色": {
+    "sector_type": "33業種",
+    "sector_value": "3100",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3100"
+      }
+    ]
+  },
+  "特殊製紙": {
+    "sector_type": "33業種",
+    "sector_value": "3150",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3150"
+      }
+    ]
+  },
+  "段ボール": {
+    "sector_type": "33業種",
+    "sector_value": "3150",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3150"
+      }
+    ]
+  },
+  "総合製紙": {
+    "sector_type": "33業種",
+    "sector_value": "3150",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3150"
+      }
+    ]
+  },
+  "梱包材": {
+    "sector_type": "33業種",
+    "sector_value": "3150",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3150"
+      }
+    ]
+  },
+  "印刷・封筒": {
+    "sector_type": "33業種",
+    "sector_value": "3150",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3150"
+      }
+    ]
+  },
+  "バイオ": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "化粧品": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "高分子": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "総合化学": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "皮革": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "半導体プロセス材料": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      },
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "無機化学": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "基礎塩類": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "無機材料": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "肥料・農薬": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "セラミック": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "電子材料": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "産業ガス": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "化成品": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "表面処理": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "顔料": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "有機材料": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "ファインケミカル": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "蒸留・精製": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "ナノテクノロジー": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "高分子成形": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "化学その他": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "プラスチック製品": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "建材・配管": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "医薬品": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "防衛": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "融資": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "油脂": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "界面活性剤": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "衛生用品": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "塗料": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "香料": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "メッキ": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "フィルム": {
+    "sector_type": "33業種",
+    "sector_value": "3200",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3200"
+      }
+    ]
+  },
+  "遺伝子": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "検査薬・研究試薬": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "創薬": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "再生医療": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "メガファーマ": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "準大手～中堅ファーマ": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "OTC": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "ジェネリック医薬品": {
+    "sector_type": "33業種",
+    "sector_value": "3250",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3250"
+      }
+    ]
+  },
+  "油剤・潤滑油": {
+    "sector_type": "33業種",
+    "sector_value": "3300",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3300"
+      }
+    ]
+  },
+  "石油元売り": {
+    "sector_type": "33業種",
+    "sector_value": "3300",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3300"
+      }
+    ]
+  },
+  "石油・石炭製品": {
+    "sector_type": "33業種",
+    "sector_value": "3300",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3300"
+      }
+    ]
+  },
+  "タイヤ": {
+    "sector_type": "33業種",
+    "sector_value": "3350",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3350"
+      }
+    ]
+  },
+  "産業用ゴム製品": {
+    "sector_type": "33業種",
+    "sector_value": "3350",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3350"
+      }
+    ]
+  },
+  "生活・医療": {
+    "sector_type": "33業種",
+    "sector_value": "3350",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3350"
+      }
+    ]
+  },
+  "自動車向けゴム部品": {
+    "sector_type": "33業種",
+    "sector_value": "3350",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3350"
+      }
+    ]
+  },
+  "板ガラス": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "びん・食器": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "ガラス繊維": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "電子・光学ガラス": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "セメント": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "インフラ材料": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "カーボン": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "研磨剤": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "タイル・衛生陶器": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "ファインセラミックス": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  },
+  "耐火物": {
+    "sector_type": "33業種",
+    "sector_value": "3400",
+    "sector_rules": [
+      {
+        "sector_type": "33業種",
+        "sector_value": "3400"
+      }
+    ]
+  }
+}
