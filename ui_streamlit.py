@@ -45,6 +45,7 @@ from app.backtest import (
     run_minervini_backtest,
     run_minervini_grid_search,
     run_bull_market_new_high_momentum_backtest,
+    run_jp_us_sector_leadlag_backtest,
     scan_canslim_patterns,
     scan_cup_with_handle_screen,
 )
@@ -1947,6 +1948,281 @@ def _build_backtest_visualization_df(results_df: pd.DataFrame) -> pd.DataFrame:
     )
     grouped["equity_curve"] = (1.0 + grouped["avg_peak_return"]).cumprod()
     return grouped
+
+
+def _parse_date_input_range(value: object) -> Tuple[Optional[date], Optional[date]]:
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        start_ts = pd.to_datetime(value[0], errors="coerce")
+        end_ts = pd.to_datetime(value[1], errors="coerce")
+        start_date = None if pd.isna(start_ts) else pd.Timestamp(start_ts).date()
+        end_date = None if pd.isna(end_ts) else pd.Timestamp(end_ts).date()
+        return start_date, end_date
+
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return None, None
+    single_date = pd.Timestamp(ts).date()
+    return single_date, single_date
+
+
+def _save_leadlag_uploaded_csvs(uploaded_files: List[object], target_dir: Path) -> Tuple[int, List[str]]:
+    if not uploaded_files:
+        return 0, ["CSVを選択してください。"]
+
+    errors: List[str] = []
+    saved_count = 0
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return 0, [f"保存先ディレクトリを作成できませんでした: {exc}"]
+
+    for uploaded_file in uploaded_files:
+        raw_name = str(getattr(uploaded_file, "name", "")).strip()
+        if not raw_name:
+            errors.append("ファイル名が取得できないCSVが含まれています。")
+            continue
+
+        safe_name = Path(raw_name).name
+        if not safe_name.lower().endswith(".csv"):
+            safe_name = "{}.csv".format(safe_name)
+        target_path = target_dir / safe_name
+        try:
+            target_path.write_bytes(bytes(uploaded_file.getbuffer()))
+            saved_count += 1
+        except Exception as exc:
+            errors.append("{}: {}".format(raw_name, exc))
+    return saved_count, errors
+
+
+def _validate_leadlag_inputs(
+    *,
+    lookback: int,
+    lambda_reg: float,
+    n_components: int,
+    quantile_q: float,
+    one_way_cost_bps: float,
+    start_date: Optional[date],
+    end_date: Optional[date],
+    prior_start: Optional[date],
+    prior_end: Optional[date],
+) -> Tuple[List[str], List[str]]:
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if int(lookback) <= 1:
+        errors.append("lookback は 2 以上を指定してください。")
+    if not (0.0 <= float(lambda_reg) <= 1.0):
+        errors.append("lambda_reg は 0 以上 1 以下で指定してください。")
+    if int(n_components) <= 0:
+        errors.append("n_components は 1 以上を指定してください。")
+    if not (0.0 < float(quantile_q) < 0.5):
+        errors.append("quantile_q は 0 より大きく 0.5 未満で指定してください。")
+    if float(one_way_cost_bps) < 0.0:
+        errors.append("one_way_cost_bps は 0 以上で指定してください。")
+
+    if start_date is not None and end_date is not None and start_date > end_date:
+        errors.append("期間の開始日は終了日以前にしてください。")
+    if prior_start is not None and prior_end is not None and prior_start > prior_end:
+        errors.append("prior期間の開始日は終了日以前にしてください。")
+
+    if int(lookback) < 20:
+        warnings.append("lookback が短すぎる可能性があります。ノイズ増加に注意してください。")
+    if int(n_components) > 8:
+        warnings.append("n_components が大きめです。過学習リスクに注意してください。")
+    if float(lambda_reg) < 0.1 or float(lambda_reg) > 0.98:
+        warnings.append("lambda_reg が極端です。正則化の効き過ぎ/効かなさに注意してください。")
+    if float(quantile_q) <= 0.1 or float(quantile_q) >= 0.45:
+        warnings.append("quantile_q が極端です。銘柄数不足や過集中が発生しやすくなります。")
+    if float(one_way_cost_bps) > 50.0:
+        warnings.append("one_way_cost_bps が高めです。コスト負けしやすくなる点に注意してください。")
+
+    if prior_start is not None and start_date is not None and prior_start >= start_date:
+        warnings.append("prior期間が検証期間と重なっています。事前情報の純度低下に注意してください。")
+    if prior_end is not None and end_date is not None and prior_end > end_date:
+        warnings.append("prior期間の終了日が検証期間終了日を超えています。設定意図を確認してください。")
+
+    return errors, warnings
+
+
+def _build_leadlag_summary_cards(summary_df: pd.DataFrame) -> List[Tuple[str, str]]:
+    if summary_df is None or summary_df.empty:
+        return []
+
+    row = summary_df.iloc[0].to_dict()
+
+    def _fmt_pct(value: object) -> str:
+        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(numeric):
+            return "-"
+        return "{:.2f}%".format(float(numeric) * 100.0)
+
+    def _fmt_num(value: object, digits: int = 2) -> str:
+        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(numeric):
+            return "-"
+        return "{:.{}f}".format(float(numeric), int(digits))
+
+    def _fmt_int(value: object) -> str:
+        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(numeric):
+            return "-"
+        return str(int(round(float(numeric))))
+
+    cards = [
+        ("累積リターン", _fmt_pct(row.get("cumulative_return"))),
+        ("年率リターン", _fmt_pct(row.get("annual_return"))),
+        ("最大DD", _fmt_pct(row.get("max_drawdown"))),
+        ("シャープ類似", _fmt_num(row.get("sharpe_like"), digits=2)),
+        ("勝率", _fmt_pct(row.get("win_rate"))),
+        ("取引日数", _fmt_int(row.get("trading_days"))),
+    ]
+    return cards
+
+
+def _filter_leadlag_signals(
+    signals_df: Optional[pd.DataFrame],
+    *,
+    code_query: str = "",
+    sector_query: str = "",
+    side: str = "all",
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    baseline_mode: str = "all",
+) -> pd.DataFrame:
+    if signals_df is None or signals_df.empty:
+        return pd.DataFrame()
+
+    df = signals_df.copy()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+        df = df[df["date"].notna()]
+        start_ts = None if start_date is None else pd.Timestamp(start_date)
+        end_ts = None if end_date is None else pd.Timestamp(end_date)
+        if start_ts is not None:
+            df = df[df["date"] >= start_ts]
+        if end_ts is not None:
+            df = df[df["date"] <= end_ts]
+
+    code_keyword = str(code_query or "").strip()
+    if code_keyword:
+        code_cols = [
+            col for col in ["symbol", "code", "symbol_jp", "symbol_us", "path_group"] if col in df.columns
+        ]
+        if code_cols:
+            mask = pd.Series(False, index=df.index)
+            for col in code_cols:
+                mask = mask | df[col].astype(str).str.contains(code_keyword, case=False, na=False)
+            df = df[mask]
+
+    sector_keyword = str(sector_query or "").strip()
+    if sector_keyword:
+        sector_cols = [
+            col
+            for col in ["sector", "path_group", "sector_name", "industry", "group_name"]
+            if col in df.columns
+        ]
+        if not sector_cols and "symbol" in df.columns:
+            sector_cols = ["symbol"]
+        if sector_cols:
+            mask = pd.Series(False, index=df.index)
+            for col in sector_cols:
+                mask = mask | df[col].astype(str).str.contains(sector_keyword, case=False, na=False)
+            df = df[mask]
+
+    side_norm = str(side or "all").strip().lower()
+    if side_norm in {"long", "short"}:
+        if "signal" in df.columns:
+            signal_values = pd.to_numeric(df["signal"], errors="coerce")
+            if side_norm == "long":
+                df = df[signal_values > 0]
+            else:
+                df = df[signal_values < 0]
+        elif "side" in df.columns:
+            df = df[df["side"].astype(str).str.lower() == side_norm]
+
+    baseline_norm = str(baseline_mode or "all").strip().lower()
+    if baseline_norm not in {"", "all", "すべて"} and "baseline_mode" in df.columns:
+        df = df[df["baseline_mode"].astype(str).str.lower() == baseline_norm]
+
+    sort_cols = [col for col in ["date", "symbol"] if col in df.columns]
+    if sort_cols:
+        ascending = [False if col == "date" else True for col in sort_cols]
+        df = df.sort_values(sort_cols, ascending=ascending)
+    return df.reset_index(drop=True)
+
+
+def _filter_leadlag_weights(
+    weights_df: Optional[pd.DataFrame],
+    *,
+    code_query: str = "",
+    sector_query: str = "",
+    side: str = "all",
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    baseline_mode: str = "all",
+) -> pd.DataFrame:
+    if weights_df is None or weights_df.empty:
+        return pd.DataFrame()
+
+    df = weights_df.copy()
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+        df = df[df["date"].notna()]
+        start_ts = None if start_date is None else pd.Timestamp(start_date)
+        end_ts = None if end_date is None else pd.Timestamp(end_date)
+        if start_ts is not None:
+            df = df[df["date"] >= start_ts]
+        if end_ts is not None:
+            df = df[df["date"] <= end_ts]
+
+    code_keyword = str(code_query or "").strip()
+    if code_keyword:
+        code_cols = [
+            col for col in ["symbol", "code", "symbol_jp", "symbol_us", "path_group"] if col in df.columns
+        ]
+        if code_cols:
+            mask = pd.Series(False, index=df.index)
+            for col in code_cols:
+                mask = mask | df[col].astype(str).str.contains(code_keyword, case=False, na=False)
+            df = df[mask]
+
+    sector_keyword = str(sector_query or "").strip()
+    if sector_keyword:
+        sector_cols = [
+            col
+            for col in ["sector", "path_group", "sector_name", "industry", "group_name"]
+            if col in df.columns
+        ]
+        if not sector_cols and "symbol" in df.columns:
+            sector_cols = ["symbol"]
+        if sector_cols:
+            mask = pd.Series(False, index=df.index)
+            for col in sector_cols:
+                mask = mask | df[col].astype(str).str.contains(sector_keyword, case=False, na=False)
+            df = df[mask]
+
+    side_norm = str(side or "all").strip().lower()
+    if side_norm in {"long", "short"}:
+        if "side" in df.columns:
+            df = df[df["side"].astype(str).str.lower() == side_norm]
+        elif "weight" in df.columns:
+            weight_values = pd.to_numeric(df["weight"], errors="coerce")
+            if side_norm == "long":
+                df = df[weight_values > 0]
+            else:
+                df = df[weight_values < 0]
+
+    baseline_norm = str(baseline_mode or "all").strip().lower()
+    if baseline_norm not in {"", "all", "すべて"} and "baseline_mode" in df.columns:
+        df = df[df["baseline_mode"].astype(str).str.lower() == baseline_norm]
+
+    sort_cols = [col for col in ["date", "symbol"] if col in df.columns]
+    if sort_cols:
+        ascending = [False if col == "date" else True for col in sort_cols]
+        df = df.sort_values(sort_cols, ascending=ascending)
+    return df.reset_index(drop=True)
+
+
 def _render_pair_spread_chart(
     df_pair: pd.DataFrame,
     entry_threshold: float,
@@ -5731,6 +6007,20 @@ def main():
             st.session_state["ma5_dev_backtest_trades"] = None
         if "ma5_dev_backtest_daily" not in st.session_state:
             st.session_state["ma5_dev_backtest_daily"] = None
+        if "leadlag_backtest_summary" not in st.session_state:
+            st.session_state["leadlag_backtest_summary"] = None
+        if "leadlag_backtest_daily_returns" not in st.session_state:
+            st.session_state["leadlag_backtest_daily_returns"] = None
+        if "leadlag_backtest_signals" not in st.session_state:
+            st.session_state["leadlag_backtest_signals"] = None
+        if "leadlag_backtest_weights" not in st.session_state:
+            st.session_state["leadlag_backtest_weights"] = None
+        if "leadlag_backtest_diagnostics" not in st.session_state:
+            st.session_state["leadlag_backtest_diagnostics"] = None
+        if "leadlag_backtest_mapping_df" not in st.session_state:
+            st.session_state["leadlag_backtest_mapping_df"] = None
+        if "leadlag_backtest_trades_df" not in st.session_state:
+            st.session_state["leadlag_backtest_trades_df"] = None
 
         backtest_col1, backtest_col2 = st.columns(2)
         with backtest_col1:
@@ -6410,6 +6700,475 @@ def main():
         if bull_signals is not None and not bull_signals.empty:
             st.markdown("#### シグナル一覧（上位200件）")
             st.dataframe(bull_signals.head(200), use_container_width=True)
+
+        st.divider()
+        st.subheader("日米業種リードラグ（PCA SUB 論文再現）")
+        st.caption(
+            "USのclose-to-closeをシグナル、JPのopen-to-closeをターゲットにした"
+            "業種リードラグ戦略を検証します。"
+        )
+
+        leadlag_col1, leadlag_col2 = st.columns(2)
+        with leadlag_col1:
+            leadlag_lookback = st.number_input(
+                "lookback",
+                min_value=2,
+                max_value=260,
+                value=60,
+                step=1,
+                key="leadlag_lookback",
+            )
+            leadlag_lambda_reg = st.number_input(
+                "lambda_reg",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.9,
+                step=0.01,
+                format="%.2f",
+                key="leadlag_lambda_reg",
+            )
+            leadlag_n_components = st.number_input(
+                "n_components",
+                min_value=1,
+                max_value=20,
+                value=3,
+                step=1,
+                key="leadlag_n_components",
+            )
+            leadlag_quantile_q = st.number_input(
+                "quantile_q",
+                min_value=0.01,
+                max_value=0.49,
+                value=0.30,
+                step=0.01,
+                format="%.2f",
+                key="leadlag_quantile_q",
+            )
+            leadlag_period = st.date_input(
+                "期間",
+                value=(date.today() - timedelta(days=365 * 3), date.today()),
+                key="leadlag_period",
+            )
+        with leadlag_col2:
+            leadlag_one_way_cost_bps = st.number_input(
+                "one_way_cost_bps",
+                min_value=0.0,
+                max_value=100.0,
+                value=10.0,
+                step=0.5,
+                key="leadlag_one_way_cost_bps",
+            )
+            leadlag_baseline_mode = st.selectbox(
+                "baseline_mode",
+                options=["pca_sub", "plainpca", "mompca", "double"],
+                index=0,
+                key="leadlag_baseline_mode",
+            )
+            leadlag_prior_period = st.date_input(
+                "prior期間",
+                value=(
+                    date.today() - timedelta(days=365 * 5),
+                    date.today() - timedelta(days=365 * 3),
+                ),
+                key="leadlag_prior_period",
+            )
+
+        leadlag_period_start, leadlag_period_end = _parse_date_input_range(leadlag_period)
+        leadlag_prior_start, leadlag_prior_end = _parse_date_input_range(leadlag_prior_period)
+
+        st.markdown("#### 事前期間CSVアップロード")
+        upload_col1, upload_col2 = st.columns(2)
+        with upload_col1:
+            leadlag_us_csv_files = st.file_uploader(
+                "US CSV（保存先: data/price_csv/leadlag_us/）",
+                type=["csv"],
+                accept_multiple_files=True,
+                key="leadlag_us_csv_upload",
+            )
+            if st.button("US CSVを保存", key="save_leadlag_us_csv"):
+                saved_count, save_errors = _save_leadlag_uploaded_csvs(
+                    leadlag_us_csv_files,
+                    PRICE_CSV_DIR / "leadlag_us",
+                )
+                for message in save_errors:
+                    st.error("US CSVの保存に失敗しました: {}".format(message))
+                if saved_count > 0:
+                    st.success(
+                        "US CSVを{}件保存しました: {}".format(
+                            saved_count, PRICE_CSV_DIR / "leadlag_us"
+                        )
+                    )
+
+        with upload_col2:
+            leadlag_jp_csv_files = st.file_uploader(
+                "JP CSV（保存先: data/price_csv/leadlag_jp/）",
+                type=["csv"],
+                accept_multiple_files=True,
+                key="leadlag_jp_csv_upload",
+            )
+            if st.button("JP CSVを保存", key="save_leadlag_jp_csv"):
+                saved_count, save_errors = _save_leadlag_uploaded_csvs(
+                    leadlag_jp_csv_files,
+                    PRICE_CSV_DIR / "leadlag_jp",
+                )
+                for message in save_errors:
+                    st.error("JP CSVの保存に失敗しました: {}".format(message))
+                if saved_count > 0:
+                    st.success(
+                        "JP CSVを{}件保存しました: {}".format(
+                            saved_count, PRICE_CSV_DIR / "leadlag_jp"
+                        )
+                    )
+
+        run_leadlag_backtest = st.button(
+            "バックテスト実行",
+            type="primary",
+            key="run_leadlag_backtest",
+        )
+        if run_leadlag_backtest:
+            input_errors, input_warnings = _validate_leadlag_inputs(
+                lookback=int(leadlag_lookback),
+                lambda_reg=float(leadlag_lambda_reg),
+                n_components=int(leadlag_n_components),
+                quantile_q=float(leadlag_quantile_q),
+                one_way_cost_bps=float(leadlag_one_way_cost_bps),
+                start_date=leadlag_period_start,
+                end_date=leadlag_period_end,
+                prior_start=leadlag_prior_start,
+                prior_end=leadlag_prior_end,
+            )
+            for warning in input_warnings:
+                st.warning(warning)
+            if input_errors:
+                for error_message in input_errors:
+                    st.error(error_message)
+            else:
+                progress_update, progress_done = _build_progress_updater(
+                    "日米業種リードラグ バックテスト"
+                )
+                progress_update(0, 1, "計算中")
+                result = None
+                try:
+                    result = run_jp_us_sector_leadlag_backtest(
+                        lookback=int(leadlag_lookback),
+                        lambda_reg=float(leadlag_lambda_reg),
+                        n_components=int(leadlag_n_components),
+                        quantile_q=float(leadlag_quantile_q),
+                        baseline_mode=str(leadlag_baseline_mode),
+                        one_way_cost_bps=float(leadlag_one_way_cost_bps),
+                        prior_start=(
+                            leadlag_prior_start.isoformat() if leadlag_prior_start is not None else None
+                        ),
+                        prior_end=(
+                            leadlag_prior_end.isoformat() if leadlag_prior_end is not None else None
+                        ),
+                        start_date=(
+                            leadlag_period_start.isoformat() if leadlag_period_start is not None else None
+                        ),
+                        end_date=(
+                            leadlag_period_end.isoformat() if leadlag_period_end is not None else None
+                        ),
+                    )
+                except Exception as exc:
+                    st.error(f"日米業種リードラグのバックテスト実行に失敗しました: {exc}")
+                finally:
+                    progress_done()
+
+                if isinstance(result, dict):
+                    signals_df = result.get("signals")
+                    weights_df = result.get("weights")
+
+                    if isinstance(signals_df, pd.DataFrame) and not signals_df.empty:
+                        if "baseline_mode" not in signals_df.columns:
+                            signals_df = signals_df.copy()
+                            signals_df["baseline_mode"] = str(leadlag_baseline_mode)
+                    if isinstance(weights_df, pd.DataFrame) and not weights_df.empty:
+                        if "baseline_mode" not in weights_df.columns:
+                            weights_df = weights_df.copy()
+                            weights_df["baseline_mode"] = str(leadlag_baseline_mode)
+
+                    mapping_df = result.get("calendar_mapping")
+                    if mapping_df is None:
+                        mapping_df = result.get("mapping_df")
+
+                    st.session_state["leadlag_backtest_summary"] = result.get("summary")
+                    st.session_state["leadlag_backtest_daily_returns"] = result.get("daily_returns")
+                    st.session_state["leadlag_backtest_signals"] = signals_df
+                    st.session_state["leadlag_backtest_weights"] = weights_df
+                    st.session_state["leadlag_backtest_diagnostics"] = result.get("diagnostics")
+                    st.session_state["leadlag_backtest_mapping_df"] = mapping_df
+                    st.session_state["leadlag_backtest_trades_df"] = result.get("trades_df")
+
+        leadlag_summary = st.session_state.get("leadlag_backtest_summary")
+        leadlag_daily_returns = st.session_state.get("leadlag_backtest_daily_returns")
+        leadlag_signals = st.session_state.get("leadlag_backtest_signals")
+        leadlag_weights = st.session_state.get("leadlag_backtest_weights")
+        leadlag_diagnostics = st.session_state.get("leadlag_backtest_diagnostics")
+        leadlag_mapping_df = st.session_state.get("leadlag_backtest_mapping_df")
+        leadlag_trades_df = st.session_state.get("leadlag_backtest_trades_df")
+
+        if isinstance(leadlag_summary, pd.DataFrame) and not leadlag_summary.empty:
+            st.markdown("#### summary")
+            summary_cards = _build_leadlag_summary_cards(leadlag_summary)
+            if summary_cards:
+                metric_cols = st.columns(len(summary_cards))
+                for col, (label, value) in zip(metric_cols, summary_cards):
+                    with col:
+                        st.metric(label, value)
+            st.dataframe(leadlag_summary, use_container_width=True)
+
+        baseline_candidates = set()
+        for frame in [leadlag_signals, leadlag_weights]:
+            if isinstance(frame, pd.DataFrame) and not frame.empty and "baseline_mode" in frame.columns:
+                baseline_candidates.update(frame["baseline_mode"].dropna().astype(str).tolist())
+        baseline_filter_options = ["all"] + sorted(baseline_candidates)
+
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        with filter_col1:
+            leadlag_code_query = st.text_input("コード検索", key="leadlag_code_query")
+            leadlag_side_filter = st.selectbox(
+                "long / short",
+                options=["all", "long", "short"],
+                format_func=lambda value: "すべて" if value == "all" else value,
+                key="leadlag_side_filter",
+            )
+        with filter_col2:
+            leadlag_sector_query = st.text_input("セクター名検索", key="leadlag_sector_query")
+            leadlag_baseline_filter = st.selectbox(
+                "baseline 切替",
+                options=baseline_filter_options,
+                format_func=lambda value: "すべて" if value == "all" else value,
+                key="leadlag_baseline_filter",
+            )
+        with filter_col3:
+            default_filter_start = leadlag_period_start or (date.today() - timedelta(days=365 * 3))
+            default_filter_end = leadlag_period_end or date.today()
+            leadlag_filter_period = st.date_input(
+                "日付範囲",
+                value=(default_filter_start, default_filter_end),
+                key="leadlag_filter_period",
+            )
+            leadlag_display_limit = st.number_input(
+                "表示件数上限",
+                min_value=10,
+                max_value=5000,
+                value=300,
+                step=10,
+                key="leadlag_display_limit",
+            )
+
+        leadlag_filter_start, leadlag_filter_end = _parse_date_input_range(leadlag_filter_period)
+        display_limit = int(leadlag_display_limit)
+
+        if isinstance(leadlag_daily_returns, pd.DataFrame) and not leadlag_daily_returns.empty:
+            st.markdown("#### daily_returns")
+            daily_filtered = leadlag_daily_returns.copy()
+            daily_filtered["date"] = pd.to_datetime(daily_filtered["date"], errors="coerce").dt.normalize()
+            daily_filtered = daily_filtered[daily_filtered["date"].notna()]
+            if leadlag_filter_start is not None:
+                daily_filtered = daily_filtered[daily_filtered["date"] >= pd.Timestamp(leadlag_filter_start)]
+            if leadlag_filter_end is not None:
+                daily_filtered = daily_filtered[daily_filtered["date"] <= pd.Timestamp(leadlag_filter_end)]
+
+            if daily_filtered.empty:
+                st.info("日付範囲に該当する daily_returns がありません。")
+            else:
+                daily_display = daily_filtered.sort_values("date", ascending=False).head(display_limit).copy()
+                daily_display["date"] = daily_display["date"].dt.strftime("%Y-%m-%d")
+                st.dataframe(daily_display, use_container_width=True)
+
+                equity_source = daily_filtered.sort_values("date").copy()
+                if "equity_curve" in equity_source.columns:
+                    leadlag_equity_fig = go.Figure()
+                    leadlag_equity_fig.add_trace(
+                        go.Scatter(
+                            x=equity_source["date"],
+                            y=equity_source["equity_curve"],
+                            mode="lines",
+                            name="equity_curve",
+                        )
+                    )
+                    leadlag_equity_fig.update_layout(
+                        title="equity curve",
+                        xaxis_title="Date",
+                        yaxis_title="Equity",
+                        margin=dict(l=20, r=20, t=50, b=20),
+                    )
+                    st.plotly_chart(leadlag_equity_fig, use_container_width=True)
+
+                st.download_button(
+                    "daily_returns CSVをダウンロード",
+                    data=daily_filtered.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="leadlag_daily_returns_filtered.csv",
+                    mime="text/csv",
+                    key="download_leadlag_daily_returns",
+                )
+
+        if isinstance(leadlag_signals, pd.DataFrame) and not leadlag_signals.empty:
+            st.markdown("#### signals")
+            filtered_signals = _filter_leadlag_signals(
+                leadlag_signals,
+                code_query=leadlag_code_query,
+                sector_query=leadlag_sector_query,
+                side=leadlag_side_filter,
+                start_date=leadlag_filter_start,
+                end_date=leadlag_filter_end,
+                baseline_mode=leadlag_baseline_filter,
+            )
+            if filtered_signals.empty:
+                st.info("条件に該当する signals がありません。")
+            else:
+                signals_display = filtered_signals.head(display_limit).copy()
+                if "date" in signals_display.columns:
+                    signals_display["date"] = pd.to_datetime(
+                        signals_display["date"], errors="coerce"
+                    ).dt.strftime("%Y-%m-%d")
+                st.dataframe(signals_display, use_container_width=True)
+                st.caption(f"表示: {len(signals_display)} / 抽出後: {len(filtered_signals)}")
+            st.download_button(
+                "signals CSVをダウンロード",
+                data=filtered_signals.to_csv(index=False).encode("utf-8-sig"),
+                file_name="leadlag_signals_filtered.csv",
+                mime="text/csv",
+                key="download_leadlag_signals",
+            )
+
+        if isinstance(leadlag_weights, pd.DataFrame) and not leadlag_weights.empty:
+            st.markdown("#### weights")
+            filtered_weights = _filter_leadlag_weights(
+                leadlag_weights,
+                code_query=leadlag_code_query,
+                sector_query=leadlag_sector_query,
+                side=leadlag_side_filter,
+                start_date=leadlag_filter_start,
+                end_date=leadlag_filter_end,
+                baseline_mode=leadlag_baseline_filter,
+            )
+            if filtered_weights.empty:
+                st.info("条件に該当する weights がありません。")
+            else:
+                weights_display = filtered_weights.head(display_limit).copy()
+                if "date" in weights_display.columns:
+                    weights_display["date"] = pd.to_datetime(
+                        weights_display["date"], errors="coerce"
+                    ).dt.strftime("%Y-%m-%d")
+                st.dataframe(weights_display, use_container_width=True)
+                st.caption(f"表示: {len(weights_display)} / 抽出後: {len(filtered_weights)}")
+            st.download_button(
+                "weights CSVをダウンロード",
+                data=filtered_weights.to_csv(index=False).encode("utf-8-sig"),
+                file_name="leadlag_weights_filtered.csv",
+                mime="text/csv",
+                key="download_leadlag_weights",
+            )
+
+        if isinstance(leadlag_diagnostics, dict) and leadlag_diagnostics:
+            st.markdown("#### diagnostics")
+
+            diagnostics_counts = leadlag_diagnostics.get("counts") or {}
+            if diagnostics_counts:
+                counts_df = (
+                    pd.DataFrame(
+                        [{"reason": str(reason), "count": int(count)} for reason, count in diagnostics_counts.items()]
+                    )
+                    .sort_values("count", ascending=False)
+                    .reset_index(drop=True)
+                )
+                st.dataframe(counts_df, use_container_width=True)
+
+            diagnostics_daily = leadlag_diagnostics.get("daily")
+            if isinstance(diagnostics_daily, pd.DataFrame) and not diagnostics_daily.empty:
+                diagnostics_daily_df = diagnostics_daily.copy()
+                diagnostics_daily_df["date"] = pd.to_datetime(
+                    diagnostics_daily_df["date"], errors="coerce"
+                ).dt.normalize()
+                diagnostics_daily_df = diagnostics_daily_df[diagnostics_daily_df["date"].notna()]
+                if leadlag_filter_start is not None:
+                    diagnostics_daily_df = diagnostics_daily_df[
+                        diagnostics_daily_df["date"] >= pd.Timestamp(leadlag_filter_start)
+                    ]
+                if leadlag_filter_end is not None:
+                    diagnostics_daily_df = diagnostics_daily_df[
+                        diagnostics_daily_df["date"] <= pd.Timestamp(leadlag_filter_end)
+                    ]
+                if diagnostics_daily_df.empty:
+                    st.info("条件に該当する diagnostics 日次ログがありません。")
+                else:
+                    diagnostics_display = (
+                        diagnostics_daily_df.sort_values("date", ascending=False)
+                        .head(display_limit)
+                        .copy()
+                    )
+                    diagnostics_display["date"] = diagnostics_display["date"].dt.strftime("%Y-%m-%d")
+                    st.dataframe(diagnostics_display, use_container_width=True)
+                st.download_button(
+                    "diagnostics(日次) CSVをダウンロード",
+                    data=diagnostics_daily_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="leadlag_diagnostics_daily_filtered.csv",
+                    mime="text/csv",
+                    key="download_leadlag_diagnostics_daily",
+                )
+
+            diagnostics_regularization = leadlag_diagnostics.get("regularization")
+            if isinstance(diagnostics_regularization, dict) and diagnostics_regularization:
+                st.dataframe(pd.DataFrame([diagnostics_regularization]), use_container_width=True)
+
+            diagnostics_config = leadlag_diagnostics.get("config")
+            if isinstance(diagnostics_config, dict) and diagnostics_config:
+                with st.expander("diagnostics config", expanded=False):
+                    st.json(diagnostics_config)
+
+        if isinstance(leadlag_mapping_df, pd.DataFrame) and not leadlag_mapping_df.empty:
+            st.markdown("#### mapping_df")
+            mapping_display = leadlag_mapping_df.copy()
+            mapping_date_col = (
+                "trade_date_jp"
+                if "trade_date_jp" in mapping_display.columns
+                else "date" if "date" in mapping_display.columns else None
+            )
+            if mapping_date_col is not None:
+                mapping_display[mapping_date_col] = pd.to_datetime(
+                    mapping_display[mapping_date_col], errors="coerce"
+                ).dt.normalize()
+                mapping_display = mapping_display[mapping_display[mapping_date_col].notna()]
+                if leadlag_filter_start is not None:
+                    mapping_display = mapping_display[
+                        mapping_display[mapping_date_col] >= pd.Timestamp(leadlag_filter_start)
+                    ]
+                if leadlag_filter_end is not None:
+                    mapping_display = mapping_display[
+                        mapping_display[mapping_date_col] <= pd.Timestamp(leadlag_filter_end)
+                    ]
+                if mapping_date_col in mapping_display.columns:
+                    mapping_display[mapping_date_col] = mapping_display[mapping_date_col].dt.strftime("%Y-%m-%d")
+            st.dataframe(mapping_display.head(display_limit), use_container_width=True)
+            st.download_button(
+                "mapping_df CSVをダウンロード",
+                data=mapping_display.to_csv(index=False).encode("utf-8-sig"),
+                file_name="leadlag_mapping_filtered.csv",
+                mime="text/csv",
+                key="download_leadlag_mapping",
+            )
+
+        if isinstance(leadlag_trades_df, pd.DataFrame) and not leadlag_trades_df.empty:
+            st.markdown("#### trades_df")
+            trades_display = leadlag_trades_df.copy()
+            if "date" in trades_display.columns:
+                trades_display["date"] = pd.to_datetime(trades_display["date"], errors="coerce")
+                trades_display = trades_display[trades_display["date"].notna()]
+                if leadlag_filter_start is not None:
+                    trades_display = trades_display[trades_display["date"] >= pd.Timestamp(leadlag_filter_start)]
+                if leadlag_filter_end is not None:
+                    trades_display = trades_display[trades_display["date"] <= pd.Timestamp(leadlag_filter_end)]
+                trades_display["date"] = trades_display["date"].dt.strftime("%Y-%m-%d")
+            st.dataframe(trades_display.head(display_limit), use_container_width=True)
+            st.download_button(
+                "trades_df CSVをダウンロード",
+                data=trades_display.to_csv(index=False).encode("utf-8-sig"),
+                file_name="leadlag_trades_filtered.csv",
+                mime="text/csv",
+                key="download_leadlag_trades",
+            )
 
         st.markdown("#### ミネルヴィニ条件グリッドサーチ")
         st.caption(
