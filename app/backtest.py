@@ -6,7 +6,16 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Un
 import numpy as np
 import pandas as pd
 
-from .data_loader import get_available_symbols, load_price_csv, load_topix_csv
+from .data_loader import (
+    align_us_signal_and_jp_target,
+    compute_jp_open_to_close_returns,
+    compute_us_close_to_close_returns,
+    get_available_symbols,
+    load_leadlag_panel,
+    load_price_csv,
+    load_topix_csv,
+)
+from .leadlag_pca import LeadLagConfig, run_leadlag_pca_backtest
 from .minervini_screen import MinerviniScreenConfig, compute_minervini_indicators
 
 
@@ -1690,6 +1699,83 @@ def _build_bull_regime_mask(
         bull = bull & (df["close"].pct_change(momentum_lookback) > 0)
     df["is_bull"] = bull.fillna(False)
     return df
+
+
+def run_jp_us_sector_leadlag_backtest(
+    lookback: int = 60,
+    lambda_reg: float = 0.9,
+    n_components: int = 3,
+    quantile_q: float = 0.3,
+    baseline_mode: str = "pca_sub",
+    one_way_cost_bps: float = 10.0,
+    prior_start: Optional[str] = None,
+    prior_end: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    min_jp_symbols: int = 6,
+    min_us_symbols: int = 3,
+    momentum_lookback: int = 20,
+    join_key: str = "path_group",
+) -> Dict[str, Any]:
+    """
+    JP open-to-close を被説明、US close-to-close を説明側にした lead-lag PCA バックテスト。
+
+    Returns:
+        {
+            "signals": DataFrame,
+            "weights": DataFrame,
+            "daily_returns": DataFrame,
+            "summary": DataFrame,
+            "diagnostics": dict,
+            "calendar_mapping": DataFrame,
+        }
+    """
+
+    config = LeadLagConfig(
+        lookback=int(lookback),
+        lambda_reg=float(lambda_reg),
+        n_components=int(n_components),
+        quantile_q=float(quantile_q),
+        baseline_mode=str(baseline_mode),
+        one_way_cost_bps=float(one_way_cost_bps),
+        prior_start=prior_start,
+        prior_end=prior_end,
+        min_jp_symbols=int(min_jp_symbols),
+        min_us_symbols=int(min_us_symbols),
+        momentum_lookback=int(momentum_lookback),
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    us_panel = load_leadlag_panel(market="US")
+    jp_panel = load_leadlag_panel(market="JP")
+
+    if start_date is not None:
+        start_ts = pd.to_datetime(start_date, errors="coerce").normalize()
+        if pd.notna(start_ts):
+            us_panel = us_panel[pd.to_datetime(us_panel["date"], errors="coerce").dt.normalize() >= start_ts]
+            jp_panel = jp_panel[pd.to_datetime(jp_panel["date"], errors="coerce").dt.normalize() >= start_ts]
+    if end_date is not None:
+        end_ts = pd.to_datetime(end_date, errors="coerce").normalize()
+        if pd.notna(end_ts):
+            us_panel = us_panel[pd.to_datetime(us_panel["date"], errors="coerce").dt.normalize() <= end_ts]
+            jp_panel = jp_panel[pd.to_datetime(jp_panel["date"], errors="coerce").dt.normalize() <= end_ts]
+
+    us_signal_df = compute_us_close_to_close_returns(us_panel)
+    jp_target_df = compute_jp_open_to_close_returns(jp_panel)
+    aligned_df, calendar_mapping = align_us_signal_and_jp_target(
+        us_signal_df=us_signal_df,
+        jp_target_df=jp_target_df,
+        join_key=join_key,
+    )
+
+    result = run_leadlag_pca_backtest(
+        aligned_df=aligned_df,
+        config=config,
+        join_key=join_key,
+    )
+    result["calendar_mapping"] = calendar_mapping
+    return result
 
 
 def run_bull_market_new_high_momentum_backtest(
