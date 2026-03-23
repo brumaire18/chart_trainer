@@ -139,6 +139,119 @@ print(result["event_study"].to_string(index=False))
 
 > 事前に `python -m app.jquants_fetcher --include-topix` で `data/price_csv/topix.csv` を更新しておくとスムーズです。
 
+## 日米業種リードラグ（PCA SUB 論文再現）
+
+`app/backtest.py` の `run_jp_us_sector_leadlag_backtest` と `ui_streamlit.py` の専用画面から、US の close-to-close をシグナル、JP の open-to-close をターゲットにした業種リードラグ戦略を実行できます。PCA を使って米国業種の共通要因を抽出し、日本側の寄り付き〜引けの相対的な強弱を検証する構成で、追加した操作はすべて Streamlit 画面上で完結します。
+
+### 想定環境（PyCharm + Python 3.8 + Streamlit）
+
+1. **PyCharm で Python 3.8 interpreter を選択**します。`File` → `Settings` → `Project: chart_trainer` → `Python Interpreter` から、Python 3.8 の仮想環境またはローカル環境を指定してください。
+2. PyCharm の `Terminal` で依存関係を入れます。
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. 同じく PyCharm の `Terminal`、または `Run/Debug Configurations` で以下を実行します。
+   ```bash
+   streamlit run ui_streamlit.py
+   ```
+4. ブラウザで開いた Streamlit 画面のバックテスト領域にある **「日米業種リードラグ（PCA SUB 論文再現）」** セクションから操作します。
+
+> 将来この README に画面キャプチャを追加する場合は、上記 4. の直後に「バックテスト画面の全体像」や「CSVアップロード欄」の画像を差し込むと、初回セットアップから実行導線までを自然につなげられます。
+
+### 論文戦略の概要
+
+- 米国 ETF 群の日次リターン（close-to-close）を説明変数として扱います。
+- 日本 ETF 群の日中リターン（open-to-close）を被説明変数として扱います。
+- 事前期間（prior期間）で基準関係を推定し、本番期間で long / short シグナルとウェイトを計算します。
+- `baseline_mode` の既定値は `pca_sub` で、README では論文再現の基本モードとしてこの設定を前提に案内します。
+
+### 既定値
+
+画面上の既定値は次のとおりです。
+
+- `lookback=60`
+- `lambda_reg=0.9`
+- `n_components=3`
+- `quantile_q=0.3`
+
+必要に応じて `one_way_cost_bps`、`期間`、`prior期間` も画面上で変更できますが、まずは既定値のまま動作確認するのが安全です。
+
+### 必要データ
+
+- **US 業種 ETF の CSV**
+- **Japan 業種 ETF の CSV**
+- 各 CSV は、少なくとも日付と価格系列を含み、Streamlit 画面から複数ファイルをまとめて保存できる形にしておきます。
+- 事前期間（prior期間）と本番期間（期間）の両方をカバーできる履歴長を用意してください。
+
+### US / Japan ETF CSV の保存先
+
+Streamlit 画面のアップロード機能で保存されるディレクトリは以下です。
+
+- US ETF CSV: `data/price_csv/leadlag_us/`
+- Japan ETF CSV: `data/price_csv/leadlag_jp/`
+
+既存運用でファイルを手動配置する場合も、この保存先に置いておくと画面操作と整合します。
+
+### CSVアップロード手順
+
+1. Streamlit 画面で **「日米業種リードラグ（PCA SUB 論文再現）」** を開きます。
+2. **「事前期間CSVアップロード」** の US 側で `US CSV（保存先: data/price_csv/leadlag_us/）` を選び、対象ファイルを複数選択します。
+3. **「US CSVを保存」** を押して保存完了メッセージを確認します。
+4. 同様に JP 側で `JP CSV（保存先: data/price_csv/leadlag_jp/）` を選び、**「JP CSVを保存」** を押します。
+5. 保存後は同じ画面のままバックテスト実行へ進めます。別ツールへ移動する必要はありません。
+
+### Streamlit画面での実行手順
+
+1. `lookback`、`lambda_reg`、`n_components`、`quantile_q` を確認します。初回は既定値のまま推奨です。
+2. `期間` に本番バックテスト期間を設定します。
+3. `prior期間` に事前学習・基準推定用の期間を設定します。
+4. 必要に応じて `one_way_cost_bps` と `baseline_mode` を調整します。論文再現の入口としては `baseline_mode=pca_sub` を推奨します。
+5. **「バックテスト実行」** を押します。
+6. 実行後、同一画面内で `summary`、`daily_returns`、`signals`、`weights`、`diagnostics` が順番に表示されます。
+
+### 検索・フィルタ方法
+
+バックテスト実行後は、画面上で次の絞り込みが可能です。
+
+- `コード検索`: ETF コードで対象を絞り込み
+- `long / short`: 売買方向で絞り込み
+- `セクター名検索`: 業種・グループ名で絞り込み
+- `baseline 切替`: `pca_sub` などの方式別に確認
+- `日付範囲`: 表示対象期間を再指定
+- `表示件数上限`: 表示する行数を制御
+
+`signals` と `weights` は同じ検索条件で見比べられるため、シグナル発生と配分の対応確認を画面だけで進められます。
+
+### CSVダウンロード方法
+
+各結果テーブルの下にダウンロードボタンがあります。必要な表だけをその場で CSV 保存できます。
+
+- `daily_returns CSVをダウンロード`
+- `signals CSVをダウンロード`
+- `weights CSVをダウンロード`
+- `diagnostics(日次) CSVをダウンロード`
+
+補助的に `mapping_df` と `trades_df` も画面から CSV 保存できます。再分析や Excel / pandas での二次確認に便利です。
+
+### 返却される出力
+
+Bull breakout セクションと同様に、実行結果として主要な出力を確認できます。
+
+- `summary`: CAGR、Sharpe、最大ドローダウン、勝率、件数などの集計サマリー
+- `daily_returns`: 日次の戦略損益、ベンチマーク差分、`equity_curve` を含む時系列
+- `signals`: いつ、どの業種・銘柄群に long / short シグナルが出たかを確認する一覧
+- `weights`: 各日付・各サイドの配分ウェイトを確認する一覧
+- `diagnostics`: 件数集計、日次ログ、正則化や設定情報などの診断用出力
+
+画面上では `summary` を表で確認しつつ、`daily_returns` はテーブルとエクイティカーブ、`signals` / `weights` / `diagnostics` は表 + CSV ダウンロードで確認する流れになります。
+
+### オーバーフィット注意
+
+- `lookback`、`n_components`、`quantile_q` を何度も微調整して、特定期間だけ良く見える設定を選ぶと過学習になりやすいです。
+- `prior期間` と `期間` を明確に分け、評価期間を後から触りすぎない運用を推奨します。
+- 1回の好成績だけで判断せず、複数期間・複数相場環境で再現性を確認してください。
+- CSV を追加・削除するとユニバース自体が変わるため、結果比較時は使用データセットも合わせて記録してください。
+
 ## ペアトレードのバックテスト
 
 `app/pair_trading.py` に簡易のペアトレードバックテストを追加しています。業種（`sector33` / `sector17`）ごとにペア候補を生成し、ローリングOLSでヘッジ比率を推定してスプレッドのZスコアを用いて売買します。
