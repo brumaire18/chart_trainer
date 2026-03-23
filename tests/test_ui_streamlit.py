@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -25,6 +26,10 @@ from ui_streamlit import (
     _group_matches_sector_filter,
     _filter_symbol_disclosures,
     _build_backtest_visualization_df,
+    _build_leadlag_summary_cards,
+    _filter_leadlag_signals,
+    _filter_leadlag_weights,
+    _validate_leadlag_inputs,
 )
 
 
@@ -635,3 +640,118 @@ class BuildBacktestVisualizationDfTest(unittest.TestCase):
         results = pd.DataFrame([{"date": "2024-01-01", "return": 0.1}])
         vis_df = _build_backtest_visualization_df(results)
         self.assertTrue(vis_df.empty)
+
+
+class LeadLagUiHelpersTest(unittest.TestCase):
+    def test_filter_leadlag_signals_supports_date_side_code_and_sector_filters(self):
+        signals_df = pd.DataFrame(
+            [
+                {"date": "2024-01-09", "symbol": "1301", "signal": 0.9, "sector": "Tech", "baseline_mode": "pca_sub"},
+                {"date": "2024-01-10", "symbol": "8306", "signal": -0.7, "sector": "Financials", "baseline_mode": "plainpca"},
+                {"date": "2024-01-11", "symbol": "1302", "signal": 0.3, "sector": "Tech Hardware", "baseline_mode": "pca_sub"},
+            ]
+        )
+
+        filtered = _filter_leadlag_signals(
+            signals_df,
+            code_query="130",
+            sector_query="tech",
+            side="long",
+            start_date=date(2024, 1, 9),
+            end_date=date(2024, 1, 10),
+            baseline_mode="pca_sub",
+        )
+
+        self.assertEqual(["1301"], filtered["symbol"].tolist())
+        self.assertTrue((filtered["signal"] > 0).all())
+        self.assertTrue((filtered["date"] >= pd.Timestamp("2024-01-09")).all())
+        self.assertTrue((filtered["date"] <= pd.Timestamp("2024-01-10")).all())
+
+    def test_filter_leadlag_weights_supports_short_and_sector_search(self):
+        weights_df = pd.DataFrame(
+            [
+                {"date": "2024-01-09", "symbol": "1301", "weight": 0.5, "side": "long", "sector": "Tech", "baseline_mode": "pca_sub"},
+                {"date": "2024-01-10", "symbol": "8306", "weight": -0.5, "side": "short", "sector": "Financials", "baseline_mode": "pca_sub"},
+                {"date": "2024-01-11", "symbol": "8316", "weight": -0.5, "side": "short", "sector": "Banks", "baseline_mode": "plainpca"},
+            ]
+        )
+
+        filtered = _filter_leadlag_weights(
+            weights_df,
+            code_query="83",
+            sector_query="fin",
+            side="short",
+            start_date=date(2024, 1, 9),
+            end_date=date(2024, 1, 10),
+            baseline_mode="pca_sub",
+        )
+
+        self.assertEqual(["8306"], filtered["symbol"].tolist())
+        self.assertTrue((filtered["weight"] < 0).all())
+
+    def test_validate_leadlag_inputs_distinguishes_errors_and_warnings(self):
+        errors, warnings = _validate_leadlag_inputs(
+            lookback=1,
+            lambda_reg=1.2,
+            n_components=0,
+            quantile_q=0.5,
+            one_way_cost_bps=-1.0,
+            start_date=date(2024, 2, 1),
+            end_date=date(2024, 1, 1),
+            prior_start=date(2024, 3, 1),
+            prior_end=date(2024, 2, 1),
+        )
+
+        self.assertGreaterEqual(len(errors), 7)
+        self.assertTrue(any("lookback" in message for message in errors))
+        self.assertTrue(any("lambda_reg" in message for message in errors))
+        self.assertTrue(any("n_components" in message for message in errors))
+        self.assertTrue(any("quantile_q" in message for message in errors))
+        self.assertTrue(any("one_way_cost_bps" in message for message in errors))
+        self.assertTrue(any("期間の開始日" in message for message in errors))
+        self.assertTrue(any("prior期間の開始日" in message for message in errors))
+
+        ok_errors, ok_warnings = _validate_leadlag_inputs(
+            lookback=10,
+            lambda_reg=0.99,
+            n_components=9,
+            quantile_q=0.45,
+            one_way_cost_bps=55.0,
+            start_date=date(2024, 2, 1),
+            end_date=date(2024, 3, 1),
+            prior_start=date(2024, 2, 15),
+            prior_end=date(2024, 4, 1),
+        )
+
+        self.assertEqual([], ok_errors)
+        self.assertGreaterEqual(len(ok_warnings), 6)
+        self.assertTrue(any("lookback" in message for message in ok_warnings))
+        self.assertTrue(any("n_components" in message for message in ok_warnings))
+        self.assertTrue(any("lambda_reg" in message for message in ok_warnings))
+        self.assertTrue(any("quantile_q" in message for message in ok_warnings))
+        self.assertTrue(any("one_way_cost_bps" in message for message in ok_warnings))
+        self.assertTrue(any("prior期間" in message for message in ok_warnings))
+
+    def test_build_leadlag_summary_cards_formats_metrics(self):
+        summary_df = pd.DataFrame(
+            [
+                {
+                    "cumulative_return": 0.1234,
+                    "annual_return": 0.2345,
+                    "max_drawdown": -0.0567,
+                    "sharpe_like": 1.9876,
+                    "win_rate": 0.61,
+                    "trading_days": 42,
+                }
+            ]
+        )
+
+        cards = _build_leadlag_summary_cards(summary_df)
+
+        self.assertEqual(6, len(cards))
+        self.assertEqual(("累積リターン", "12.34%"), cards[0])
+        self.assertEqual(("年率リターン", "23.45%"), cards[1])
+        self.assertEqual(("最大DD", "-5.67%"), cards[2])
+        self.assertEqual(("シャープ類似", "1.99"), cards[3])
+        self.assertEqual(("勝率", "61.00%"), cards[4])
+        self.assertEqual(("取引日数", "42"), cards[5])
