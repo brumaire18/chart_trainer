@@ -60,10 +60,16 @@ from app.jquants_fetcher import (
     update_universe_with_anchor_day,
     update_universe,
 )
+from app.leadlag_data import normalize_leadlag_symbol
 from app.pair_trading import (
     PairTradeConfig,
     backtest_pairs,
     optimize_pair_trade_parameters,
+)
+from app.us_market_data import (
+    SUPPORTED_US_PROVIDERS,
+    fetch_us_daily_ohlcv,
+    save_us_daily_csv,
 )
 
 
@@ -1992,6 +1998,10 @@ def _save_leadlag_uploaded_csvs(uploaded_files: List[object], target_dir: Path) 
         except Exception as exc:
             errors.append("{}: {}".format(raw_name, exc))
     return saved_count, errors
+
+
+def _build_us_provider_options() -> List[str]:
+    return list(SUPPORTED_US_PROVIDERS)
 
 
 def _validate_leadlag_inputs(
@@ -6779,6 +6789,56 @@ def main():
         st.markdown("#### 事前期間CSVアップロード")
         upload_col1, upload_col2 = st.columns(2)
         with upload_col1:
+            st.markdown("##### USデータ取得（画面から直接取得）")
+            us_fetch_ticker = st.text_input(
+                "USティッカー",
+                value="XLK",
+                key="leadlag_us_fetch_ticker",
+                help="例: XLK, XLF, AAPL",
+            )
+            us_fetch_provider = st.selectbox(
+                "取得元",
+                options=_build_us_provider_options(),
+                index=0,
+                key="leadlag_us_fetch_provider",
+            )
+            us_fetch_period = st.date_input(
+                "US取得期間",
+                value=(
+                    date.today() - timedelta(days=365 * 5),
+                    date.today(),
+                ),
+                key="leadlag_us_fetch_period",
+            )
+            if st.button("USデータ取得して保存", key="fetch_and_save_leadlag_us"):
+                fetch_start, fetch_end = _parse_date_input_range(us_fetch_period)
+                try:
+                    fetched_df = fetch_us_daily_ohlcv(
+                        symbol=us_fetch_ticker,
+                        start_date=fetch_start,
+                        end_date=fetch_end,
+                        provider=us_fetch_provider,
+                    )
+                    saved_path = save_us_daily_csv(
+                        symbol=us_fetch_ticker,
+                        df=fetched_df,
+                        target_dir=PRICE_CSV_DIR / "leadlag_us",
+                    )
+                    st.success(
+                        "USデータを保存しました: {} ({})".format(
+                            saved_path,
+                            normalize_leadlag_symbol(us_fetch_ticker),
+                        )
+                    )
+                    st.dataframe(
+                        fetched_df.tail(20),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                except Exception as exc:
+                    st.error("USデータ取得に失敗しました: {}".format(exc))
+
+            st.markdown("---")
             leadlag_us_csv_files = st.file_uploader(
                 "US CSV（保存先: data/price_csv/leadlag_us/）",
                 type=["csv"],
