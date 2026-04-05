@@ -5533,9 +5533,16 @@ def main():
                 "直近リターン相関の下限",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.8,
+                value=0.5,
                 step=0.05,
-                disabled=True,
+            )
+            min_long_return_corr = st.slider(
+                "長期リターン相関の下限",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.4,
+                step=0.05,
+                disabled=not (long_window_input and long_window_input >= 5),
             )
         cointegration_available = cointegration_test is not None
         if not cointegration_available:
@@ -5554,11 +5561,18 @@ def main():
                 disabled=not cointegration_available,
             )
         with stat_filters[1]:
+            min_half_life = st.number_input(
+                "半減期の下限(日, 0で無効)",
+                min_value=0.0,
+                max_value=250.0,
+                value=8.0,
+                step=1.0,
+            )
             max_half_life = st.number_input(
                 "半減期の上限(日, 0で無効)",
                 min_value=0.0,
                 max_value=250.0,
-                value=30.0,
+                value=20.0,
                 step=1.0,
             )
         with stat_filters[2]:
@@ -5566,14 +5580,14 @@ def main():
                 "最新Zスコア絶対値の下限(0で無効)",
                 min_value=0.0,
                 max_value=5.0,
-                value=0.0,
+                value=1.8,
                 step=0.1,
             )
             max_abs_zscore = st.number_input(
                 "最新Zスコア絶対値の上限(0で無効)",
-                min_value=0.5,
+                min_value=0.0,
                 max_value=5.0,
-                value=2.5,
+                value=0.0,
                 step=0.1,
             )
         volume_filters = st.columns([1])
@@ -5581,7 +5595,7 @@ def main():
             min_avg_turnover = st.number_input(
                 "平均売買代金の下限(円, 0で無効)",
                 min_value=0.0,
-                value=100000000.0,
+                value=1000000000.0,
                 step=10000000.0,
             )
         score_filters = st.columns([1])
@@ -5606,6 +5620,17 @@ def main():
         )
         max_half_life_filter = (
             float(max_half_life) if max_half_life and max_half_life > 0 else None
+        )
+        min_half_life_filter = (
+            float(min_half_life) if min_half_life and min_half_life > 0 else None
+        )
+        min_return_corr_filter = (
+            float(min_return_corr) if min_return_corr and min_return_corr > 0 else None
+        )
+        min_long_return_corr_filter = (
+            float(min_long_return_corr)
+            if long_window is not None and min_long_return_corr and min_long_return_corr > 0
+            else None
         )
         min_avg_turnover_filter = (
             float(min_avg_turnover) if min_avg_turnover and min_avg_turnover > 0 else None
@@ -5804,7 +5829,7 @@ def main():
                         long_window=long_window,
                         min_similarity=None,
                         min_long_similarity=min_long_similarity,
-                        min_return_corr=None,
+                        min_return_corr=min_return_corr_filter,
                         max_p_value=max_p_value,
                         max_half_life=max_half_life_filter,
                         min_abs_zscore=min_abs_zscore_filter,
@@ -5821,6 +5846,19 @@ def main():
                         results_df = _limit_pairs_per_symbol(
                             results_df, max_pairs_per_symbol_limit
                         )
+                    if min_half_life_filter is not None and "half_life" in results_df.columns:
+                        results_df = results_df[
+                            pd.to_numeric(results_df["half_life"], errors="coerce")
+                            >= float(min_half_life_filter)
+                        ]
+                    if (
+                        min_long_return_corr_filter is not None
+                        and "long_return_corr" in results_df.columns
+                    ):
+                        results_df = results_df[
+                            pd.to_numeric(results_df["long_return_corr"], errors="coerce")
+                            >= float(min_long_return_corr_filter)
+                        ]
                     metadata = {
                         "sector17": sector17_filter,
                         "sector33": sector33_filter,
@@ -5828,7 +5866,9 @@ def main():
                         "long_window": long_window,
                         "min_similarity": None,
                         "min_long_similarity": min_long_similarity,
-                        "min_return_corr": None,
+                        "min_return_corr": min_return_corr_filter,
+                        "min_long_return_corr": min_long_return_corr_filter,
+                        "min_half_life": min_half_life_filter,
                         "max_p_value": max_p_value,
                         "max_half_life": max_half_life_filter,
                         "min_abs_zscore": min_abs_zscore_filter,
@@ -5888,6 +5928,24 @@ def main():
                 progress_done()
             if max_p_value is not None and "p_value" in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df["p_value"] <= float(max_p_value)]
+            if min_return_corr_filter is not None and "recent_return_corr" in filtered_df.columns:
+                filtered_df = filtered_df[
+                    pd.to_numeric(filtered_df["recent_return_corr"], errors="coerce")
+                    >= float(min_return_corr_filter)
+                ]
+            if (
+                min_long_return_corr_filter is not None
+                and "long_return_corr" in filtered_df.columns
+            ):
+                filtered_df = filtered_df[
+                    pd.to_numeric(filtered_df["long_return_corr"], errors="coerce")
+                    >= float(min_long_return_corr_filter)
+                ]
+            if min_half_life_filter is not None and "half_life" in filtered_df.columns:
+                filtered_df = filtered_df[
+                    pd.to_numeric(filtered_df["half_life"], errors="coerce")
+                    >= float(min_half_life_filter)
+                ]
             if max_half_life_filter is not None and "half_life" in filtered_df.columns:
                 filtered_df = filtered_df[
                     filtered_df["half_life"] <= float(max_half_life_filter)
