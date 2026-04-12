@@ -1716,6 +1716,8 @@ def run_jp_us_sector_leadlag_backtest(
     min_us_symbols: int = 3,
     momentum_lookback: int = 20,
     join_key: str = "path_group",
+    us_symbols: Optional[Iterable[str]] = None,
+    jp_symbols: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """
     JP open-to-close を被説明、US close-to-close を説明側にした lead-lag PCA バックテスト。
@@ -1749,6 +1751,14 @@ def run_jp_us_sector_leadlag_backtest(
 
     us_panel = load_leadlag_panel(market="US")
     jp_panel = load_leadlag_panel(market="JP")
+    if us_symbols is not None:
+        us_symbol_set = {str(symbol).strip().upper() for symbol in us_symbols if str(symbol).strip()}
+        if us_symbol_set:
+            us_panel = us_panel[us_panel["symbol"].astype(str).str.upper().isin(us_symbol_set)].copy()
+    if jp_symbols is not None:
+        jp_symbol_set = {str(symbol).strip().upper() for symbol in jp_symbols if str(symbol).strip()}
+        if jp_symbol_set:
+            jp_panel = jp_panel[jp_panel["symbol"].astype(str).str.upper().isin(jp_symbol_set)].copy()
 
     if start_date is not None:
         start_ts = pd.to_datetime(start_date, errors="coerce").normalize()
