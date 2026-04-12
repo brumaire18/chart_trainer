@@ -311,6 +311,117 @@ def load_leadlag_panel(market: Optional[str] = None) -> pd.DataFrame:
     return panel_df
 
 
+def _build_expected_business_days(
+    *,
+    market: str,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DatetimeIndex:
+    normalized_market = normalize_leadlag_market(market) or str(market or "").upper()
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    if start > end:
+        return pd.DatetimeIndex([])
+
+    if normalized_market in {"US", "JP"}:
+        return pd.bdate_range(start=start, end=end)
+    return pd.bdate_range(start=start, end=end)
+
+
+def inspect_price_data_health(
+    df: pd.DataFrame,
+    market: str,
+    recent_business_days: int = 5,
+) -> Dict[str, object]:
+    recent_window = max(1, int(recent_business_days))
+    empty_result: Dict[str, object] = {
+        "market": normalize_leadlag_market(market) or str(market or "").upper(),
+        "latest_date": None,
+        "latest_business_date": None,
+        "stale_days": None,
+        "missing_recent_dates": [],
+        "missing_recent_ratio": None,
+        "duplicate_dates": [],
+        "duplicate_date_count": 0,
+        "missing_value_rows": 0,
+        "has_consecutive_missing_business_days": False,
+        "is_usable": False,
+    }
+    if df is None or df.empty or "date" not in df.columns:
+        return empty_result
+
+    work_df = df.copy()
+    work_df["date"] = pd.to_datetime(work_df["date"], errors="coerce").dt.normalize()
+    work_df = work_df.dropna(subset=["date"]).reset_index(drop=True)
+    if work_df.empty:
+        return empty_result
+
+    latest_date = pd.Timestamp(work_df["date"].max()).normalize()
+    today = pd.Timestamp.today().normalize()
+    expected_until_today = _build_expected_business_days(
+        market=market, start_date=latest_date - pd.Timedelta(days=14), end_date=today
+    )
+    latest_business_date = (
+        pd.Timestamp(expected_until_today.max()).normalize()
+        if len(expected_until_today) > 0
+        else today
+    )
+
+    expected_all = _build_expected_business_days(
+        market=market,
+        start_date=pd.Timestamp(work_df["date"].min()).normalize(),
+        end_date=latest_date,
+    )
+    observed_dates = pd.DatetimeIndex(work_df["date"].dropna().unique()).normalize().sort_values()
+    observed_set = set(observed_dates)
+
+    recent_expected = expected_all[-recent_window:] if len(expected_all) > 0 else pd.DatetimeIndex([])
+    missing_recent_dates = [d for d in recent_expected if d not in observed_set]
+    duplicate_dates = (
+        work_df[work_df["date"].duplicated(keep=False)]["date"].dropna().sort_values().dt.strftime("%Y-%m-%d").unique().tolist()
+    )
+
+    ohlcv_cols = [col for col in ["open", "high", "low", "close", "volume"] if col in work_df.columns]
+    missing_value_rows = 0
+    if ohlcv_cols:
+        missing_value_rows = int(work_df[ohlcv_cols].isna().any(axis=1).sum())
+
+    missing_expected_dates = [d for d in expected_all if d not in observed_set]
+    has_consecutive_missing_business_days = False
+    if len(missing_expected_dates) >= 2:
+        missing_index = pd.DatetimeIndex(missing_expected_dates).sort_values()
+        missing_diffs = missing_index.to_series().diff().dt.days
+        has_consecutive_missing_business_days = bool((missing_diffs == 1).any())
+
+    stale_days = int(max(0, (latest_business_date - latest_date).days))
+    missing_recent_ratio = (
+        float(len(missing_recent_dates)) / float(len(recent_expected))
+        if len(recent_expected) > 0
+        else None
+    )
+    is_usable = (
+        stale_days <= 3
+        and len(duplicate_dates) == 0
+        and missing_value_rows == 0
+        and not has_consecutive_missing_business_days
+        and (missing_recent_ratio is not None and missing_recent_ratio < 0.5)
+    )
+
+    return {
+        "market": normalize_leadlag_market(market) or str(market or "").upper(),
+        "latest_date": latest_date.strftime("%Y-%m-%d"),
+        "latest_business_date": latest_business_date.strftime("%Y-%m-%d"),
+        "stale_days": stale_days,
+        "missing_recent_dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in missing_recent_dates],
+        "missing_recent_ratio": missing_recent_ratio,
+        "duplicate_dates": duplicate_dates,
+        "duplicate_date_count": int(len(duplicate_dates)),
+        "missing_value_rows": missing_value_rows,
+        "has_consecutive_missing_business_days": has_consecutive_missing_business_days,
+        "is_usable": bool(is_usable),
+    }
+
+
 def compute_us_close_to_close_returns(
     us_price_df: pd.DataFrame,
     return_col: str = "us_close_to_close_return",

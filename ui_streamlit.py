@@ -16,7 +16,10 @@ from app.data_loader import (
     attach_topix_relative_strength,
     enforce_light_plan_window,
     fetch_and_save_price_csv,
+    get_available_leadlag_symbols,
     get_available_symbols,
+    inspect_price_data_health,
+    load_leadlag_price,
     load_price_csv,
     load_topix_csv,
 )
@@ -2002,6 +2005,69 @@ def _save_leadlag_uploaded_csvs(uploaded_files: List[object], target_dir: Path) 
 
 def _build_us_provider_options() -> List[str]:
     return list(SUPPORTED_US_PROVIDERS)
+
+
+def _build_leadlag_health_status_df(
+    recent_business_days: int = 5,
+) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    for market in ["US", "JP"]:
+        for symbol in get_available_leadlag_symbols(market=market):
+            try:
+                price_df = load_leadlag_price(symbol)
+                health = inspect_price_data_health(
+                    price_df,
+                    market=market,
+                    recent_business_days=int(recent_business_days),
+                )
+                rows.append(
+                    {
+                        "market": market,
+                        "symbol": symbol,
+                        "latest_date": health.get("latest_date"),
+                        "stale_days": health.get("stale_days"),
+                        "missing_recent_dates": ",".join(health.get("missing_recent_dates") or []),
+                        "missing_recent_ratio": health.get("missing_recent_ratio"),
+                        "duplicate_date_count": health.get("duplicate_date_count"),
+                        "missing_value_rows": health.get("missing_value_rows"),
+                        "has_consecutive_missing_business_days": health.get(
+                            "has_consecutive_missing_business_days"
+                        ),
+                        "is_usable": bool(health.get("is_usable", False)),
+                    }
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "market": market,
+                        "symbol": symbol,
+                        "latest_date": None,
+                        "stale_days": None,
+                        "missing_recent_dates": "",
+                        "missing_recent_ratio": None,
+                        "duplicate_date_count": None,
+                        "missing_value_rows": None,
+                        "has_consecutive_missing_business_days": None,
+                        "is_usable": False,
+                        "error": str(exc),
+                    }
+                )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "market",
+                "symbol",
+                "latest_date",
+                "stale_days",
+                "missing_recent_dates",
+                "missing_recent_ratio",
+                "duplicate_date_count",
+                "missing_value_rows",
+                "has_consecutive_missing_business_days",
+                "is_usable",
+            ]
+        )
+    return pd.DataFrame(rows).sort_values(["market", "symbol"]).reset_index(drop=True)
 
 
 def _validate_leadlag_inputs(
@@ -6782,6 +6848,21 @@ def main():
                 ),
                 key="leadlag_prior_period",
             )
+            leadlag_missing_policy = st.selectbox(
+                "欠損銘柄の扱い",
+                options=[
+                    "exclude_and_continue",
+                    "warn_only",
+                    "stop_if_unusable",
+                ],
+                format_func=lambda value: {
+                    "exclude_and_continue": "欠損銘柄を除外して続行",
+                    "warn_only": "警告のみ",
+                    "stop_if_unusable": "欠損があれば停止",
+                }.get(value, value),
+                index=0,
+                key="leadlag_missing_policy",
+            )
 
         leadlag_period_start, leadlag_period_end = _parse_date_input_range(leadlag_period)
         leadlag_prior_start, leadlag_prior_end = _parse_date_input_range(leadlag_prior_period)
@@ -6880,6 +6961,40 @@ def main():
                         )
                     )
 
+        st.markdown("#### データ健全性チェック")
+        leadlag_health_recent_days = st.number_input(
+            "直近判定の営業日数",
+            min_value=3,
+            max_value=20,
+            value=5,
+            step=1,
+            key="leadlag_health_recent_days",
+        )
+        health_df = _build_leadlag_health_status_df(
+            recent_business_days=int(leadlag_health_recent_days)
+        )
+        if health_df.empty:
+            st.info("健全性チェック対象のUS/JP CSVがありません。先にCSVを保存してください。")
+        else:
+            health_display_df = health_df.copy()
+            if "missing_recent_ratio" in health_display_df.columns:
+                health_display_df["missing_recent_ratio"] = (
+                    pd.to_numeric(health_display_df["missing_recent_ratio"], errors="coerce") * 100.0
+                ).round(1)
+            st.dataframe(health_display_df, use_container_width=True, hide_index=True)
+            unusable_count = int((~health_df["is_usable"].astype(bool)).sum())
+            if unusable_count > 0:
+                st.warning(
+                    "is_usable=False の銘柄が {} 件あります（ポリシー: {}）。".format(
+                        unusable_count,
+                        {
+                            "exclude_and_continue": "欠損銘柄を除外して続行",
+                            "warn_only": "警告のみ",
+                            "stop_if_unusable": "欠損があれば停止",
+                        }.get(str(leadlag_missing_policy), str(leadlag_missing_policy)),
+                    )
+                )
+
         run_leadlag_backtest = st.button(
             "バックテスト実行",
             type="primary",
@@ -6903,36 +7018,69 @@ def main():
                 for error_message in input_errors:
                     st.error(error_message)
             else:
-                progress_update, progress_done = _build_progress_updater(
-                    "日米業種リードラグ バックテスト"
-                )
-                progress_update(0, 1, "計算中")
-                result = None
-                try:
-                    result = run_jp_us_sector_leadlag_backtest(
-                        lookback=int(leadlag_lookback),
-                        lambda_reg=float(leadlag_lambda_reg),
-                        n_components=int(leadlag_n_components),
-                        quantile_q=float(leadlag_quantile_q),
-                        baseline_mode=str(leadlag_baseline_mode),
-                        one_way_cost_bps=float(leadlag_one_way_cost_bps),
-                        prior_start=(
-                            leadlag_prior_start.isoformat() if leadlag_prior_start is not None else None
-                        ),
-                        prior_end=(
-                            leadlag_prior_end.isoformat() if leadlag_prior_end is not None else None
-                        ),
-                        start_date=(
-                            leadlag_period_start.isoformat() if leadlag_period_start is not None else None
-                        ),
-                        end_date=(
-                            leadlag_period_end.isoformat() if leadlag_period_end is not None else None
-                        ),
+                active_us_symbols: Optional[List[str]] = None
+                active_jp_symbols: Optional[List[str]] = None
+                stop_by_health = False
+                if not health_df.empty:
+                    unusable_df = health_df[~health_df["is_usable"].astype(bool)].copy()
+                    if not unusable_df.empty:
+                        unusable_symbols = unusable_df["symbol"].astype(str).tolist()
+                        st.warning(
+                            "健全性チェックで使用不可判定の銘柄: {}".format(
+                                ", ".join(unusable_symbols)
+                            )
+                        )
+                        if str(leadlag_missing_policy) == "stop_if_unusable":
+                            st.error("欠損があれば停止ポリシーのため、バックテストを中止しました。")
+                            stop_by_health = True
+                        elif str(leadlag_missing_policy) == "exclude_and_continue":
+                            usable_df = health_df[health_df["is_usable"].astype(bool)].copy()
+                            active_us_symbols = (
+                                usable_df[usable_df["market"] == "US"]["symbol"].astype(str).tolist()
+                            )
+                            active_jp_symbols = (
+                                usable_df[usable_df["market"] == "JP"]["symbol"].astype(str).tolist()
+                            )
+                            st.info(
+                                "使用可能銘柄のみで実行します（US: {}銘柄, JP: {}銘柄）。".format(
+                                    len(active_us_symbols), len(active_jp_symbols)
+                                )
+                            )
+                if stop_by_health:
+                    result = None
+                else:
+                    progress_update, progress_done = _build_progress_updater(
+                        "日米業種リードラグ バックテスト"
                     )
-                except Exception as exc:
-                    st.error(f"日米業種リードラグのバックテスト実行に失敗しました: {exc}")
-                finally:
-                    progress_done()
+                    progress_update(0, 1, "計算中")
+                    result = None
+                    try:
+                        result = run_jp_us_sector_leadlag_backtest(
+                            lookback=int(leadlag_lookback),
+                            lambda_reg=float(leadlag_lambda_reg),
+                            n_components=int(leadlag_n_components),
+                            quantile_q=float(leadlag_quantile_q),
+                            baseline_mode=str(leadlag_baseline_mode),
+                            one_way_cost_bps=float(leadlag_one_way_cost_bps),
+                            prior_start=(
+                                leadlag_prior_start.isoformat() if leadlag_prior_start is not None else None
+                            ),
+                            prior_end=(
+                                leadlag_prior_end.isoformat() if leadlag_prior_end is not None else None
+                            ),
+                            start_date=(
+                                leadlag_period_start.isoformat() if leadlag_period_start is not None else None
+                            ),
+                            end_date=(
+                                leadlag_period_end.isoformat() if leadlag_period_end is not None else None
+                            ),
+                            us_symbols=active_us_symbols,
+                            jp_symbols=active_jp_symbols,
+                        )
+                    except Exception as exc:
+                        st.error(f"日米業種リードラグのバックテスト実行に失敗しました: {exc}")
+                    finally:
+                        progress_done()
 
                 if isinstance(result, dict):
                     signals_df = result.get("signals")
