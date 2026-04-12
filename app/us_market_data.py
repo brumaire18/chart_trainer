@@ -1,7 +1,7 @@
 from datetime import date
 from io import StringIO
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 import requests
@@ -12,6 +12,9 @@ from .leadlag_data import LEADLAG_US_PRICE_DIR, normalize_leadlag_symbol
 
 STOOQ_DAILY_CSV_URL = "https://stooq.com/q/d/l/"
 SUPPORTED_US_PROVIDERS = ["stooq_csv"]
+US_PROVIDER_LABELS: Dict[str, str] = {
+    "stooq_csv": "stooq_csv (stooq.com daily csv)",
+}
 
 
 def _to_iso_date(value: Optional[object], field_name: str) -> Optional[str]:
@@ -36,7 +39,13 @@ def _fetch_from_stooq_csv(symbol: str) -> pd.DataFrame:
     if not content:
         raise ValueError("取得結果が空でした。ティッカーを確認してください。")
 
-    df_raw = pd.read_csv(StringIO(content))
+    if "No data" in content:
+        raise ValueError("指定ティッカーのデータが見つかりませんでした。")
+
+    try:
+        df_raw = pd.read_csv(StringIO(content))
+    except pd.errors.EmptyDataError:
+        raise ValueError("取得結果が空でした。ティッカーを確認してください。")
     if df_raw.empty:
         raise ValueError("データが0件でした。ティッカーを確認してください。")
 

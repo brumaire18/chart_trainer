@@ -68,6 +68,7 @@ from app.pair_trading import (
 )
 from app.us_market_data import (
     SUPPORTED_US_PROVIDERS,
+    US_PROVIDER_LABELS,
     fetch_us_daily_ohlcv,
     save_us_daily_csv,
 )
@@ -2002,6 +2003,10 @@ def _save_leadlag_uploaded_csvs(uploaded_files: List[object], target_dir: Path) 
 
 def _build_us_provider_options() -> List[str]:
     return list(SUPPORTED_US_PROVIDERS)
+
+
+def _build_us_provider_label(provider: str) -> str:
+    return US_PROVIDER_LABELS.get(str(provider), str(provider))
 
 
 def _validate_leadlag_inputs(
@@ -6858,6 +6863,7 @@ def main():
                 "取得元",
                 options=_build_us_provider_options(),
                 index=0,
+                format_func=_build_us_provider_label,
                 key="leadlag_us_fetch_provider",
             )
             us_fetch_period = st.date_input(
