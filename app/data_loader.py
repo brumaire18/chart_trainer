@@ -1,6 +1,6 @@
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
@@ -309,6 +309,108 @@ def load_leadlag_panel(market: Optional[str] = None) -> pd.DataFrame:
     panel_df["date"] = pd.to_datetime(panel_df["date"]).dt.normalize()
     panel_df = panel_df.sort_values(["date", "market", "symbol"]).reset_index(drop=True)
     return panel_df
+
+
+def _expected_business_days_for_market(
+    market: str,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DatetimeIndex:
+    normalized_market = normalize_leadlag_market(market) or str(market).upper()
+    # 将来拡張: 市場ごとの祝日カレンダーに差し替え可能な分岐構造
+    if normalized_market in {"US", "JP"}:
+        return pd.bdate_range(start=start_date, end=end_date)
+    return pd.bdate_range(start=start_date, end=end_date)
+
+
+def inspect_price_data_health(
+    df: pd.DataFrame, market: str, recent_business_days: int = 5
+) -> Dict[str, Any]:
+    target_cols = ["open", "high", "low", "close", "volume"]
+    if df is None or df.empty or "date" not in df.columns:
+        return {
+            "market": normalize_leadlag_market(market) or str(market).upper(),
+            "latest_date": None,
+            "latest_business_date": None,
+            "stale_days": None,
+            "expected_range_start": None,
+            "expected_range_end": None,
+            "missing_dates_count": 0,
+            "missing_recent_dates": [],
+            "recent_missing_rate": 0.0,
+            "duplicate_dates": [],
+            "duplicate_dates_count": 0,
+            "missing_value_rows": 0,
+            "has_consecutive_missing": False,
+        }
+
+    health_df = df.copy()
+    health_df["date"] = pd.to_datetime(health_df["date"], errors="coerce").dt.normalize()
+    health_df = health_df.dropna(subset=["date"]).reset_index(drop=True)
+    if health_df.empty:
+        return inspect_price_data_health(pd.DataFrame(columns=["date"]), market, recent_business_days)
+
+    available_dates = pd.DatetimeIndex(health_df["date"]).sort_values()
+    latest_date = available_dates.max()
+    today_ts = pd.Timestamp(date.today()).normalize()
+
+    observed_start = available_dates.min()
+    expected_dates = _expected_business_days_for_market(
+        market=market,
+        start_date=observed_start,
+        end_date=today_ts,
+    )
+    latest_business_date = expected_dates.max() if len(expected_dates) > 0 else latest_date
+    stale_days = int(len(expected_dates[expected_dates > latest_date])) if latest_business_date is not None else None
+
+    observed_unique_dates = pd.DatetimeIndex(available_dates.unique()).sort_values()
+    missing_all = expected_dates.difference(observed_unique_dates)
+
+    recent_n = max(1, int(recent_business_days))
+    recent_expected = expected_dates[-recent_n:] if len(expected_dates) > 0 else pd.DatetimeIndex([])
+    missing_recent = recent_expected.difference(observed_unique_dates)
+    recent_missing_rate = (
+        float(len(missing_recent)) / float(len(recent_expected)) if len(recent_expected) > 0 else 0.0
+    )
+
+    duplicate_dates = (
+        health_df[health_df["date"].duplicated(keep=False)]["date"]
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+        .dt.strftime("%Y-%m-%d")
+        .tolist()
+    )
+
+    missing_value_rows = 0
+    existing_targets = [col for col in target_cols if col in health_df.columns]
+    if existing_targets:
+        missing_value_rows = int(health_df[existing_targets].isna().any(axis=1).sum())
+
+    has_consecutive_missing = False
+    if len(missing_all) >= 2:
+        diffs = pd.Series(missing_all).diff().dt.days
+        has_consecutive_missing = bool((diffs == 1).any())
+
+    return {
+        "market": normalize_leadlag_market(market) or str(market).upper(),
+        "latest_date": latest_date.strftime("%Y-%m-%d") if pd.notna(latest_date) else None,
+        "latest_business_date": (
+            latest_business_date.strftime("%Y-%m-%d")
+            if latest_business_date is not None and pd.notna(latest_business_date)
+            else None
+        ),
+        "stale_days": stale_days,
+        "expected_range_start": observed_start.strftime("%Y-%m-%d"),
+        "expected_range_end": today_ts.strftime("%Y-%m-%d"),
+        "missing_dates_count": int(len(missing_all)),
+        "missing_recent_dates": missing_recent.strftime("%Y-%m-%d").tolist(),
+        "recent_missing_rate": float(recent_missing_rate),
+        "duplicate_dates": duplicate_dates,
+        "duplicate_dates_count": int(len(duplicate_dates)),
+        "missing_value_rows": int(missing_value_rows),
+        "has_consecutive_missing": bool(has_consecutive_missing),
+    }
 
 
 def compute_us_close_to_close_returns(
