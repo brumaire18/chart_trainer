@@ -1,0 +1,97 @@
+{
+  "report_date": "2026-05-03",
+  "published_at": "2026-05-03T15:27:08",
+  "summary": {
+    "total_equity": "JPY 2,599,000",
+    "cash_total": "JPY 1,600,000",
+    "holdings_count": 3,
+    "unrealized_pnl": "JPY 28,000",
+    "risk_alert_count": 0,
+    "candidate_count": 3,
+    "nisa_cash": "JPY 850,000",
+    "cash_account_cash": "JPY 250,000",
+    "margin_cash": "JPY 500,000"
+  },
+  "holdings": [
+    {
+      "account_bucket": "nisa",
+      "symbol": "1306",
+      "name": "NEXT FUNDS TOPIX連動型ETF",
+      "sector": "ETF",
+      "quantity": 100.0,
+      "market_value": 281000.0,
+      "unrealized_pnl": 6000.0,
+      "unrealized_pnl_pct": 0.0218
+    },
+    {
+      "account_bucket": "nisa",
+      "symbol": "7203",
+      "name": "トヨタ自動車",
+      "sector": "輸送用機器",
+      "quantity": 100.0,
+      "market_value": 345000.0,
+      "unrealized_pnl": 13000.0,
+      "unrealized_pnl_pct": 0.0392
+    },
+    {
+      "account_bucket": "margin",
+      "symbol": "8306",
+      "name": "三菱UFJフィナンシャル・グループ",
+      "sector": "銀行業",
+      "quantity": 200.0,
+      "market_value": 373000.0,
+      "unrealized_pnl": 9000.0,
+      "unrealized_pnl_pct": 0.0247
+    }
+  ],
+  "cash_balances": [
+    {
+      "account_bucket": "nisa",
+      "available_cash": 850000.0,
+      "reserved_cash": 0.0,
+      "buying_power": 850000.0
+    },
+    {
+      "account_bucket": "cash",
+      "available_cash": 250000.0,
+      "reserved_cash": 0.0,
+      "buying_power": 250000.0
+    },
+    {
+      "account_bucket": "margin",
+      "available_cash": 500000.0,
+      "reserved_cash": 100000.0,
+      "buying_power": 1500000.0
+    }
+  ],
+  "trades": [
+    {
+      "trade_date": "2026-05-01 09:10:00",
+      "account_bucket": "margin",
+      "strategy": "pair_trade",
+      "symbol": "8306",
+      "side": "buy",
+      "quantity": 100.0,
+      "price": 1865.0,
+      "fees": 0.0,
+      "taxes": 0.0
+    },
+    {
+      "trade_date": "2026-05-01 09:03:00",
+      "account_bucket": "nisa",
+      "strategy": "long_term_nisa",
+      "symbol": "7203",
+      "side": "buy",
+      "quantity": 100.0,
+      "price": 3450.0,
+      "fees": 0.0,
+      "taxes": 0.0
+    }
+  ],
+  "risk_alerts": [],
+  "candidate_counts": {
+    "nisa": 0,
+    "pair": 0,
+    "scalp": 3
+  }
+}

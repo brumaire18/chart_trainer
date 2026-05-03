@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pair Trading Daily Dashboard</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Georgia, "Hiragino Sans", "Yu Gothic", sans-serif;
+      background: linear-gradient(180deg, #f3efe6 0%, #ebe7dd 100%);
+      color: #1f2933;
+    }
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .hero {
+      background: linear-gradient(135deg, #183a37, #0f8b8d 70%, #f4b860);
+      color: #fff;
+      border-radius: 22px;
+      padding: 22px;
+      margin-bottom: 16px;
+      box-shadow: 0 14px 32px rgba(16, 24, 40, 0.14);
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(16, 24, 40, 0.08);
+      overflow-x: auto;
+    }
+    .chip-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .chip {
+      background: #f8fafc;
+      border: 1px solid #d9e2ec;
+      border-radius: 12px;
+      padding: 10px;
+    }
+    .chip-label {
+      color: #52606d;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .chip-value {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .cards {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .mini-card {
+      border: 1px solid #d9e2ec;
+      border-radius: 14px;
+      padding: 14px;
+      background: #f8fafc;
+    }
+    .mini-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #183a37;
+      color: #fff;
+      font-size: 12px;
+    }
+    .pill-danger { background: #b42318; }
+    .pill-warn { background: #b54708; }
+    .pill-safe { background: #0f8b8d; }
+    .pair-name {
+      font-weight: 700;
+      margin: 6px 0;
+    }
+    .note-box {
+      margin-top: 12px;
+      padding: 14px;
+      border-radius: 14px;
+      background: #eef7f7;
+      border: 1px solid #cfe6e6;
+    }
+    .section-title {
+      margin: 12px 0 8px;
+    }
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+    .metrics {
+      padding-left: 18px;
+      margin: 0;
+    }
+    .report-table {
+      width: 100%;
+      min-width: 920px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    .report-table th, .report-table td {
+      border-bottom: 1px solid #d9e2ec;
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .report-table th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.5;
+      margin: 0;
+    }
+    .muted {
+      color: #52606d;
+      font-size: 13px;
+    }
+    .curve-card {
+      background: linear-gradient(180deg, #f8fafc, #edf7f5);
+      border: 1px solid #d9e2ec;
+      border-radius: 14px;
+      padding: 12px;
+      margin: 12px 0;
+    }
+    .curve-svg {
+      width: 100%;
+      height: 220px;
+      display: block;
+    }
+    .curve-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: #52606d;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Pair Trading Daily Dashboard</h1>
+      <p>ペア改善、日次推薦、ポートフォリオシミュレーションを1画面で確認できます。</p>
+      <p class="muted">published_at: 2026-05-03 15:27:05</p>
+    </section>
+    <div class="grid">
+      <section class="card">
+        <h2>改善サマリ</h2>
+        <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>best_label</div><div class='chip-value'>business_group_expanded</div></div>
+<div class='chip'><div class='chip-label'>best_score</div><div class='chip-value'>96.0449</div></div>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.4112</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0340</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>1.5382</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>3.3164</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.7832</div></div>
+<div class='chip'><div class='chip-label'>watchlist_count</div><div class='chip-value'>10.0000</div></div>
+</div>
+        <h3>ベスト案のポートフォリオ</h3>
+        <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>ending_capital</div><div class='chip-value'>1.4112</div></div>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.4112</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0340</div></div>
+<div class='chip'><div class='chip-label'>accepted_trades</div><div class='chip-value'>47.0000</div></div>
+<div class='chip'><div class='chip-label'>utilization</div><div class='chip-value'>0.8296</div></div>
+<div class='chip'><div class='chip-label'>win_rate</div><div class='chip-value'>0.7447</div></div>
+</div>
+        
+    <div class="curve-card">
+      <svg viewBox="0 0 640 220" class="curve-svg" preserveAspectRatio="none" role="img" aria-label="Portfolio equity curve">
+        <polyline fill="none" stroke="#0f8b8d" stroke-width="4" points="0.0,220.0 13.62,213.03 27.23,210.96 40.85,200.17 54.47,199.2 68.09,192.62 81.7,190.94 95.32,198.24 108.94,201.69 122.55,201.12 136.17,205.04 149.79,200.32 163.4,196.53 177.02,187.35 190.64,191.15 204.26,144.24 217.87,132.28 231.49,114.82 245.11,120.8 258.72,126.47 272.34,126.65 285.96,125.73 299.57,117.03 313.19,104.96 326.81,98.21 340.43,79.97 354.04,73.35 367.66,72.16 381.28,62.24 394.89,60.52 408.51,50.79 422.13,52.6 435.74,52.08 449.36,46.0 462.98,34.72 476.6,31.96 490.21,30.02 503.83,30.46 517.45,12.53 531.06,10.96 544.68,9.55 558.3,7.28 571.91,10.45 585.53,3.96 599.15,0.0 612.77,15.87 626.38,10.27 640.0,23.74"></polyline>
+      </svg>
+      <div class="curve-meta">
+        <span>start 1.0000</span>
+        <span>end 1.4112</span>
+        <span>min 1.0000</span>
+        <span>max 1.4609</span>
+      </div>
+    </div>
+    
+        <h3>上位バリアント比較</h3>
+        <div class='cards'>
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>business_group_expanded</h3>
+                <span class="pill">score 96.0449</span>
+              </div>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.4112</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0340</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>3.3164</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>1.5382</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.7832</div></div>
+<div class='chip'><div class='chip-label'>candidates</div><div class='chip-value'>12.0000</div></div>
+</div>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>business_group_expanded</h3>
+                <span class="pill">score 96.0449</span>
+              </div>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.4112</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0340</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>3.3164</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>1.5382</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.7832</div></div>
+<div class='chip'><div class='chip-label'>candidates</div><div class='chip-value'>12.0000</div></div>
+</div>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>wide_candidates</h3>
+                <span class="pill">score 37.1558</span>
+              </div>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.2313</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0290</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>0.9674</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>0.4070</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.7530</div></div>
+<div class='chip'><div class='chip-label'>candidates</div><div class='chip-value'>6.0000</div></div>
+</div>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>watchlist_hunter</h3>
+                <span class="pill">score 24.4559</span>
+              </div>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.1865</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0176</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>0.6554</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>0.3162</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.6733</div></div>
+<div class='chip'><div class='chip-label'>candidates</div><div class='chip-value'>10.0000</div></div>
+</div>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>group_heavy</h3>
+                <span class="pill">score 19.4732</span>
+              </div>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.1268</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0252</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>0.5578</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>0.3162</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.7357</div></div>
+<div class='chip'><div class='chip-label'>candidates</div><div class='chip-value'>7.0000</div></div>
+</div>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>core_balanced</h3>
+                <span class="pill">score 5.6077</span>
+              </div>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>portfolio_return</div><div class='chip-value'>0.0131</div></div>
+<div class='chip'><div class='chip-label'>max_drawdown</div><div class='chip-value'>0.0448</div></div>
+<div class='chip'><div class='chip-label'>sum_total_pnl</div><div class='chip-value'>0.0745</div></div>
+<div class='chip'><div class='chip-label'>best_total_pnl</div><div class='chip-value'>0.1519</div></div>
+<div class='chip'><div class='chip-label'>avg_win_rate</div><div class='chip-value'>0.6083</div></div>
+<div class='chip'><div class='chip-label'>candidates</div><div class='chip-value'>4.0000</div></div>
+</div>
+            </article>
+            
+</div>
+        
+    <div class="note-box">
+      <h3>改善スコアの見方</h3>
+      <p>改善スコアは、候補ペア群の損益と勝率に加えて、実運用寄りのポートフォリオ収益率と最大ドローダウンも反映しています。</p>
+      <ul class="metrics">
+        <li><strong>portfolio_total_return</strong>: ポートフォリオシミュレーションの収益率です。</li>
+        <li><strong>max_drawdown</strong>: 資産曲線の最大ドローダウンです。深いほど減点します。</li>
+        <li><strong>sum_total_pnl</strong>: 最適化後ペア群の合計損益です。</li>
+        <li><strong>best_total_pnl</strong>: 最良1ペアの損益です。</li>
+        <li><strong>avg_win_rate</strong>: 最適化後ペア群の平均勝率です。</li>
+        <li><strong>watchlist_count / candidate_count</strong>: 探索幅と監視候補の厚みです。</li>
+      </ul>
+      <p class="muted">現時点のポートフォリオシミュレーションは、最大同時保有数と銘柄重複回避を考慮した簡易版です。</p>
+    </div>
+    
+      </section>
+      <section class="card">
+        <h2>本日の推薦</h2>
+        <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>recommendations</div><div class='chip-value'>8</div></div>
+<div class='chip'><div class='chip-label'>lookback</div><div class='chip-value'>60</div></div>
+<div class='chip'><div class='chip-label'>entry_z</div><div class='chip-value'>1.7500</div></div>
+<div class='chip'><div class='chip-label'>exit_z</div><div class='chip-value'>0.5000</div></div>
+<div class='chip'><div class='chip-label'>stop_z</div><div class='chip-value'>3.5000</div></div>
+<div class='chip'><div class='chip-label'>max_holding_days</div><div class='chip-value'>20</div></div>
+</div>
+        <h3 class='section-title'>新規候補</h3>
+<div class='cards'>
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>18020-18030</h3>
+                    <span class="pill">新規: Y売り / X買い</span>
+                  </div>
+                  <p class="pair-name">大林組 / 清水建設</p>
+                  <p class="muted">アクション: Y売り / X買い</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>2.0239</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>-0.4078</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>0.0000</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>1.5239</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>1.4761</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>7.6475</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>52680-52820</h3>
+                    <span class="pill">新規: Y買い / X売り</span>
+                  </div>
+                  <p class="pair-name">旭コンクリート工業 / ジオスター</p>
+                  <p class="muted">アクション: Y買い / X売り</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>-2.1052</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>-0.0694</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>0.0000</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>1.6052</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>1.3948</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>7.6814</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+</div>
+<h3 class='section-title'>利確候補</h3>
+<div class='cards'>
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>83060-84110</h3>
+                    <span class="pill">利確ゾーン</span>
+                  </div>
+                  <p class="pair-name">三菱ＵＦＪフィナンシャル・グループ / みずほフィナンシャルグループ</p>
+                  <p class="muted">アクション: 利確・手仕舞い</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>0.3732</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>0.4225</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>1.3768</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>0.0000</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>3.1268</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>11.7914</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>83160-84110</h3>
+                    <span class="pill">利確ゾーン</span>
+                  </div>
+                  <p class="pair-name">三井住友フィナンシャルグループ / みずほフィナンシャルグループ</p>
+                  <p class="muted">アクション: 利確・手仕舞い</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>-0.2554</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>-0.4477</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>1.4946</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>0.0000</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>3.2446</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>11.1193</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>31160-59490</h3>
+                    <span class="pill">利確ゾーン</span>
+                  </div>
+                  <p class="pair-name">トヨタ紡織 / ユニプレス</p>
+                  <p class="muted">アクション: 利確・手仕舞い</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>0.0935</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>-0.3763</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>1.6565</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>0.0000</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>3.4065</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>17.2502</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+</div>
+<h3 class='section-title'>監視候補</h3>
+<div class='cards'>
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>34070-41830</h3>
+                    <span class="pill">監視</span>
+                  </div>
+                  <p class="pair-name">旭化成 / 三井化学</p>
+                  <p class="muted">アクション: 監視</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>-0.6384</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>0.0972</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>1.1116</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>0.1384</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>2.8616</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>7.7962</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>80530-80580</h3>
+                    <span class="pill">監視</span>
+                  </div>
+                  <p class="pair-name">住友商事 / 三菱商事</p>
+                  <p class="muted">アクション: 監視</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>0.8995</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>1.1637</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>0.8505</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>0.3995</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>2.6005</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>15.2239</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+
+                <article class="mini-card">
+                  <div class="mini-head">
+                    <h3>94330-94340</h3>
+                    <span class="pill">監視</span>
+                  </div>
+                  <p class="pair-name">ＫＤＤＩ / ソフトバンク</p>
+                  <p class="muted">アクション: 監視</p>
+                  <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>current_z</div><div class='chip-value'>1.5866</div></div>
+<div class='chip'><div class='chip-label'>z_delta_1d</div><div class='chip-value'>-0.3799</div></div>
+<div class='chip'><div class='chip-label'>to_entry</div><div class='chip-value'>0.1634</div></div>
+<div class='chip'><div class='chip-label'>to_exit</div><div class='chip-value'>1.0866</div></div>
+<div class='chip'><div class='chip-label'>to_stop</div><div class='chip-value'>1.9134</div></div>
+<div class='chip'><div class='chip-label'>half_life</div><div class='chip-value'>7.9994</div></div>
+</div>
+                  <p class="muted">イベント: <span class="pill pill-safe">特になし</span></p>
+                  <p class="muted"></p>
+                </article>
+                
+</div>
+        
+    <div class="note-box">
+      <h3>Zスコアの見方</h3>
+      <ul class="metrics">
+        <li><strong>current_z</strong>: 現在のスプレッド乖離です。絶対値が大きいほど離れています。</li>
+        <li><strong>z_delta_1d</strong>: 前日からの変化です。負なら平均回帰が進みやすいです。</li>
+        <li><strong>distance_to_entry</strong>: 新規エントリー閾値までの距離です。</li>
+        <li><strong>distance_to_exit</strong>: 利確閾値までの距離です。</li>
+        <li><strong>distance_to_stop</strong>: 損切り閾値までの余地です。</li>
+      </ul>
+    </div>
+    
+      </section>
+    </div>
+    <section class="card" style="margin-top:16px;">
+      <h2>推薦一覧</h2>
+      <table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>pair</th>
+      <th>signal_date</th>
+      <th>signal_state_ja</th>
+      <th>action_ja</th>
+      <th>current_z</th>
+      <th>z_delta_1d</th>
+      <th>distance_to_entry</th>
+      <th>distance_to_exit</th>
+      <th>distance_to_stop</th>
+      <th>half_life</th>
+      <th>event_warning_ja</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>18020-18030</td>
+      <td>2026-05-01</td>
+      <td>新規: Y売り / X買い</td>
+      <td>Y売り / X買い</td>
+      <td>2.023914</td>
+      <td>-0.407771</td>
+      <td>0.000000</td>
+      <td>1.523914</td>
+      <td>1.476086</td>
+      <td>7.647528</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>52680-52820</td>
+      <td>2026-05-01</td>
+      <td>新規: Y買い / X売り</td>
+      <td>Y買い / X売り</td>
+      <td>-2.105196</td>
+      <td>-0.069392</td>
+      <td>0.000000</td>
+      <td>1.605196</td>
+      <td>1.394804</td>
+      <td>7.681382</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>83060-84110</td>
+      <td>2026-05-01</td>
+      <td>利確ゾーン</td>
+      <td>利確・手仕舞い</td>
+      <td>0.373246</td>
+      <td>0.422527</td>
+      <td>1.376754</td>
+      <td>0.000000</td>
+      <td>3.126754</td>
+      <td>11.791381</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>83160-84110</td>
+      <td>2026-05-01</td>
+      <td>利確ゾーン</td>
+      <td>利確・手仕舞い</td>
+      <td>-0.255367</td>
+      <td>-0.447710</td>
+      <td>1.494633</td>
+      <td>0.000000</td>
+      <td>3.244633</td>
+      <td>11.119323</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>31160-59490</td>
+      <td>2026-05-01</td>
+      <td>利確ゾーン</td>
+      <td>利確・手仕舞い</td>
+      <td>0.093454</td>
+      <td>-0.376306</td>
+      <td>1.656546</td>
+      <td>0.000000</td>
+      <td>3.406546</td>
+      <td>17.250184</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>34070-41830</td>
+      <td>2026-05-01</td>
+      <td>監視</td>
+      <td>監視</td>
+      <td>-0.638372</td>
+      <td>0.097215</td>
+      <td>1.111628</td>
+      <td>0.138372</td>
+      <td>2.861628</td>
+      <td>7.796236</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>80530-80580</td>
+      <td>2026-05-01</td>
+      <td>監視</td>
+      <td>監視</td>
+      <td>0.899468</td>
+      <td>1.163669</td>
+      <td>0.850532</td>
+      <td>0.399468</td>
+      <td>2.600532</td>
+      <td>15.223855</td>
+      <td>特になし</td>
+    </tr>
+    <tr>
+      <td>94330-94340</td>
+      <td>2026-05-01</td>
+      <td>監視</td>
+      <td>監視</td>
+      <td>1.586617</td>
+      <td>-0.379906</td>
+      <td>0.163383</td>
+      <td>1.086617</td>
+      <td>1.913383</td>
+      <td>7.999353</td>
+      <td>特になし</td>
+    </tr>
+  </tbody>
+</table>
+    </section>
+    <section class="card" style="margin-top:16px;">
+      <h2>検証レポート</h2>
+      <pre># Pair Trading Validation Report
+
+## Run Setup
+
+- sector_col: `sector33`
+- max_pairs_per_sector: `6`
+- max_pairs_per_business_group: `22`
+- include_business_near_groups: `True`
+- candidate_preselect_top_n: `44`
+- top_candidates: `24`
+- optimize_top_k: `8`
+- recent_window: `60`
+- long_window: `180`
+- history_window: `600`
+- train_days: `252`
+- test_days: `126`
+- baseline: `lookback=60, entry_z=1.75, exit_z=0.5, stop_z=3.5, max_holding_days=20`
+
+## Walk-Forward Split
+
+- train: `2024-10-07 -> 2025-10-17`
+- test: `2025-10-20 -> 2026-05-01`
+
+## Candidate Summary
+
+- candidate_count: `12`
+- trade_count: `34`
+- profitable_pairs: `11`
+
+## Portfolio Simulation
+
+- initial_capital: `1.0`
+- ending_capital: `1.411206`
+- portfolio_total_return: `0.411206`
+- max_drawdown: `0.034043`
+- accepted_trade_count: `47`
+- utilization: `0.82963`
+
+## Top Candidates
+
+| pair | recent_similarity | recent_return_corr | p_value | half_life | zscore_latest | avg_turnover_min |
+| --- | --- | --- | --- | --- | --- | --- |
+| 80530-80580 | 0.982372 | 0.877573 | 0.038127 | 15.223855 | 0.463738 | 10902511693.333334 |
+| 83060-84110 | 0.954324 | 0.929341 | 0.185791 | 11.791381 | 1.151795 | 44859488078.333336 |
+| 83160-84110 | 0.952032 | 0.936215 | 0.162514 | 11.119323 | -0.806326 | 44859488078.333336 |
+| 31160-59490 | 0.94155 | 0.725351 | 0.107422 | 17.250184 | 0.814412 | 155155893.333333 |
+| 94330-94340 | 0.899589 | 0.71389 | 0.145246 | 7.999353 | -1.649119 | 14470530358.166666 |
+| 18020-18030 | 0.893654 | 0.629664 | 0.048067 | 7.647528 | 1.630445 | 5382611705.0 |
+| 52680-52820 | 0.887708 | 0.696364 | 0.086743 | 7.681382 | -0.5853 | 39485396.666667 |
+| 34070-41830 | 0.886793 | 0.573212 | 0.022879 | 7.796236 | 1.55922 | 3983565621.666667 |
+| 91010-91070 | 0.879353 | 0.754293 | 0.039106 | 7.696871 | -0.372167 | 10802277500.833334 |
+| 44100-44710 | 0.844778 | 0.761328 | 0.172674 | 12.240761 | 0.858021 | 35909335.0 |
+
+## Baseline Test Backtest
+
+| pair | trade_count | win_rate | total_pnl | avg_pnl | avg_holding_days | recent_similarity | p_value | half_life |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 52680-52820 | 3 | 0.666667 | 0.219932 | 0.073311 | 15.666667 | 0.887708 | 0.086743 | 7.681382 |
+| 44100-44710 | 2 | 1.0 | 0.140859 | 0.07043 | 12.0 | 0.844778 | 0.172674 | 12.240761 |
+| 18020-18030 | 3 | 1.0 | 0.138391 | 0.04613 | 12.0 | 0.893654 | 0.048067 | 7.647528 |
+| 34070-41830 | 3 | 0.666667 | 0.110015 | 0.036672 | 15.333333 | 0.886793 | 0.022879 | 7.796236 |
+| 80530-80580 | 5 | 0.4 | 0.107262 | 0.021452 | 9.2 | 0.982372 | 0.038127 | 15.223855 |
+| 31160-59490 | 2 | 1.0 | 0.09295 | 0.046475 | 11.5 | 0.94155 | 0.107422 | 17.250184 |
+| 83160-84110 | 2 | 1.0 | 0.087112 | 0.043556 | 13.0 | 0.952032 | 0.162514 | 11.119323 |
+| 91010-91070 | 4 | 0.75 | 0.074981 | 0.018745 | 11.25 | 0.879353 | 0.039106 | 7.696871 |
+| 83060-84110 | 2 | 1.0 | 0.05313 | 0.026565 | 9.5 | 0.954324 | 0.185791 | 11.791381 |
+| 94330-94340 | 4 | 0.75 | 0.035054 | 0.008763 | 5.75 | 0.899589 | 0.145246 | 7.999353 |
+
+## Optimized Test Backtest
+
+| pair | trade_count | win_rate | total_pnl | avg_pnl | avg_holding_days | recent_similarity | p_value | half_life |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 52620-52870 | 6 | 0.833333 | 1.538197 | 0.256366 | 4.666667 | 0.831126 | 0.087935 | 9.94669 |
+| 18020-18030 | 6 | 1.0 | 0.406978 | 0.06783 | 6.666667 | 0.893654 | 0.048067 | 7.647528 |
+| 52680-52820 | 7 | 0.714286 | 0.276849 | 0.03955 | 7.571429 | 0.887708 | 0.086743 | 7.681382 |
+| 34070-41830 | 5 | 1.0 | 0.243935 | 0.048787 | 10.2 | 0.886793 | 0.022879 | 7.796236 |
+| 31160-59490 | 6 | 0.833333 | 0.216816 | 0.036136 | 8.666667 | 0.94155 | 0.107422 | 17.250184 |
+| 44100-44710 | 5 | 1.0 | 0.194317 | 0.038863 | 8.0 | 0.844778 | 0.172674 | 12.240761 |
+| 83160-84110 | 3 | 0.666667 | 0.114388 | 0.038129 | 10.333333 | 0.952032 | 0.162514 | 11.119323 |
+| 83060-84110 | 7 | 0.714286 | 0.097662 | 0.013952 | 5.0 | 0.954324 | 0.185791 | 11.791381 |
+| 80530-80580 | 7 | 0.428571 | 0.08502 | 0.012146 | 7.428571 | 0.982372 | 0.038127 | 15.223855 |
+| 91010-91070 | 6 | 0.666667 | 0.066539 | 0.01109 | 8.333333 | 0.879353 | 0.039106 | 7.696871 |
+
+## Optimization
+
+| lookback | entry_z | exit_z | stop_z | max_holding_days | trade_count | win_rate | total_pnl | avg_pnl |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 40.0 | 1.5 | 0.5 | 3.5 | 20.0 | 108.0 | 0.768519 | 1.885819 | 0.017461 |
+| 40.0 | 1.5 | 0.5 | 3.5 | 10.0 | 123.0 | 0.723577 | 1.845398 | 0.015003 |
+| 40.0 | 1.5 | 0.5 | 3.0 | 20.0 | 133.0 | 0.661654 | 1.83146 | 0.01377 |
+| 60.0 | 1.5 | 0.25 | 3.5 | 20.0 | 71.0 | 0.774648 | 1.8288 | 0.025758 |
+| 40.0 | 1.5 | 0.25 | 3.0 | 20.0 | 121.0 | 0.628099 | 1.814063 | 0.014992 |
+| 40.0 | 1.5 | 0.5 | 3.0 | 10.0 | 144.0 | 0.659722 | 1.784815 | 0.012395 |
+| 60.0 | 1.5 | 0.5 | 3.5 | 20.0 | 79.0 | 0.78481 | 1.749015 | 0.022139 |
+| 40.0 | 1.5 | 0.25 | 3.5 | 20.0 | 97.0 | 0.731959 | 1.730894 | 0.017844 |
+| 60.0 | 1.5 | 0.25 | 3.5 | 10.0 | 93.0 | 0.72043 | 1.702622 | 0.018308 |
+| 40.0 | 2.0 | 0.5 | 3.5 | 20.0 | 86.0 | 0.72093 | 1.660424 | 0.019307 |
+
+## Watchlist Candidates
+
+| pair | trade_count | win_rate | total_pnl | quality_score | recent_similarity | p_value | half_life |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 52620-52870 | 6 | 0.833333 | 1.538197 | 8.119457 | 0.831126 | 0.087935 | 9.94669 |
+| 18020-18030 | 6 | 1.0 | 0.406978 | 3.927913 | 0.893654 | 0.048067 | 7.647528 |
+| 34070-41830 | 5 | 1.0 | 0.243935 | 3.225739 | 0.886793 | 0.022879 | 7.796236 |
+| 44100-44710 | 5 | 1.0 | 0.194317 | 3.02727 | 0.844778 | 0.172674 | 12.240761 |
+| 52680-52820 | 7 | 0.714286 | 0.276849 | 2.885967 | 0.887708 | 0.086743 | 7.681382 |
+| 31160-59490 | 6 | 0.833333 | 0.216816 | 2.833933 | 0.94155 | 0.107422 | 17.250184 |
+| 94330-94340 | 8 | 0.875 | 0.046574 | 2.336295 | 0.899589 | 0.145246 | 7.999353 |
+| 83060-84110 | 7 | 0.714286 | 0.097662 | 2.169218 | 0.954324 | 0.185791 | 11.791381 |
+| 91010-91070 | 6 | 0.666667 | 0.066539 | 1.899488 | 0.879353 | 0.039106 | 7.696871 |
+| 22060-22090 | 6 | 0.666667 | 0.029083 | 1.749664 | 0.840189 | 0.005027 | 6.256151 |
+
+## Interpretation
+
+- best pair total_pnl: `1.538197`
+- profitable pair count: `12` / `12`
+- best pair win_rate: `1.000`
+- some pairs have enough stability to monitor as daily watchlist candidates</pre>
+    </section>
+  </div>
+</body>
+</html>

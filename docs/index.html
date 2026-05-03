@@ -1,0 +1,124 @@
+﻿<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chart Trainer Mobile Dashboards</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --ink: #1d2733;
+      --muted: #5d6b79;
+      --card: rgba(255,255,255,0.94);
+      --line: #d7e0e7;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Hiragino Sans", "Yu Gothic", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, rgba(15,118,110,0.16), transparent 28%),
+        radial-gradient(circle at bottom left, rgba(180,83,9,0.14), transparent 26%),
+        linear-gradient(180deg, #f8f5ee 0%, var(--bg) 100%);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .hero {
+      border-radius: 24px;
+      padding: 24px;
+      color: #fff;
+      background: linear-gradient(135deg, #1f2937, #0f766e 64%, #d97706);
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+    }
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 7vw, 44px);
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+    }
+    .hero p {
+      margin: 8px 0 0;
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 58ch;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .card {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+    }
+    .eyebrow {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      background: #ecfeff;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.02em;
+    }
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+    .meta {
+      margin-top: 14px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .footer {
+      margin: 18px 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>Chart Trainer Dashboards</h1>
+      <p>繧ｹ繝槭・繝医ヵ繧ｩ繝ｳ縺九ｉ隕九ｄ縺吶＞蜈ｬ髢九・繝ｼ繧ｸ縺ｧ縺吶ゅ・繧｢繝医Ξ繝ｼ繝・ぅ繝ｳ繧ｰ逕ｻ髱｢縺ｨ繝輔ぃ繝ｳ繝牙・菴鍋判髱｢繧貞・縺代※鄂ｮ縺・※縺・∪縺吶・/p>
+      <p class="meta">Published at: 2026-05-03 15:27:09 +09:00</p>
+    </section>
+
+    <section class="grid">
+      <a class="card" href="./pair/">
+        <span class="eyebrow">PAIR</span>
+        <h2>Pair Trading</h2>
+        <p>繝壹い蛟呵｣懊√・繝ｼ繝医ヵ繧ｩ繝ｪ繧ｪ繧ｷ繝溘Η繝ｬ繝ｼ繧ｷ繝ｧ繝ｳ縲∵隼蝟・し繧､繧ｯ繝ｫ縺ｮ邨先棡繧堤｢ｺ隱阪〒縺阪∪縺吶・/p>
+      </a>
+      <a class="card" href="./fund/">
+        <span class="eyebrow">FUND</span>
+        <h2>Pseudo Fund</h2>
+        <p>菫晄怏縲∫樟驥代√Μ繧ｹ繧ｯ隴ｦ蜻翫∵姶逡･蛟呵｣懊∵律谺｡繝ｬ繝昴・繝医ｒ縺ｾ縺ｨ繧√※遒ｺ隱阪〒縺阪∪縺吶・/p>
+      </a>
+    </section>
+
+    <p class="footer">GitHub Pages 逕ｨ縺ｮ髱咏噪繧ｵ繧､繝医〒縺吶０neDrive 繧｢繝励Μ縺ｧ縺ｯ縺ｪ縺上・壼ｸｸ縺ｮ繝悶Λ繧ｦ繧ｶ縺ｧ陦ｨ遉ｺ縺吶ｋ蜑肴署縺ｧ縺吶・/p>
+  </main>
+</body>
+</html>

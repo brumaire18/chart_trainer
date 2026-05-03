@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pseudo Fund Dashboard</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Georgia, "Hiragino Sans", "Yu Gothic", sans-serif;
+      background: linear-gradient(180deg, #f3efe6 0%, #ebe7dd 100%);
+      color: #1f2933;
+    }
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    .hero {
+      background: linear-gradient(135deg, #2d3047, #1b998b 70%, #fffd82);
+      color: #fff;
+      border-radius: 22px;
+      padding: 22px;
+      margin-bottom: 16px;
+      box-shadow: 0 14px 32px rgba(16, 24, 40, 0.14);
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.96);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(16, 24, 40, 0.08);
+      overflow-x: auto;
+    }
+    .chip-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .chip {
+      background: #f8fafc;
+      border: 1px solid #d9e2ec;
+      border-radius: 12px;
+      padding: 10px;
+    }
+    .chip-label {
+      color: #52606d;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .chip-value {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .cards {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .mini-card {
+      border: 1px solid #d9e2ec;
+      border-radius: 14px;
+      padding: 14px;
+      background: #f8fafc;
+    }
+    .mini-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #2d3047;
+      color: #fff;
+      font-size: 12px;
+    }
+    .pill-danger { background: #b42318; }
+    .pill-warn { background: #b54708; }
+    .pair-name {
+      font-weight: 700;
+      margin: 6px 0;
+    }
+    .report-table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    .report-table th, .report-table td {
+      border-bottom: 1px solid #d9e2ec;
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .report-table th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+    }
+    .muted {
+      color: #52606d;
+      font-size: 13px;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.5;
+      margin: 0;
+    }
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Pseudo Fund Dashboard</h1>
+      <p>保有、キャッシュ、リスク、戦略候補をスマホで見やすい形にまとめています。</p>
+      <p class="muted">report_date: 2026-05-03 | published_at: 2026-05-03T15:27:08</p>
+      <p class='muted'>risk_limits fallback defaults used: PyYAML is required to load YAML configs. Add `PyYAML` to requirements.</p><p class='muted'>portfolio_policy fallback defaults used: PyYAML is required to load YAML configs. Add `PyYAML` to requirements.</p>
+    </section>
+
+    <section class="card">
+      <h2>ファンド全体サマリ</h2>
+      <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>total_equity</div><div class='chip-value'>JPY 2,599,000</div></div>
+<div class='chip'><div class='chip-label'>cash_total</div><div class='chip-value'>JPY 1,600,000</div></div>
+<div class='chip'><div class='chip-label'>holdings_count</div><div class='chip-value'>3</div></div>
+<div class='chip'><div class='chip-label'>unrealized_pnl</div><div class='chip-value'>JPY 28,000</div></div>
+<div class='chip'><div class='chip-label'>risk_alerts</div><div class='chip-value'>0</div></div>
+<div class='chip'><div class='chip-label'>trade_candidates</div><div class='chip-value'>3</div></div>
+</div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>キャッシュ</h2>
+        <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>nisa_cash</div><div class='chip-value'>JPY 850,000</div></div>
+<div class='chip'><div class='chip-label'>cash_account</div><div class='chip-value'>JPY 250,000</div></div>
+<div class='chip'><div class='chip-label'>margin_cash</div><div class='chip-value'>JPY 500,000</div></div>
+</div>
+        <table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>account_bucket</th>
+      <th>available_cash</th>
+      <th>reserved_cash</th>
+      <th>buying_power</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>nisa</td>
+      <td>850000.0</td>
+      <td>0.0</td>
+      <td>850000.0</td>
+    </tr>
+    <tr>
+      <td>cash</td>
+      <td>250000.0</td>
+      <td>0.0</td>
+      <td>250000.0</td>
+    </tr>
+    <tr>
+      <td>margin</td>
+      <td>500000.0</td>
+      <td>100000.0</td>
+      <td>1500000.0</td>
+    </tr>
+  </tbody>
+</table>
+      </section>
+      <section class="card">
+        <h2>リスク警告</h2>
+        <p>高優先度のリスク警告はありません。</p>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>保有一覧</h2>
+      <table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>account_bucket</th>
+      <th>symbol</th>
+      <th>name</th>
+      <th>sector</th>
+      <th>quantity</th>
+      <th>market_value</th>
+      <th>unrealized_pnl</th>
+      <th>unrealized_pnl_pct</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>nisa</td>
+      <td>1306</td>
+      <td>NEXT FUNDS TOPIX連動型ETF</td>
+      <td>ETF</td>
+      <td>100.0</td>
+      <td>281000.0</td>
+      <td>6000.0</td>
+      <td>0.0218</td>
+    </tr>
+    <tr>
+      <td>nisa</td>
+      <td>7203</td>
+      <td>トヨタ自動車</td>
+      <td>輸送用機器</td>
+      <td>100.0</td>
+      <td>345000.0</td>
+      <td>13000.0</td>
+      <td>0.0392</td>
+    </tr>
+    <tr>
+      <td>margin</td>
+      <td>8306</td>
+      <td>三菱UFJフィナンシャル・グループ</td>
+      <td>銀行業</td>
+      <td>200.0</td>
+      <td>373000.0</td>
+      <td>9000.0</td>
+      <td>0.0247</td>
+    </tr>
+  </tbody>
+</table>
+    </section>
+
+    <div class="grid" style="margin-top:16px;">
+      <section class="card">
+        <h2>NISA 候補</h2>
+        <p>候補はありません。</p>
+      </section>
+      <section class="card">
+        <h2>ペア候補</h2>
+        <p>候補はありません。</p>
+      </section>
+      <section class="card">
+        <h2>スキャル候補</h2>
+        <div class='cards'>
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>13060 野村アセットマネジメント株式会社　ＮＥＸＴ　ＦＵＮＤＳ　ＴＯＰＩＸ連動型上場投信</h3>
+                <span class="pill">scalping_momentum</span>
+              </div>
+              <p class="pair-name">skip | 数分-当日</p>
+              <p>データ欠損のため候補を見送ります。</p>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>entry</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>take_profit</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>stop</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>size_qty</div><div class='chip-value'>0</div></div>
+<div class='chip'><div class='chip-label'>risk_jpy</div><div class='chip-value'>JPY 0</div></div>
+<div class='chip'><div class='chip-label'>confidence</div><div class='chip-value'>0.00</div></div>
+</div>
+              <p class="muted">entry_reason: 分足データが不足しています。</p>
+              <p class="muted">warnings: -</p>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>7203 7203</h3>
+                <span class="pill">scalping_momentum</span>
+              </div>
+              <p class="pair-name">skip | 数分-当日</p>
+              <p>データ欠損のため候補を見送ります。</p>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>entry</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>take_profit</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>stop</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>size_qty</div><div class='chip-value'>0</div></div>
+<div class='chip'><div class='chip-label'>risk_jpy</div><div class='chip-value'>JPY 0</div></div>
+<div class='chip'><div class='chip-label'>confidence</div><div class='chip-value'>0.00</div></div>
+</div>
+              <p class="muted">entry_reason: 分足データが不足しています。</p>
+              <p class="muted">warnings: -</p>
+            </article>
+            
+
+            <article class="mini-card">
+              <div class="mini-head">
+                <h3>83060 三菱ＵＦＪフィナンシャル・グループ</h3>
+                <span class="pill">scalping_momentum</span>
+              </div>
+              <p class="pair-name">skip | 数分-当日</p>
+              <p>データ欠損のため候補を見送ります。</p>
+              <div class='chip-grid'>
+<div class='chip'><div class='chip-label'>entry</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>take_profit</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>stop</div><div class='chip-value'>-</div></div>
+<div class='chip'><div class='chip-label'>size_qty</div><div class='chip-value'>0</div></div>
+<div class='chip'><div class='chip-label'>risk_jpy</div><div class='chip-value'>JPY 0</div></div>
+<div class='chip'><div class='chip-label'>confidence</div><div class='chip-value'>0.00</div></div>
+</div>
+              <p class="muted">entry_reason: 分足データが不足しています。</p>
+              <p class="muted">warnings: -</p>
+            </article>
+            
+</div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>直近約定</h2>
+      <table class="dataframe report-table">
+  <thead>
+    <tr style="text-align: right;">
+      <th>trade_date</th>
+      <th>account_bucket</th>
+      <th>strategy</th>
+      <th>symbol</th>
+      <th>side</th>
+      <th>quantity</th>
+      <th>price</th>
+      <th>fees</th>
+      <th>taxes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>2026-05-01 09:10:00</td>
+      <td>margin</td>
+      <td>pair_trade</td>
+      <td>8306</td>
+      <td>buy</td>
+      <td>100.0</td>
+      <td>1865.0</td>
+      <td>0.0</td>
+      <td>0.0</td>
+    </tr>
+    <tr>
+      <td>2026-05-01 09:03:00</td>
+      <td>nisa</td>
+      <td>long_term_nisa</td>
+      <td>7203</td>
+      <td>buy</td>
+      <td>100.0</td>
+      <td>3450.0</td>
+      <td>0.0</td>
+      <td>0.0</td>
+    </tr>
+  </tbody>
+</table>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>日次レポート</h2>
+      <pre># Daily Fund Report (2026-05-03)
+
+## 1. 総資産
+- 総資産: 2,599,000円
+- 現金: 1,600,000円
+- 現物評価額: 626,000円
+- 信用建玉: 373,000円
+- 評価損益: 28,000円
+- 前日比: 未計算
+
+## 2. リスク状態
+- 信用倍率: 0.14
+- 1日損失上限: risk_limits.max_portfolio_drawdown_pct 連動の別途計算が必要
+- 今週損失: 未計算
+- セクター集中: 銀行業 (14.4%)
+- 決算またぎリスク: 個別イベントチェックは別途実装前提
+- 新規建て可否: 可
+
+## 3. NISA長期枠
+- 継続保有:
+  - `1306` NEXT FUNDS TOPIX連動型ETF: 評価額 281,000円, 損益 6,000円
+  - `7203` トヨタ自動車: 評価額 345,000円, 損益 13,000円
+- 買い増し候補:
+  - なし
+- 見送り:
+  - 条件未達またはデータ不足の銘柄は本日見送りです。
+- 売却候補:
+  - 長期前提のため自動売却候補は未生成です。
+
+## 4. ペアトレード枠
+- 新規候補:
+  - なし
+- 継続:
+  - なし
+- 利確候補:
+  - なし
+- 損切り候補:
+  - なし
+- ペア崩壊警戒:
+  - なし
+
+## 5. スキャルピング・モメンタム枠
+- 寄り前注目:
+  - なし
+- 場中監視:
+- `13060` 野村アセットマネジメント株式会社　ＮＥＸＴ　ＦＵＮＤＳ　ＴＯＰＩＸ連動型上場投信
+  根拠: データ欠損のため候補を見送ります。
+  時間軸: 数分-当日
+  推奨注文: 発注なし
+  売買方向: skip
+  想定エントリー: None
+  利確: None
+  損切り: None
+  最大損失目安: 0円
+  推奨数量: 0
+  信頼度: 0.00
+  エントリー理由: 分足データが不足しています。
+  データ状態: 分足データが不足しています。
+- `7203` 7203
+  根拠: データ欠損のため候補を見送ります。
+  時間軸: 数分-当日
+  推奨注文: 発注なし
+  売買方向: skip
+  想定エントリー: None
+  利確: None
+  損切り: None
+  最大損失目安: 0円
+  推奨数量: 0
+  信頼度: 0.00
+  エントリー理由: 分足データが不足しています。
+  データ状態: 分足データが不足しています。
+- `83060` 三菱ＵＦＪフィナンシャル・グループ
+  根拠: データ欠損のため候補を見送ります。
+  時間軸: 数分-当日
+  推奨注文: 発注なし
+  売買方向: skip
+  想定エントリー: None
+  利確: None
+  損切り: None
+  最大損失目安: 0円
+  推奨数量: 0
+  信頼度: 0.00
+  エントリー理由: 分足データが不足しています。
+  データ状態: 分足データが不足しています。
+- エントリー条件:
+  - VWAP上、短期EMA順行、直近高値更新、出来高急増を満たすこと。
+- 利確:
+  - 事前設定したリスクリワード到達、またはモメンタム鈍化で分割利確。
+- 損切り:
+  - VWAP割れ、直近安値割れ、またはブレイク失敗を確認した時点。
+- 当日持ち越し可否:
+  - 原則不可。
+
+## 6. TradingViewアラート更新案
+- 追加:
+  - 本日新規候補に入ったペア / スキャル候補のアラートを追加。
+- 削除:
+  - 監視解除済み銘柄、データ欠損銘柄のアラートを削除。
+- 修正:
+  - 損切り / 利確価格、Z閾値、出来高閾値の更新を反映。
+- Pine Script変更点:
+  - 発注ロジックではなく、条件通知文面と閾値パラメータのみ更新。
+
+## 7. 本日の行動
+- 実行:
+  - 上記の新規候補から資金制約とリスク制約を満たすものだけを採用検討。
+- 保留:
+  - 決算・開示イベントが近い銘柄、データ欠損銘柄。
+- 禁止:
+  - NISA枠での短期売買、信用枠での無ヘッジ持ち越し、ルール外のナンピン。
+</pre>
+    </section>
+  </div>
+</body>
+</html>
